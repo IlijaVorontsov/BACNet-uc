@@ -1,0 +1,881 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>uc-hub Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+:root {
+  --bg: #E9ECE8;
+  --surface: #F5F7F4;
+  --panel: #FFFFFF;
+  --ink: #17201D;
+  --ink-2: #47534F;
+  --ink-3: #75817C;
+  --line: #D3D9D4;
+  --line-2: #E4E8E4;
+  --accent: #2A55C9;
+  --accent-ink: #FFFFFF;
+  --accent-soft: #E2E8F8;
+  --ok: #1D8453;
+  --ok-soft: #DDF1E6;
+  --warn: #A96B12;
+  --warn-soft: #F7EBD4;
+  --crit: #BE3129;
+  --crit-soft: #F8E0DE;
+  --tier-r: #6B7671;
+  --tier-s: #16807D;
+  --tier-l: #A96B12;
+  --tier-c: #BE3129;
+  --code-bg: #F0F2EF;
+  --add: #DDF1E6;
+  --del: #F8E0DE;
+  --bezel: #1B2220;
+  --shadow: 0 1px 2px rgba(20,30,26,.06), 0 8px 30px rgba(20,30,26,.10);
+  --f-display: "Barlow Semi Condensed", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+  --f-ui: "Barlow", "Helvetica Neue", Arial, sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0F1412; --surface: #151B18; --panel: #1A211E; --ink: #E3E9E5; --ink-2: #A8B3AE;
+    --ink-3: #75817C; --line: #2B3531; --line-2: #222B27; --accent: #7F9CFF; --accent-ink: #0F1412;
+    --accent-soft: #1F2945; --ok: #4CC08A; --ok-soft: #173327; --warn: #E0A54A; --warn-soft: #3A2C14;
+    --crit: #F07269; --crit-soft: #3D1D1B; --tier-r: #95A19C; --tier-s: #43BDB9; --tier-l: #E0A54A;
+    --tier-c: #F07269; --code-bg: #131916; --add: #173327; --del: #3D1D1B; --bezel: #050807;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 30px rgba(0,0,0,.45);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0F1412; --surface: #151B18; --panel: #1A211E; --ink: #E3E9E5; --ink-2: #A8B3AE;
+  --ink-3: #75817C; --line: #2B3531; --line-2: #222B27; --accent: #7F9CFF; --accent-ink: #0F1412;
+  --accent-soft: #1F2945; --ok: #4CC08A; --ok-soft: #173327; --warn: #E0A54A; --warn-soft: #3A2C14;
+  --crit: #F07269; --crit-soft: #3D1D1B; --tier-r: #95A19C; --tier-s: #43BDB9; --tier-l: #E0A54A;
+  --tier-c: #F07269; --code-bg: #131916; --add: #173327; --del: #3D1D1B; --bezel: #050807;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 30px rgba(0,0,0,.45);
+}
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--f-ui); font-size: 14px; line-height: 1.45; }
+button { font: inherit; color: inherit; cursor: pointer; }
+button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mono { font-family: var(--f-mono); font-size: .86em; }
+.num { font-variant-numeric: tabular-nums; }
+
+/* ---------- page ---------- */
+.page { max-width: 1240px; margin: 0 auto; padding-inline: 20px; padding-block: 28px 56px; display: grid; gap: 28px; }
+.intro { display: grid; gap: 14px; max-width: 72ch; }
+.eyebrow { font-family: var(--f-mono); font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); }
+.intro h1 { font-family: var(--f-display); font-weight: 700; font-size: clamp(30px, 4.4vw, 44px); line-height: 1.02; margin: 0; letter-spacing: -.01em; text-wrap: balance; }
+.intro p { margin: 0; color: var(--ink-2); font-size: 15.5px; }
+.controls { display: flex; flex-wrap: wrap; gap: 14px 24px; align-items: center; }
+.seg { display: inline-flex; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 3px; }
+.seg button { border: 0; background: transparent; padding: 6px 14px; border-radius: 6px; font-weight: 500; color: var(--ink-2); }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 13px; color: var(--ink-2); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+
+.tier { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 4px; font-family: var(--f-mono); font-size: 10.5px; font-weight: 500; color: #fff; flex: none; }
+.tier.R { background: var(--tier-r); } .tier.S { background: var(--tier-s); } .tier.L { background: var(--tier-l); } .tier.C { background: var(--tier-c); }
+:root[data-theme="dark"] .tier, :root:not([data-theme="light"]) .tier { color: #fff; }
+
+.label { font-family: var(--f-display); font-weight: 600; font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); margin: 0 0 10px; }
+
+/* ---------- desktop frame ---------- */
+.stage-desktop { display: grid; gap: 10px; }
+.fit { position: relative; width: 100%; }
+.fit > .desk { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
+.desk { width: 1200px; height: 740px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); display: grid; grid-template-rows: 48px 1fr; overflow: hidden; }
+.topbar { display: flex; align-items: center; gap: 16px; padding: 0 14px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.brand { font-family: var(--f-display); font-weight: 700; font-size: 18px; display: flex; align-items: center; gap: 8px; }
+.brand i { width: 22px; height: 22px; border-radius: 5px; background: var(--accent); display: inline-block; position: relative; }
+.brand i::after { content: ""; position: absolute; inset: 6px; border: 2px solid var(--accent-ink); border-radius: 2px; }
+.sitepick { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 4px 10px; font-weight: 500; }
+.search { flex: 1; max-width: 460px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 6px 10px; color: var(--ink-3); }
+.search kbd { margin-left: auto; font-family: var(--f-mono); font-size: 11px; border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; }
+.health { margin-left: auto; display: flex; gap: 8px; font-size: 13px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 2px 10px; font-size: 12.5px; font-weight: 500; border: 1px solid var(--line); background: var(--surface); color: var(--ink-2); white-space: nowrap; }
+.chip.ok { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+.chip.warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+.chip.crit { background: var(--crit-soft); color: var(--crit); border-color: transparent; }
+.chip.acc { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+.dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.off { background: var(--ink-3); } .dot.crit { background: var(--crit); }
+.avatar { width: 28px; height: 28px; border-radius: 50%; background: var(--ink); color: var(--bg); display: grid; place-items: center; font-size: 11px; font-weight: 600; }
+
+.body3 { display: grid; grid-template-columns: 232px 1fr 392px; min-height: 0; }
+.tree { border-right: 1px solid var(--line); padding: 12px 8px; overflow: auto; display: grid; align-content: start; gap: 14px; background: var(--surface); }
+.tree .filters { display: flex; flex-wrap: wrap; gap: 5px; padding: 0 6px; }
+.tree .filters .chip { font-size: 11.5px; padding: 1px 8px; }
+.tgroup { display: grid; gap: 1px; }
+.tnode { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 6px; border: 0; background: transparent; text-align: left; width: 100%; color: var(--ink-2); }
+.tnode:hover { background: var(--line-2); }
+.tnode[aria-current="true"] { background: var(--accent-soft); color: var(--ink); font-weight: 600; }
+.tnode .cnt { margin-left: auto; font-size: 11.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.tnode.l1 { padding-left: 22px; } .tnode.l2 { padding-left: 36px; }
+.tnode .caret { width: 10px; color: var(--ink-3); font-size: 10px; }
+.tnote { margin: 0 6px; padding: 10px; border: 1px dashed var(--line); border-radius: 8px; font-size: 12.5px; color: var(--ink-2); display: grid; gap: 6px; }
+.tnote b { color: var(--ink); }
+
+.work { display: grid; grid-template-rows: auto auto 1fr; min-height: 0; background: var(--panel); }
+.whead { padding: 14px 18px 10px; display: grid; gap: 6px; }
+.crumb { font-size: 12.5px; color: var(--ink-3); }
+.whead h2 { margin: 0; font-family: var(--f-display); font-size: 24px; font-weight: 600; line-height: 1.1; }
+.whead .meta { display: flex; flex-wrap: wrap; gap: 6px; }
+.tabs { display: flex; gap: 2px; padding: 0 12px; border-bottom: 1px solid var(--line); }
+.tabs button { border: 0; background: transparent; padding: 9px 12px; font-weight: 500; color: var(--ink-3); border-bottom: 2px solid transparent; margin-bottom: -1px; display: inline-flex; gap: 6px; align-items: center; }
+.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+.badge { background: var(--crit); color: #fff; border-radius: 999px; font-size: 11px; padding: 0 6px; font-weight: 600; min-width: 18px; text-align: center; }
+.badge.zero { background: var(--line); color: var(--ink-3); }
+.tabpane { overflow: auto; padding: 14px 18px; min-height: 0; }
+
+table.pts { width: 100%; border-collapse: collapse; font-size: 13px; }
+.pts th { text-align: left; font-weight: 600; font-size: 11.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-3); padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.pts td { padding: 8px 8px; border-bottom: 1px solid var(--line-2); vertical-align: middle; }
+.pts td.v { font-family: var(--f-mono); font-size: 13px; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pts td.v.flash { animation: flash .9s ease-out; }
+@keyframes flash { from { background: var(--accent-soft); } to { background: transparent; } }
+.pts .obj { font-family: var(--f-mono); font-size: 12px; color: var(--ink-2); white-space: nowrap; }
+.pts .tag { font-size: 11px; }
+.tag { display: inline-block; font-size: 11.5px; padding: 1px 7px; border-radius: 4px; background: var(--code-bg); border: 1px solid var(--line-2); color: var(--ink-2); font-family: var(--f-mono); }
+.src { font-size: 12px; color: var(--ink-3); }
+.src b { color: var(--ink-2); font-weight: 500; }
+.newrow td:first-child { box-shadow: inset 3px 0 0 var(--ok); }
+
+.code { font-family: var(--f-mono); font-size: 12.3px; line-height: 1.6; background: var(--code-bg); border: 1px solid var(--line-2); border-radius: 8px; padding: 12px 0; overflow: auto; margin: 0; }
+.code .ln { display: block; padding: 0 14px 0 0; white-space: pre; }
+.code .ln::before { content: attr(data-n); display: inline-block; width: 36px; padding-right: 12px; text-align: right; color: var(--ink-3); user-select: none; }
+.code .ln.add { background: var(--add); }
+.code .ln.del { background: var(--del); }
+.code .kw { color: var(--accent); } .code .cm { color: var(--ink-3); } .code .st { color: var(--tier-s); }
+.logic { display: grid; grid-template-columns: 1fr 250px; gap: 14px; align-items: start; }
+.side-card { border: 1px solid var(--line); border-radius: 8px; padding: 12px; display: grid; gap: 8px; font-size: 13px; }
+.side-card h4 { margin: 0; font-size: 12px; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-3); }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: 12.5px; }
+.kv dt { color: var(--ink-3); } .kv dd { margin: 0; font-family: var(--f-mono); font-size: 12px; }
+.checks { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; font-size: 12.5px; }
+.checks li { display: flex; gap: 6px; align-items: baseline; }
+.ok-t { color: var(--ok); font-weight: 600; } .warn-t { color: var(--warn); font-weight: 600; } .crit-t { color: var(--crit); font-weight: 600; } .mute-t { color: var(--ink-3); }
+
+.plan { display: grid; gap: 12px; }
+.plan-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.plan-head h3 { margin: 0; font-family: var(--f-display); font-weight: 600; font-size: 18px; margin-right: auto; }
+.target { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.target > header { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--surface); border-bottom: 1px solid var(--line); font-size: 13px; }
+.target > header b { font-family: var(--f-mono); font-weight: 500; font-size: 12.5px; }
+.target > header .chip { margin-left: auto; }
+.target .code { border: 0; border-radius: 0; }
+.rollback { font-size: 12.5px; color: var(--ink-2); }
+
+.tests { display: grid; gap: 8px; }
+.trow { display: grid; grid-template-columns: 1fr 110px 110px; gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
+.trow .steps { color: var(--ink-3); font-size: 12px; font-family: var(--f-mono); }
+.thdr { display: grid; grid-template-columns: 1fr 110px 110px; gap: 10px; padding: 0 12px; font-size: 11.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
+
+.trend svg { width: 100%; height: auto; display: block; }
+.trend .axis { stroke: var(--line); } .trend .grid { stroke: var(--line-2); }
+.trend text { fill: var(--ink-3); font-family: var(--f-mono); font-size: 10.5px; }
+.trend .t { stroke: var(--accent); fill: none; stroke-width: 2; }
+.trend .sp { stroke: var(--ink-2); fill: none; stroke-width: 1.5; stroke-dasharray: 5 4; }
+.trend .vl { stroke: var(--tier-l); fill: none; stroke-width: 1.5; }
+.trend .vla { fill: var(--warn-soft); stroke: none; }
+.trend .ev { stroke: var(--ok); stroke-width: 1.5; stroke-dasharray: 2 3; }
+.trend .evl { fill: var(--ok); }
+.tlegend { display: flex; gap: 16px; font-size: 12.5px; color: var(--ink-2); margin-top: 8px; flex-wrap: wrap; }
+.tlegend i { display: inline-block; width: 18px; height: 0; border-top: 2px solid; vertical-align: middle; margin-right: 6px; }
+
+/* ---------- agent panel ---------- */
+.agent { border-left: 1px solid var(--line); display: grid; grid-template-rows: auto 1fr auto; min-height: 0; background: var(--surface); }
+.ahead { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.ahead h3 { margin: 0; font-family: var(--f-display); font-weight: 600; font-size: 16px; }
+.ahead .model { font-family: var(--f-mono); font-size: 11.5px; color: var(--ink-3); }
+.ahead .chip { margin-left: auto; }
+.stream { overflow: auto; padding: 14px; display: grid; align-content: start; gap: 10px; min-height: 0; }
+.msg-user { justify-self: end; max-width: 88%; background: var(--ink); color: var(--bg); padding: 9px 12px; border-radius: 12px 12px 3px 12px; font-size: 13.5px; }
+.msg-ai { font-size: 13.5px; color: var(--ink); max-width: 96%; }
+.msg-ai p { margin: 0 0 6px; } .msg-ai p:last-child { margin: 0; }
+.think { font-size: 12.5px; color: var(--ink-3); border: 0; background: transparent; padding: 0; text-align: left; display: flex; gap: 6px; align-items: center; }
+.think-body { font-size: 12.5px; color: var(--ink-2); border-left: 2px solid var(--line); padding: 2px 0 2px 10px; margin: 0; }
+.tool { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 8px; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; font-size: 12.5px; }
+.tool .fn { font-family: var(--f-mono); font-size: 12px; font-weight: 500; }
+.tool .arg { color: var(--ink-3); font-family: var(--f-mono); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool .res { grid-column: 2 / 4; color: var(--ink-2); font-size: 12.5px; }
+.tool .dur { color: var(--ink-3); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.tool.running .dur::after { content: ""; display: inline-block; width: 10px; height: 10px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -1px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.toolgroup { display: grid; gap: 5px; }
+.appr { background: var(--panel); border: 1px solid var(--line); border-top: 3px solid var(--tier-c); border-radius: 8px; padding: 12px; display: grid; gap: 9px; font-size: 13px; }
+.appr h4 { margin: 0; font-size: 14.5px; font-weight: 600; display: flex; gap: 8px; align-items: center; }
+.appr ul { margin: 0; padding-left: 18px; display: grid; gap: 3px; color: var(--ink-2); }
+.appr .row { display: flex; gap: 8px; flex-wrap: wrap; }
+.btn { border: 1px solid var(--line); background: var(--panel); border-radius: 6px; padding: 6px 12px; font-weight: 500; }
+.btn:hover { background: var(--line-2); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn.danger { color: var(--crit); }
+.btn.link { border: 0; background: transparent; color: var(--accent); padding: 6px 4px; }
+.appr .done { font-size: 12.5px; color: var(--ok); font-weight: 600; }
+.appr.decided { border-top-color: var(--ok); }
+.appr.rejected { border-top-color: var(--ink-3); }
+.composer { border-top: 1px solid var(--line); background: var(--panel); padding: 10px 12px; display: grid; gap: 8px; }
+.pb { display: flex; gap: 6px; flex-wrap: wrap; }
+.pb button { font-size: 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); padding: 2px 10px; color: var(--ink-2); }
+.cbox { display: flex; gap: 8px; align-items: flex-end; border: 1px solid var(--line); border-radius: 8px; padding: 6px 6px 6px 10px; background: var(--surface); }
+.cbox textarea { flex: 1; border: 0; background: transparent; resize: none; font: inherit; color: var(--ink); min-height: 22px; max-height: 80px; outline: none; }
+.send { width: 30px; height: 30px; border-radius: 6px; border: 0; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; flex: none; }
+.ibtn { width: 30px; height: 30px; border-radius: 6px; border: 0; background: transparent; color: var(--ink-3); display: grid; place-items: center; flex: none; }
+.appear { animation: appear .35s ease-out both; }
+@keyframes appear { from { opacity: .001; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+/* ---------- phone ---------- */
+.stage-phone { display: grid; grid-template-columns: 400px 1fr; gap: 36px; align-items: start; }
+.phone { width: 390px; max-width: 100%; height: 800px; border-radius: 46px; background: var(--bezel); padding: 12px; box-shadow: var(--shadow); justify-self: center; }
+.screen { height: 100%; border-radius: 36px; overflow: hidden; background: var(--surface); display: grid; grid-template-rows: 40px auto 1fr auto; position: relative; }
+.sbar { display: flex; justify-content: space-between; align-items: center; padding: 0 26px; font-size: 13px; font-weight: 600; }
+.sbar .island { width: 96px; height: 26px; border-radius: 14px; background: var(--bezel); }
+.pbar { display: flex; align-items: center; gap: 10px; padding: 6px 16px 10px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.pbar h3 { margin: 0; font-family: var(--f-display); font-weight: 600; font-size: 19px; }
+.pbar .sub { font-size: 12px; color: var(--ink-3); }
+.pbar .chip { margin-left: auto; }
+.pview { overflow: auto; min-height: 0; padding: 12px 14px; display: grid; align-content: start; gap: 10px; }
+.pnav { display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid var(--line); background: var(--panel); padding: 6px 6px 22px; }
+.pnav button { border: 0; background: transparent; display: grid; justify-items: center; gap: 2px; font-size: 11.5px; color: var(--ink-3); padding: 4px 0; position: relative; }
+.pnav button svg { width: 22px; height: 22px; }
+.pnav button[aria-selected="true"] { color: var(--accent); font-weight: 600; }
+.pnav .badge { position: absolute; top: 0; left: calc(50% + 6px); font-size: 10px; }
+.runcard { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; display: grid; gap: 8px; }
+.runcard .top { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.runcard .top b { font-weight: 600; }
+.runcard .top span { margin-left: auto; color: var(--ink-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+.bar { height: 6px; border-radius: 3px; background: var(--line-2); overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--accent); border-radius: 3px; transition: width .4s ease; }
+.ask { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--tier-l); border-radius: 12px; padding: 12px; display: grid; gap: 10px; }
+.ask p { margin: 0; font-size: 15px; font-weight: 500; }
+.ask .opts { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+.ask .opts button { border: 1px solid var(--line); background: var(--surface); border-radius: 10px; padding: 12px 6px; font-weight: 600; font-size: 14px; }
+.ask .opts button.yes { background: var(--ok); color: #fff; border-color: var(--ok); }
+.clist { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; font-size: 13px; }
+.clist li { display: grid; grid-template-columns: 18px 1fr auto; gap: 8px; align-items: center; padding: 5px 0; border-bottom: 1px solid var(--line-2); }
+.clist li:last-child { border-bottom: 0; }
+.clist .st { font-size: 12px; font-weight: 600; }
+.pcomp { display: flex; gap: 8px; align-items: center; border: 1px solid var(--line); border-radius: 22px; padding: 4px 4px 4px 6px; background: var(--panel); margin: 0 14px 10px; }
+.pcomp input { flex: 1; border: 0; background: transparent; font: inherit; color: var(--ink); outline: none; min-width: 0; }
+.pcomp .send { border-radius: 50%; }
+.room { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; padding: 10px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; font-size: 13px; }
+.room b { font-size: 14.5px; font-weight: 600; }
+.room .big { font-family: var(--f-mono); font-size: 18px; text-align: right; grid-row: span 2; align-self: center; font-variant-numeric: tabular-nums; }
+.room .s { color: var(--ink-3); font-size: 12px; display: flex; gap: 6px; align-items: center; }
+.sheet { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 14px; display: grid; gap: 12px; }
+.sheet h4 { margin: 0; font-size: 16px; font-weight: 600; display: flex; gap: 8px; align-items: center; }
+.sheet .tl { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; font-size: 13px; }
+.sheet .tl li { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; }
+.sheet .tl li small { grid-column: 2; color: var(--ink-3); font-size: 12px; }
+.hold { position: relative; overflow: hidden; border: 0; border-radius: 12px; background: var(--crit-soft); color: var(--crit); font-weight: 600; font-size: 15px; padding: 14px; touch-action: none; user-select: none; -webkit-user-select: none; }
+.hold i { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--crit); opacity: .22; }
+.hold.done { background: var(--ok-soft); color: var(--ok); }
+.viewfinder { aspect-ratio: 4 / 3; max-width: 100%; border-radius: 14px; background: repeating-linear-gradient(135deg, var(--line-2) 0 10px, var(--code-bg) 10px 20px); position: relative; display: grid; place-items: center; color: var(--ink-3); font-size: 13px; border: 1px solid var(--line); }
+.viewfinder::before { content: ""; position: absolute; inset: 22% 28%; border: 2px solid var(--accent); border-radius: 8px; }
+.fgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.fbtn { border: 1px solid var(--line); background: var(--panel); border-radius: 12px; padding: 12px; text-align: left; display: grid; gap: 2px; }
+.fbtn b { font-size: 14px; } .fbtn small { color: var(--ink-3); font-size: 12px; }
+.board { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); font-size: 13px; }
+.led { width: 12px; height: 12px; border-radius: 50%; background: var(--line); flex: none; }
+.led.blink { animation: blink .5s steps(2, jump-none) infinite; }
+@keyframes blink { 0% { background: var(--line); } 100% { background: var(--ok); box-shadow: 0 0 10px var(--ok); } }
+
+.notes { display: grid; gap: 18px; align-content: start; }
+.notes h3 { margin: 0; font-family: var(--f-display); font-weight: 600; font-size: 22px; }
+.notes ol { margin: 0; padding-left: 20px; display: grid; gap: 12px; color: var(--ink-2); max-width: 60ch; }
+.notes ol b { color: var(--ink); font-weight: 600; }
+.notes .try { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; background: var(--panel); font-size: 13.5px; color: var(--ink-2); display: grid; gap: 6px; max-width: 60ch; }
+.notes .try b { color: var(--ink); }
+
+.hr { height: 1px; background: var(--line); }
+
+@media (max-width: 900px) {
+  .stage-phone { grid-template-columns: 1fr; }
+  .phone { height: 760px; }
+}
+@media (max-width: 440px) {
+  .phone { padding: 8px; border-radius: 38px; height: 720px; }
+  .screen { border-radius: 30px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
+}
+</style>
+</head>
+<body>
+
+<div class="page">
+  <header class="intro">
+    <div class="eyebrow">BACnet-uc · AI harness · UI proposal</div>
+    <h1>uc-hub Console</h1>
+    <p>One place to commission a building: BACnet-uc boards, third-party BACnet/IP controllers and MQTT devices, with a GLM-5.3 agent that proposes changes as reviewable plans. This is a clickable mock with example data for HQ, Floor 2. Nothing here connects to real devices.</p>
+    <div class="controls">
+      <div class="seg" role="group" aria-label="View">
+        <button type="button" id="v-both" aria-pressed="true">Both</button>
+        <button type="button" id="v-desk" aria-pressed="false">Desktop</button>
+        <button type="button" id="v-phone" aria-pressed="false">Phone</button>
+      </div>
+      <div class="legend" aria-label="Tool risk tiers">
+        <span><i class="tier R">R</i>Read</span>
+        <span><i class="tier S">S</i>Sandbox or draft</span>
+        <span><i class="tier L">L</i>Live, with a lease</span>
+        <span><i class="tier C">C</i>Commit, needs approval</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ===================== DESKTOP ===================== -->
+  <section class="stage-desktop" id="stage-desk" aria-label="Desktop layout">
+    <p class="label">Desktop · 3 panes: site, workspace, agent</p>
+    <div class="fit" id="fit">
+      <div class="desk" id="desk">
+        <div class="topbar">
+          <div class="brand"><i></i>uc-hub</div>
+          <button type="button" class="sitepick">HQ ▾</button>
+          <div class="search"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="7" cy="7" r="5"/><path d="M11 11l3.5 3.5"/></svg>Search points, devices, or ask the agent<kbd>Ctrl K</kbd></div>
+          <div class="health">
+            <span class="chip ok"><i class="dot ok"></i>Gateway online</span>
+            <span class="chip">14 devices</span>
+            <span class="chip warn"><i class="dot warn"></i>2 offline</span>
+          </div>
+          <div class="avatar" aria-label="Signed in as commissioner">CE</div>
+        </div>
+
+        <div class="body3">
+          <!-- tree -->
+          <nav class="tree" aria-label="Site tree">
+            <div class="filters">
+              <span class="chip acc">BACnet-uc</span><span class="chip acc">BACnet/IP</span><span class="chip acc">MQTT</span>
+            </div>
+            <div class="tgroup" id="tree"></div>
+            <div class="tnote"><b>2 unassigned devices</b>Found by discovery at 09:12. Ask the agent to identify and place them.<button type="button" class="btn link" data-prompt="Identify the 2 unassigned devices and suggest where they belong.">Ask the agent</button></div>
+          </nav>
+
+          <!-- workspace -->
+          <main class="work">
+            <div class="whead">
+              <div class="crumb" id="crumb">HQ / Floor 2 / Room 204</div>
+              <h2 id="wtitle">Room 204</h2>
+              <div class="meta" id="wmeta"></div>
+            </div>
+            <div class="tabs" role="tablist" aria-label="Workspace">
+              <button type="button" role="tab" id="tab-points" aria-selected="true">Points</button>
+              <button type="button" role="tab" id="tab-logic" aria-selected="false">Logic</button>
+              <button type="button" role="tab" id="tab-changes" aria-selected="false">Changes <span class="badge" id="chg-badge">3</span></button>
+              <button type="button" role="tab" id="tab-tests" aria-selected="false">Tests</button>
+              <button type="button" role="tab" id="tab-trends" aria-selected="false">Trends</button>
+            </div>
+            <div class="tabpane" id="pane"></div>
+          </main>
+
+          <!-- agent -->
+          <aside class="agent" aria-label="Agent">
+            <div class="ahead">
+              <h3>Agent</h3><span class="model">glm-5.3 · high</span>
+              <span class="chip warn" id="runstate"><i class="dot warn"></i>Waiting for approval</span>
+            </div>
+            <div class="stream" id="stream"></div>
+            <div class="composer">
+              <div class="pb">
+                <button type="button" data-prompt="Onboard the devices found by discovery.">Onboard devices</button>
+                <button type="button" data-prompt="Run IO checkout for r204-ctl.">IO checkout</button>
+                <button type="button" data-prompt="Why is room 205 warmer than its setpoint?">Troubleshoot</button>
+                <button type="button" id="restart">Restart demo</button>
+              </div>
+              <div class="cbox">
+                <textarea id="ask" rows="1" placeholder="Ask the agent…"></textarea>
+                <button type="button" class="ibtn" aria-label="Attach a photo or file"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10.5 4.5l-5 5a1.8 1.8 0 002.5 2.5l5.5-5.5a3 3 0 00-4.2-4.2L3.8 7.8a4.2 4.2 0 006 6l4.2-4.3"/></svg></button>
+                <button type="button" class="send" id="send" aria-label="Send"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M2 14l12-6L2 2v4.7L10 8l-8 1.3z"/></svg></button>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="hr"></div>
+
+  <!-- ===================== PHONE ===================== -->
+  <section class="stage-phone" id="stage-phone" aria-label="Phone layout">
+    <div class="phone">
+      <div class="screen">
+        <div class="sbar"><span class="num">09:41</span><span class="island"></span><span>5G</span></div>
+        <div class="pbar">
+          <div><h3 id="p-title">IO checkout</h3><div class="sub" id="p-sub">HQ · Floor 2 · r204-ctl</div></div>
+          <span class="chip warn"><i class="dot warn"></i>1</span>
+        </div>
+        <div class="pview" id="pview"></div>
+        <div>
+          <div class="pcomp" id="pcomp"><button type="button" class="ibtn" aria-label="Take a photo"><svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2" y="5" width="16" height="12" rx="2"/><circle cx="10" cy="11" r="3.2"/><path d="M7 5l1.3-2h3.4L13 5"/></svg></button><input id="p-ask" placeholder="Ask the agent…" aria-label="Ask the agent"><button type="button" class="send" aria-label="Send"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M2 14l12-6L2 2v4.7L10 8l-8 1.3z"/></svg></button></div>
+          <nav class="pnav" role="tablist" aria-label="Phone sections">
+            <button type="button" role="tab" data-p="agent" aria-selected="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 5h16v11H9l-5 4z"/><path d="M8 9.5h8M8 12.5h5"/></svg>Agent</button>
+            <button type="button" role="tab" data-p="site" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 20V8l8-4 8 4v12z"/><path d="M9 20v-5h6v5M8 10h2M14 10h2"/></svg>Site</button>
+            <button type="button" role="tab" data-p="changes" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M6 3h9l4 4v14H6z"/><path d="M9 12h7M12.5 8.5v7M9 17.5h7"/></svg>Changes<span class="badge" id="p-badge">1</span></button>
+            <button type="button" role="tab" data-p="field" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4"/><rect x="8" y="8" width="8" height="8" rx="1"/></svg>Field</button>
+          </nav>
+        </div>
+      </div>
+    </div>
+
+    <div class="notes">
+      <p class="label">Phone · agent first, for the technician on site</p>
+      <h3>Built for one hand, at the valve</h3>
+      <ol>
+        <li><b>The agent drives the checklist.</b> It forces an output under a 60 s lease and asks a question you answer with one tap. Every force is released automatically, even if the phone loses signal.</li>
+        <li><b>Approvals are a bottom sheet with a per-device summary.</b> Commit-tier changes need a 1.5 s hold, so a pocket tap cannot apply a plan.</li>
+        <li><b>Field tools use what the phone has.</b> Scan the QR label to open a board, make it blink to find it in a ceiling void, or photograph a nameplate for the vision model (glm-5.3-flash) to read.</li>
+        <li><b>The run lives on the gateway, not the phone.</b> Close the app mid-checkout, open the desktop, and the same run continues from the same step.</li>
+      </ol>
+      <div class="try"><b>Try it</b>Answer the checkout questions on the Agent tab, hold the button on the Changes tab, and press Identify on the Field tab. On the desktop, approve the plan in the agent panel.</div>
+    </div>
+  </section>
+</div>
+
+<script>
+(() => {
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const wait = ms => new Promise(r => setTimeout(r, reduce ? 0 : ms));
+
+  /* ---------- view switch + scale-to-fit ---------- */
+  const fit = $('#fit'), desk = $('#desk');
+  function scaleDesk() {
+    const w = fit.clientWidth || 1200;
+    const s = Math.min(1, w / 1200);
+    desk.style.transform = `scale(${s})`;
+    fit.style.height = (740 * s) + 'px';
+  }
+  addEventListener('resize', scaleDesk);
+  function setView(v) {
+    $('#v-both').setAttribute('aria-pressed', v === 'both');
+    $('#v-desk').setAttribute('aria-pressed', v === 'desk');
+    $('#v-phone').setAttribute('aria-pressed', v === 'phone');
+    $('#stage-desk').hidden = v === 'phone';
+    $('#stage-phone').hidden = v === 'desk';
+    $('.hr').hidden = v !== 'both';
+    try { localStorage.setItem('uchub-view', v); } catch (e) {}
+    scaleDesk();
+  }
+  $('#v-both').onclick = () => setView('both');
+  $('#v-desk').onclick = () => setView('desk');
+  $('#v-phone').onclick = () => setView('phone');
+
+  /* ---------- data ---------- */
+  const rooms = {
+    r201: { name: 'Room 201', t: 21.2, sp: 21.0, dev: 'r201-ctl', inst: 2011, ip: '10.0.2.41', st: 'ok' },
+    r202: { name: 'Room 202', t: 21.8, sp: 21.5, dev: 'r202-ctl', inst: 2021, ip: '10.0.2.42', st: 'ok' },
+    r203: { name: 'Room 203', t: 20.9, sp: 21.0, dev: 'r203-ctl', inst: 2031, ip: '10.0.2.43', st: 'off' },
+    r204: { name: 'Room 204', t: 22.4, sp: 21.5, dev: 'r204-ctl', inst: 2041, ip: '10.0.2.51', st: 'ok', isNew: true },
+    r205: { name: 'Room 205', t: 24.6, sp: 21.5, dev: 'r205-ctl', inst: 2051, ip: '10.0.2.52', st: 'warn' },
+  };
+  let current = 'r204';
+
+  const treeSpec = [
+    { lvl: 0, label: 'HQ', caret: '▾', cnt: 14 },
+    { lvl: 1, label: 'Floor 1', caret: '▸', cnt: 5 },
+    { lvl: 1, label: 'Floor 2', caret: '▾', cnt: 7 },
+    ...Object.entries(rooms).map(([k, r]) => ({ lvl: 2, key: k, label: r.name, st: r.st, badge: r.isNew ? 'new' : '' })),
+    { lvl: 1, label: 'Plant room', caret: '▾', cnt: 2 },
+    { lvl: 2, label: 'AHU-1 · BACnet/IP', st: 'ok' },
+    { lvl: 2, label: 'Heat meter · MQTT', st: 'warn' },
+  ];
+  function renderTree() {
+    $('#tree').innerHTML = treeSpec.map(n => {
+      const cls = `tnode l${n.lvl}`;
+      const cur = n.key === current ? ' aria-current="true"' : '';
+      const lead = n.st ? `<i class="dot ${n.st}"></i>` : `<span class="caret">${n.caret || ''}</span>`;
+      const tail = n.badge ? `<span class="chip ok" style="margin-left:auto;padding:0 7px;font-size:11px">${n.badge}</span>` : (n.cnt ? `<span class="cnt">${n.cnt}</span>` : '');
+      return `<button type="button" class="${cls}"${cur}${n.key ? ` data-room="${n.key}"` : ''}>${lead}${esc(n.label)}${tail}</button>`;
+    }).join('');
+    $$('#tree [data-room]').forEach(b => b.onclick = () => { current = b.dataset.room; renderTree(); renderHead(); renderPane(); });
+  }
+
+  function pointsFor(k) {
+    const r = rooms[k];
+    const base = [
+      { obj: 'analog-input:1', name: `${r.name.replace('Room ', 'R')} Temp`, v: r.t, u: '°C', tag: 'Zone_Air_Temperature_Sensor', src: 'io <b>ai0</b>', id: 'temp' },
+      { obj: 'analog-value:1', name: 'Setpoint', v: r.sp, u: '°C', tag: 'Zone_Air_Temperature_Setpoint', src: 'app <b>thermostat</b>' },
+      { obj: 'analog-output:1', name: 'Reheat valve', v: k === 'r205' ? 100 : 35, u: '%', tag: 'Reheat_Valve_Command', src: 'app <b>thermostat</b> @12', id: 'valve' },
+      { obj: 'binary-input:1', name: 'Window contact', v: 'closed', u: '', tag: 'Window_Status', src: 'io <b>di0</b>' },
+    ];
+    if (k === 'r204') {
+      base.push(
+        { obj: 'analog-value:10', name: 'AHU-1 supply temp', v: 16.8, u: '°C', tag: 'Supply_Air_Temperature_Sensor', src: 'link from <b>ahu1-ctl</b> AV3', isNew: !applied },
+        { obj: 'analog-value:20', name: 'CO₂', v: 612, u: 'ppm', tag: 'Zone_Air_CO2_Sensor', src: 'bridge from <b>MQTT</b> r204-co2', isNew: !applied, id: 'co2' },
+      );
+    }
+    return base;
+  }
+
+  function renderHead() {
+    const r = rooms[current];
+    $('#crumb').textContent = `HQ / Floor 2 / ${r.name}`;
+    $('#wtitle').textContent = r.name;
+    const st = r.st === 'ok' ? '<span class="chip ok"><i class="dot ok"></i>Online</span>' : r.st === 'warn' ? '<span class="chip warn"><i class="dot warn"></i>Above setpoint 20 min</span>' : '<span class="chip"><i class="dot off"></i>Offline since 07:58</span>';
+    $('#wmeta').innerHTML = `${st}<span class="chip mono">${r.dev}</span><span class="chip">nucleo_f767zi</span><span class="chip mono">BACnet ${r.inst}</span><span class="chip mono">${r.ip}</span><span class="chip">fw 0.1.0</span>`;
+  }
+
+  /* ---------- workspace tabs ---------- */
+  let tab = 'points';
+  const tabs = ['points', 'logic', 'changes', 'tests', 'trends'];
+  tabs.forEach(t => $('#tab-' + t).onclick = () => { tab = t; renderPane(); });
+
+  const thermoSrc = [
+    ['cm', '/* thermostat.c: PI control of the reheat valve (written by the agent) */'],
+    ['', '<span class="kw">#include</span> <span class="st">"bacnet_uc.h"</span>'],
+    ['', 'UC_APP_DECLARE();'],
+    ['', ''],
+    ['', '<span class="kw">#define</span> AI_TEMP  1   <span class="cm">/* io.json ai0 */</span>'],
+    ['', '<span class="kw">#define</span> AO_VALVE 1   <span class="cm">/* io.json ao0 */</span>'],
+    ['', '<span class="kw">#define</span> AV_SETPT 1'],
+    ['', '<span class="kw">#define</span> PRIO     12  <span class="cm">/* below operator (8) */</span>'],
+    ['', ''],
+    ['', '<span class="kw">static double</span> kp, ki, integ;'],
+    ['', ''],
+    ['', 'UC_EXPORT(uc_app_init) <span class="kw">int32_t</span> uc_app_init(<span class="kw">void</span>)'],
+    ['', '{'],
+    ['', '\tkp = uc_param_num(<span class="st">"kp"</span>, 25.0);'],
+    ['', '\tki = uc_param_num(<span class="st">"ki"</span>, 0.05);'],
+    ['', '\tuc_obj_create_str(UC_OBJ_ANALOG_VALUE, AV_SETPT, <span class="st">"R204 Setpoint"</span>);'],
+    ['', '\t<span class="kw">return</span> uc_pv_write(UC_OBJ_ANALOG_VALUE, AV_SETPT,'],
+    ['', '\t\tuc_param_num(<span class="st">"setpoint"</span>, 21.5), UC_PRIORITY_NONE);'],
+    ['', '}'],
+    ['', ''],
+    ['', 'UC_EXPORT(uc_app_tick) <span class="kw">void</span> uc_app_tick(<span class="kw">uint64_t</span> now_ms)'],
+    ['', '{'],
+    ['', '\t<span class="kw">double</span> t, sp;'],
+    ['', ''],
+    ['', '\t<span class="kw">if</span> (uc_pv_read(UC_OBJ_ANALOG_INPUT, AI_TEMP, &amp;t) &lt; 0 ||'],
+    ['', '\t    uc_pv_read(UC_OBJ_ANALOG_VALUE, AV_SETPT, &amp;sp) &lt; 0)'],
+    ['', '\t\t<span class="kw">return</span>;  <span class="cm">/* hold last output on a sensor fault */</span>'],
+    ['', '\t<span class="kw">double</span> err = sp - t;'],
+    ['', '\tinteg = clamp(integ + ki * err, 0, 100);'],
+    ['', '\tuc_pv_write(UC_OBJ_ANALOG_OUTPUT, AO_VALVE,'],
+    ['', '\t\tclamp(kp * err + integ, 0, 100), PRIO);'],
+    ['', '}'],
+  ];
+  const codeHTML = lines => lines.map((l, i) => `<span class="ln ${l[0] === 'cm' ? '' : ''}${l[2] || ''}" data-n="${i + 1}">${l[0] === 'cm' ? `<span class="cm">${l[1]}</span>` : l[1]}</span>`).join('');
+
+  const diffs = {
+    ctl: [
+      ['', '<span class="cm"># io.json (2 points added)</span>'],
+      ['', '  {"channel": "ai0", "type": "analog-input", "instance": 1, ...},'],
+      ['', '  {"channel": "ao0", "type": "analog-output", "instance": 1, ...},', ''],
+      ['+', '  {"channel": "di0", "type": "binary-input", "instance": 1,', ' add'],
+      ['+', '   "name": "Window contact", "debounce_ms": 200},', ' add'],
+      ['', '<span class="cm"># apps.json</span>'],
+      ['+', '  {"name": "thermostat", "file": "/lfs/apps/thermostat.wasm",', ' add'],
+      ['+', '   "perms": ["bacnet.local"], "period_ms": 1000,', ' add'],
+      ['+', '   "params": {"setpoint": "21.5", "kp": "25", "ki": "0.05"},', ' add'],
+      ['+', '   "sha256": "9f3c…a41e"},', ' add'],
+      ['+', '  {"name": "link", "file": "/lfs/apps/uc-link.wasm",', ' add'],
+      ['+', '   "params": {"count": "1", "l0": "100 2 3 2 10 cov 1000 0 1 0"}}', ' add'],
+    ],
+    gw: [
+      ['', '<span class="cm"># site.yaml · bridges</span>'],
+      ['+', '- from: hq/r204-co2/co2          <span class="cm"># MQTT sensors/r204/co2 $.ppm</span>', ' add'],
+      ['+', '  to: r204-ctl/analog-value:20', ' add'],
+      ['+', '  max_age_s: 120', ' add'],
+      ['', '<span class="cm"># tags</span>'],
+      ['-', 'hq/r204-ctl/analog-input:1: [space:r204]', ' del'],
+      ['+', 'hq/r204-ctl/analog-input:1: [Zone_Air_Temperature_Sensor, space:r204]', ' add'],
+    ],
+  };
+  const diffHTML = lines => lines.map((l, i) => `<span class="ln${l[2] || ''}" data-n="${l[0] || ' '}">${l[1]}</span>`).join('');
+
+  const tests = [
+    { n: 'Valve opens when the room is cold', s: 'force ai0 650 mV (15 °C) → expect AO1 > 50 % within 5 s', sim: 'pass', live: 'pend' },
+    { n: 'Valve closes above setpoint', s: 'force ai0 750 mV (25 °C) → expect AO1 = 0 % within 30 s', sim: 'pass', live: 'pend' },
+    { n: 'AHU supply temp arrives by COV', s: 'write ahu1-ctl AV3 = 18 → expect AV10 ≈ 18 within 3 s', sim: 'pass', live: 'pend' },
+  ];
+  const tstat = s => s === 'pass' ? '<span class="ok-t">Passed</span>' : s === 'run' ? '<span class="warn-t">Running…</span>' : '<span class="mute-t">Not run</span>';
+
+  function trendSVG() {
+    const W = 760, H = 250, L = 44, R = 44, T = 14, B = 30;
+    const n = 121, xs = i => L + (W - L - R) * i / (n - 1);
+    const ty = v => T + (H - T - B) * (1 - (v - 18) / (26 - 18));
+    const vy = v => T + (H - T - B) * (1 - v / 100);
+    let temp = [], valve = [], sp = 21.5, t = 19.2, integ = 0;
+    for (let i = 0; i < n; i++) {
+      const on = i >= 20;
+      const err = sp - t;
+      let out = 0;
+      if (on) { integ = Math.max(0, Math.min(100, integ + 0.9 * err)); out = Math.max(0, Math.min(100, 25 * err + integ)); }
+      t += 0.012 * out / 10 - 0.02 * (t - 19.0) / 3 + Math.sin(i / 6) * 0.01;
+      temp.push(t); valve.push(out);
+    }
+    const path = (arr, fy) => arr.map((v, i) => `${i ? 'L' : 'M'}${xs(i).toFixed(1)},${fy(v).toFixed(1)}`).join('');
+    const area = `M${xs(0)},${vy(0)}` + valve.map((v, i) => `L${xs(i).toFixed(1)},${vy(v).toFixed(1)}`).join('') + `L${xs(n - 1)},${vy(0)}Z`;
+    let g = '';
+    [18, 20, 22, 24, 26].forEach(v => { g += `<line class="grid" x1="${L}" x2="${W - R}" y1="${ty(v)}" y2="${ty(v)}"/><text x="${L - 8}" y="${ty(v) + 3.5}" text-anchor="end">${v}°</text>`; });
+    [0, 50, 100].forEach(v => { g += `<text x="${W - R + 8}" y="${vy(v) + 3.5}">${v}%</text>`; });
+    ['08:00', '08:30', '09:00', '09:30', '10:00'].forEach((lab, i) => { const x = L + (W - L - R) * i / 4; g += `<text x="${x}" y="${H - 10}" text-anchor="middle">${lab}</text>`; });
+    const ex = xs(20);
+    return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Room 204 temperature rises from 19.2 to the 21.5 degree setpoint after the thermostat app starts at 08:20; valve output shown on the right axis.">
+      ${g}<line class="axis" x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}"/>
+      <path class="vla" d="${area}" opacity=".7"/><path class="vl" d="${path(valve, vy)}"/>
+      <line class="sp" x1="${L}" x2="${W - R}" y1="${ty(sp)}" y2="${ty(sp)}"/>
+      <path class="t" d="${path(temp, ty)}"/>
+      <circle cx="${xs(n - 1)}" cy="${ty(temp[n - 1])}" r="4" fill="var(--accent)"/>
+      <line class="ev" x1="${ex}" x2="${ex}" y1="${T}" y2="${H - B}"/><text class="evl" x="${ex + 5}" y="${T + 10}" style="fill:var(--ok)">thermostat started</text>
+    </svg>`;
+  }
+
+  let applied = false;
+  function renderPane() {
+    tabs.forEach(t => $('#tab-' + t).setAttribute('aria-selected', t === tab));
+    const p = $('#pane');
+    if (tab === 'points') {
+      const pts = pointsFor(current);
+      p.innerHTML = `<table class="pts"><thead><tr><th>Object</th><th>Name</th><th style="text-align:right">Value</th><th>Tags</th><th>Source</th></tr></thead><tbody>${
+        pts.map(x => `<tr class="${x.isNew ? 'newrow' : ''}"><td class="obj">${x.obj}</td><td>${esc(x.name)}${x.isNew ? ' <span class="chip ok" style="padding:0 6px;font-size:11px">in plan</span>' : ''}</td><td class="v" ${x.id ? `data-live="${x.id}"` : ''}>${typeof x.v === 'number' ? x.v.toFixed(x.u === 'ppm' || x.u === '%' ? 0 : 1) : x.v} <span style="color:var(--ink-3)">${x.u}</span></td><td><span class="tag">${x.tag}</span></td><td class="src">${x.src}</td></tr>`).join('')
+      }</tbody></table>`;
+    } else if (tab === 'logic') {
+      p.innerHTML = `<div class="logic"><pre class="code">${codeHTML(thermoSrc)}</pre>
+        <div style="display:grid;gap:10px">
+          <div class="side-card"><h4>Build</h4><dl class="kv"><dt>target</dt><dd>wasm32, ABI 1.0</dd><dt>size</dt><dd>3.1 KB</dd><dt>warnings</dt><dd>0</dd><dt>perms</dt><dd>bacnet.local</dd></dl></div>
+          <div class="side-card"><h4>Unit tests · native stubs</h4><ul class="checks">
+            <li><span class="ok-t">✓</span>cold room opens valve</li><li><span class="ok-t">✓</span>warm room closes valve</li>
+            <li><span class="ok-t">✓</span>integrator clamps at 100 %</li><li><span class="ok-t">✓</span>sensor fault holds output</li>
+            <li><span class="ok-t">✓</span>setpoint write takes effect</li><li><span class="ok-t">✓</span>writes use priority 12</li></ul></div>
+          <div class="side-card"><h4>Simulation</h4><div>native_sim · 3 of 3 manifest tests passed</div></div>
+        </div></div>`;
+    } else if (tab === 'changes') {
+      if (applied) {
+        p.innerHTML = `<div class="plan"><div class="plan-head"><h3>No pending changes</h3><span class="chip ok">Revision 17 live</span></div><p class="rollback">Plan #17 was applied at 10:04 and approved by you. Roll back by applying revision 16.</p></div>`;
+      } else {
+        p.innerHTML = `<div class="plan"><div class="plan-head"><h3>Plan #17 · draft revision 17</h3><span class="chip ok">Simulation: 3 of 3 tests passed</span><span class="chip crit"><i class="tier C">C</i>Needs approval</span></div>
+          <div class="target"><header><b>r204-ctl</b>BACnet-uc · 10.0.2.51<span class="chip">2 uploads · reload io, apps</span></header><pre class="code">${diffHTML(diffs.ctl)}</pre></div>
+          <div class="target"><header><b>uc-hub gateway</b>bridge + tags<span class="chip">1 bridge · 1 tag change</span></header><pre class="code">${diffHTML(diffs.gw)}</pre></div>
+          <p class="rollback">Rollback: apply revision 16. It removes both apps and the bridge, and restores io.json from the node backup taken before upload.</p></div>`;
+      }
+    } else if (tab === 'tests') {
+      p.innerHTML = `<div class="tests"><div class="thdr"><span>Acceptance test</span><span>Simulation</span><span>Live site</span></div>${
+        tests.map(t => `<div class="trow"><div><div>${t.n}</div><div class="steps">${t.s}</div></div><div>${tstat(t.sim)}</div><div>${tstat(t.live)}</div></div>`).join('')}</div>`;
+    } else {
+      p.innerHTML = `<div class="trend"><p class="label" style="margin-bottom:6px">Room 204 · last 2 hours (example data)</p>${trendSVG()}
+        <div class="tlegend"><span><i style="border-color:var(--accent)"></i>Zone temperature</span><span><i style="border-color:var(--ink-2);border-top-style:dashed"></i>Setpoint 21.5 °C</span><span><i style="border-color:var(--tier-l)"></i>Valve (right axis)</span></div></div>`;
+    }
+  }
+
+  /* ---------- live value ticker ---------- */
+  setInterval(() => {
+    if (reduce) return;
+    const r = rooms[current];
+    const cells = $$('#pane [data-live]');
+    cells.forEach(c => {
+      const k = c.dataset.live;
+      let txt;
+      if (k === 'temp') { r.t = +(r.t + (Math.random() - .5) * .1).toFixed(1); txt = `${r.t.toFixed(1)} <span style="color:var(--ink-3)">°C</span>`; }
+      else if (k === 'co2') { txt = `${Math.round(600 + Math.random() * 30)} <span style="color:var(--ink-3)">ppm</span>`; }
+      else return;
+      c.innerHTML = txt; c.classList.remove('flash'); void c.offsetWidth; c.classList.add('flash');
+    });
+  }, 2500);
+
+  /* ---------- agent stream ---------- */
+  const stream = $('#stream');
+  const tool = (tier, fn, arg, res, dur) => `<div class="tool"><i class="tier ${tier}">${tier}</i><span class="fn">${fn} <span class="arg">${esc(arg)}</span></span><span class="dur">${dur}</span><div class="res">${res}</div></div>`;
+  const initialHTML = () => `
+    <div class="msg-user">Commission room 204: map the board's IO, run a thermostat at 21.5 °C, link the AHU-1 supply temperature, bring in the CO₂ sensor from MQTT, and write acceptance tests.</div>
+    <button type="button" class="think" id="think" aria-expanded="false">▸ Reasoned for 14 s</button>
+    <p class="think-body" id="thinkbody" hidden>r204-ctl is new and has no io.json yet. The window contact is on di0, the valve on ao0. AHU-1 is a third-party BACnet/IP device, so the link runs as uc-link on r204-ctl, subscribed by COV to AV3. The CO₂ sensor only speaks MQTT, so it needs a gateway bridge. Write at priority 12, below the operator.</p>
+    <div class="toolgroup">
+      ${tool('R', 'site_search', 'space:r204', '1 new BACnet-uc node (r204-ctl), 1 MQTT sensor (r204-co2)', '0.2 s')}
+      ${tool('R', 'device_describe', 'r204-ctl', 'nucleo_f767zi, 4 IO channels, no apps', '0.4 s')}
+      ${tool('R', 'device_describe', 'ahu1-ctl', 'AV3 "Supply Air Temp", COV supported', '0.6 s')}
+      ${tool('S', 'manifest_edit', '7 JSON-patch ops', 'Draft is valid against site.schema.json', '0.1 s')}
+      ${tool('S', 'logic_write', 'thermostat.c', '41 lines', '0.0 s')}
+      ${tool('S', 'logic_build', 'thermostat', '3.1 KB, 0 warnings', '1.8 s')}
+      ${tool('S', 'logic_unit_test', '6 cases', '<span class="ok-t">6 of 6 passed</span>', '0.9 s')}
+      ${tool('S', 'sim_test', 'native_sim × 2', '<span class="ok-t">3 of 3 tests passed</span>', '21 s')}
+      ${tool('S', 'plan', 'draft 17', '3 changes on 2 targets', '0.7 s')}
+    </div>
+    <div class="msg-ai"><p>The plan is ready. It maps the window contact, deploys <span class="mono">thermostat</span> with only the <span class="mono">bacnet.local</span> permission, links AHU-1 supply temperature by COV, and bridges the CO₂ sensor from MQTT. All three acceptance tests passed in simulation.</p></div>
+    <div class="appr" id="appr">
+      <h4><i class="tier C">C</i>Apply plan #17</h4>
+      <ul><li><span class="mono">r204-ctl</span>: io.json +1 point, 2 apps</li><li>Gateway: 1 MQTT → BACnet bridge, 1 tag change</li><li>Then run 3 acceptance tests on the live site</li></ul>
+      <div class="rollback">Rollback: revision 16 · expires in 30 min</div>
+      <div class="row"><button type="button" class="btn primary" id="approve">Approve and apply</button><button type="button" class="btn" id="review">Review diff</button><button type="button" class="btn danger" id="reject">Reject</button></div>
+    </div>`;
+
+  function setRun(kind, text) {
+    const rs = $('#runstate');
+    rs.className = 'chip ' + kind;
+    rs.innerHTML = `<i class="dot ${kind === 'acc' ? 'ok' : kind}"></i>${text}`;
+  }
+
+  function wireStream() {
+    $('#think').onclick = e => { const b = $('#thinkbody'); b.hidden = !b.hidden; e.currentTarget.setAttribute('aria-expanded', !b.hidden); e.currentTarget.textContent = (b.hidden ? '▸' : '▾') + ' Reasoned for 14 s'; };
+    $('#review').onclick = () => { tab = 'changes'; renderPane(); };
+    $('#reject').onclick = () => {
+      const a = $('#appr'); a.classList.add('rejected');
+      a.querySelector('.row').innerHTML = '<span class="mute-t">Rejected by you. Tell the agent what to change.</span>';
+      setRun('', 'Idle'); $('#ask').focus();
+    };
+    $('#approve').onclick = approve;
+  }
+
+  async function approve() {
+    const a = $('#appr'); a.classList.add('decided');
+    a.querySelector('.row').innerHTML = '<span class="done">Approved by you · 10:03</span>';
+    setRun('acc', 'Applying');
+    const steps = [
+      ['C', 'apply', 'r204-ctl · stage 1 of 2', 'Uploaded 2 files, sha256 verified, reload io, apps: OK', '3.2 s'],
+      ['C', 'apply', 'gateway · stage 2 of 2', 'Bridge running, first value 612 ppm', '0.3 s'],
+      ['L', 'test_run', '3 tests · live', '<span class="ok-t">3 of 3 passed</span> · forces released', '38 s'],
+    ];
+    for (let i = 0; i < steps.length; i++) {
+      const s = steps[i];
+      const el = document.createElement('div');
+      el.className = 'tool running appear';
+      el.innerHTML = `<i class="tier ${s[0]}">${s[0]}</i><span class="fn">${s[1]} <span class="arg">${esc(s[2])}</span></span><span class="dur"></span><div class="res mute-t">Running…</div>`;
+      stream.appendChild(el); stream.scrollTop = stream.scrollHeight;
+      if (i === 2) { tests.forEach(t => t.live = 'run'); if (tab === 'tests') renderPane(); }
+      await wait(900 + i * 400);
+      el.classList.remove('running');
+      el.querySelector('.dur').textContent = s[4];
+      el.querySelector('.res').className = 'res'; el.querySelector('.res').innerHTML = s[3];
+      if (i === 2) { tests.forEach(t => t.live = 'pass'); }
+    }
+    applied = true;
+    rooms.r204.isNew = false; treeSpec.forEach(n => { if (n.key === 'r204') n.badge = ''; });
+    const b = $('#chg-badge'); b.textContent = '0'; b.classList.add('zero');
+    const m = document.createElement('div'); m.className = 'msg-ai appear';
+    m.innerHTML = '<p>Room 204 is commissioned. All 3 acceptance tests passed on the real board, and every force was released. I added the results to the handover report.</p>';
+    stream.appendChild(m); stream.scrollTop = stream.scrollHeight;
+    setRun('ok', 'Done');
+    renderTree(); renderPane();
+  }
+
+  function resetDesk() {
+    applied = false; rooms.r204.isNew = true;
+    treeSpec.forEach(n => { if (n.key === 'r204') n.badge = 'new'; });
+    tests.forEach(t => t.live = 'pend');
+    const b = $('#chg-badge'); b.textContent = '3'; b.classList.remove('zero');
+    stream.innerHTML = initialHTML(); wireStream(); setRun('warn', 'Waiting for approval');
+    current = 'r204'; tab = 'points'; renderTree(); renderHead(); renderPane();
+    stream.scrollTop = stream.scrollHeight;
+  }
+  $('#restart').onclick = resetDesk;
+
+  function sendDesk(text) {
+    if (!text.trim()) return;
+    const u = document.createElement('div'); u.className = 'msg-user appear'; u.textContent = text; stream.appendChild(u);
+    const r = document.createElement('div'); r.className = 'msg-ai appear';
+    r.innerHTML = '<p class="mute-t">This mock only plays the room 204 scenario. In the real console the agent would start a new run here.</p>';
+    stream.appendChild(r); stream.scrollTop = stream.scrollHeight;
+  }
+  $('#send').onclick = () => { const t = $('#ask'); sendDesk(t.value); t.value = ''; };
+  $('#ask').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#send').click(); } });
+  $$('[data-prompt]').forEach(b => b.onclick = () => { $('#ask').value = b.dataset.prompt; $('#ask').focus(); });
+
+  /* ---------- phone ---------- */
+  const checks = [
+    { ch: 'ao0', name: 'Reheat valve', act: 'Forcing the reheat valve (ao0) to 100 % for 60 s.', q: 'Is the room 204 valve fully open?', st: 'pass' },
+    { ch: 'do0', name: 'Heater relay', act: 'Forcing the heater relay (do0) on for 60 s.', q: 'Did the relay click and is the heater on?', st: 'todo' },
+    { ch: 'di0', name: 'Window contact', act: 'Watching the window contact (di0). It reads closed now.', q: 'Open the window. Did the value change to open?', st: 'todo' },
+    { ch: 'ai0', name: 'Room temperature', act: 'ai0 reads 22.4 °C. Your reference thermometer should be within ±0.5 °C.', q: 'Does your reference read 21.9–22.9 °C?', st: 'todo' },
+  ];
+  let step = 1, ptab = 'agent', held = false;
+  const stLabel = s => s === 'pass' ? '<span class="st ok-t">Passed</span>' : s === 'fail' ? '<span class="st crit-t">Failed</span>' : s === 'skip' ? '<span class="st warn-t">Skipped</span>' : s === 'now' ? '<span class="st" style="color:var(--accent)">Now</span>' : '<span class="st mute-t">Next</span>';
+  const stIcon = s => s === 'pass' ? '<span class="ok-t">✓</span>' : s === 'fail' ? '<span class="crit-t">✕</span>' : s === 'skip' ? '<span class="warn-t">–</span>' : '<i class="dot off"></i>';
+
+  function pAgent() {
+    const done = checks.filter(c => c.st !== 'todo' && c.st !== 'now').length;
+    const cur = checks[step];
+    let html = `<div class="runcard"><div class="top"><b>IO checkout · r204-ctl</b><span>${done} of ${checks.length}</span></div><div class="bar"><i style="width:${done / checks.length * 100}%"></i></div>
+      <ul class="clist">${checks.map((c, i) => `<li>${stIcon(i === step && c.st === 'todo' ? 'now' : c.st)}<span>${c.name} <span class="mono mute-t">${c.ch}</span></span>${stLabel(i === step && c.st === 'todo' ? 'now' : c.st)}</li>`).join('')}</ul></div>`;
+    if (cur) {
+      const tier = cur.ch.startsWith('d') && cur.ch !== 'do0' || cur.ch === 'ai0' ? 'R' : 'L';
+      html += `<div class="msg-ai">${cur.act}</div>
+        ${tool(tier, tier === 'L' ? 'io_force' : 'point_read', `r204-ctl ${cur.ch}${tier === 'L' ? ' · lease 60 s' : ''}`, tier === 'L' ? 'Forced · auto-release at 09:42:31' : 'Reading live', '0.3 s')}
+        <div class="ask"><p>${cur.q}</p><div class="opts"><button type="button" class="yes" data-a="pass">Yes</button><button type="button" data-a="fail">No</button><button type="button" data-a="skip">Skip</button></div></div>`;
+    } else {
+      const f = checks.filter(c => c.st === 'fail').length, s = checks.filter(c => c.st === 'skip').length;
+      html += `<div class="msg-ai"><p>Checkout finished: ${checks.filter(c => c.st === 'pass').length} passed${f ? `, ${f} failed` : ''}${s ? `, ${s} skipped` : ''}. All forces are released. The checkout sheet is in the handover report.</p></div>
+        <button type="button" class="btn" id="p-again">Run the checkout again</button>`;
+    }
+    return html;
+  }
+  function pSite() {
+    return `<p class="label" style="margin:0">Floor 2 · 5 rooms</p>` + Object.entries(rooms).map(([k, r]) => `<div class="room"><b>${r.name}</b><span class="big" style="${r.st === 'warn' ? 'color:var(--warn)' : ''}">${r.st === 'off' ? '—' : r.t.toFixed(1) + '°'}</span><span class="s"><i class="dot ${r.st}"></i>${r.st === 'off' ? 'Offline since 07:58' : r.st === 'warn' ? `Above ${r.sp}° for 20 min` : `Setpoint ${r.sp}°`}</span></div>`).join('')
+      + `<div class="room"><b>AHU-1</b><span class="big">16.8°</span><span class="s"><i class="dot ok"></i>Supply air · BACnet/IP</span></div>`;
+  }
+  function pChanges() {
+    return `<div class="sheet"><h4><i class="tier C">C</i>Apply plan #17</h4>
+      <ul class="tl"><li><i class="dot ok"></i><span>r204-ctl</span><small>io.json +1 point · thermostat, link apps</small></li>
+      <li><i class="dot ok"></i><span>Gateway</span><small>CO₂ bridge from MQTT · 1 tag change</small></li>
+      <li><i class="dot ok"></i><span>Simulation</span><small>3 of 3 acceptance tests passed</small></li></ul>
+      <button type="button" class="btn">Show full diff</button>
+      <button type="button" class="hold${held ? ' done' : ''}" id="hold">${held ? 'Applied · tests running on site' : '<i></i>Hold to apply'}</button>
+      ${held ? '' : '<button type="button" class="btn danger">Reject</button>'}
+    </div><p class="mute-t" style="font-size:12.5px;margin:0">Requested by the agent at 09:31 for Commissioner. Expires in 30 min.</p>`;
+  }
+  function pField() {
+    return `<div class="viewfinder" aria-label="Camera preview placeholder"><span>Point the camera at the QR label</span></div>
+      <div class="board"><span class="led" id="led"></span><div><b>r204-ctl</b><div class="mute-t" style="font-size:12px">Last scanned · nucleo_f767zi · 10.0.2.51</div></div></div>
+      <div class="fgrid"><button type="button" class="fbtn" id="identify"><b>Identify</b><small>Blink the board LED for 30 s</small></button>
+      <button type="button" class="fbtn" id="nameplate"><b>Read nameplate</b><small>Photo → glm-5.3-flash</small></button></div>
+      <div id="np"></div>`;
+  }
+
+  function renderPhone() {
+    $$('.pnav button').forEach(b => b.setAttribute('aria-selected', b.dataset.p === ptab));
+    const titles = { agent: ['IO checkout', 'HQ · Floor 2 · r204-ctl'], site: ['Floor 2', 'HQ · 7 devices'], changes: ['Approvals', '1 waiting'], field: ['Field', 'Scan, identify, read labels'] };
+    $('#p-title').textContent = titles[ptab][0]; $('#p-sub').textContent = titles[ptab][1];
+    $('#pcomp').hidden = ptab !== 'agent';
+    const v = $('#pview');
+    v.innerHTML = ptab === 'agent' ? pAgent() : ptab === 'site' ? pSite() : ptab === 'changes' ? pChanges() : pField();
+    if (ptab === 'agent') {
+      $$('.ask [data-a]', v).forEach(b => b.onclick = () => { checks[step].st = b.dataset.a; step++; renderPhone(); v.scrollTop = v.scrollHeight; });
+      const ag = $('#p-again'); if (ag) ag.onclick = () => { checks.forEach((c, i) => c.st = i === 0 ? 'pass' : 'todo'); step = 1; renderPhone(); };
+    }
+    if (ptab === 'changes' && !held) wireHold();
+    if (ptab === 'field') {
+      $('#identify').onclick = () => { const l = $('#led'); l.classList.add('blink'); $('#identify small').textContent = 'Blinking now · 30 s'; setTimeout(() => { l.classList.remove('blink'); const s = $('#identify small'); if (s) s.textContent = 'Blink the board LED for 30 s'; }, reduce ? 3000 : 30000); };
+      $('#nameplate').onclick = () => {
+        $('#np').innerHTML = `<div class="runcard appear"><div class="top"><b>Nameplate read</b><span>example</span></div>
+          <dl class="kv"><dt>Device</dt><dd>Actuator, modulating</dd><dt>Model</dt><dd>LM24A-SR</dd><dt>Signal</dt><dd>2–10 V DC</dd><dt>Supply</dt><dd>24 V AC/DC</dd></dl>
+          <div class="mute-t" style="font-size:12.5px">The agent suggests io.json ao0 with scale for 2–10 V. Review it on the Agent tab.</div></div>`;
+      };
+    }
+  }
+  function wireHold() {
+    const h = $('#hold'); if (!h) return;
+    const bar = h.querySelector('i');
+    let t0 = 0, raf = 0;
+    const DUR = 1500;
+    const tick = now => {
+      const p = Math.min(1, (now - t0) / DUR);
+      bar.style.width = (p * 100) + '%';
+      if (p >= 1) { held = true; $('#p-badge').textContent = '0'; $('#p-badge').classList.add('zero'); renderPhone(); return; }
+      raf = requestAnimationFrame(tick);
+    };
+    const start = e => { e.preventDefault(); t0 = performance.now(); raf = requestAnimationFrame(tick); h.firstChild && (h.lastChild.textContent = 'Keep holding…'); };
+    const stop = () => { cancelAnimationFrame(raf); if (!held) { bar.style.width = '0'; h.lastChild.textContent = 'Hold to apply'; } };
+    h.addEventListener('pointerdown', start);
+    ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => h.addEventListener(ev, stop));
+    h.addEventListener('keydown', e => { if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) start(e); });
+    h.addEventListener('keyup', e => { if (e.key === ' ' || e.key === 'Enter') stop(); });
+  }
+  $$('.pnav button').forEach(b => b.onclick = () => { ptab = b.dataset.p; renderPhone(); });
+
+  /* ---------- boot ---------- */
+  resetDesk();
+  renderPhone();
+  let v0 = 'both';
+  try { v0 = localStorage.getItem('uchub-view') || (innerWidth < 700 ? 'phone' : 'both'); } catch (e) { v0 = innerWidth < 700 ? 'phone' : 'both'; }
+  setView(v0);
+  requestAnimationFrame(scaleDesk);
+})();
+</script>
+</body></html>
