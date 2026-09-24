@@ -1,0 +1,21 @@
+sample:
+  description: MQTT 3.1.1 client over TLS 1.2 on wired Ethernet
+  name: MQTT over Ethernet + TLS
+common:
+  build_only: true
+  tags:
+    - net
+    - mqtt
+    - tls
+tests:
+  app.mqtt_tls:
+    platform_allow:
+      - nucleo_h563zi
+      - native_sim/native/64
+    integration_platforms:
+      - nucleo_h563zi
+  app.mqtt_tls.plain:
+    platform_allow:
+      - nucleo_h563zi
+    extra_configs:
+      - CONFIG_MQTT_LIB_TLS=n
