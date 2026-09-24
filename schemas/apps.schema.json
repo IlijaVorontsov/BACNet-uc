@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bacnet-uc.local/schemas/apps.schema.json",
+  "title": "BACnet-uc installed applications (/lfs/cfg/apps.json)",
+  "description": "Written by the firmware on 'uc_app install/remove'; may also be uploaded directly followed by 'uc_node reload apps'.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "apps"],
+  "properties": {
+    "schema": {"const": 1},
+    "apps": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {"$ref": "#/$defs/app"}
+    }
+  },
+  "$defs": {
+    "app": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "file"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z0-9_-]{1,23}$"},
+        "file": {"type": "string", "pattern": "^/lfs/apps/[A-Za-z0-9_.-]{1,40}\\.(wasm|aot)$"},
+        "autostart": {"type": "boolean", "default": true},
+        "period_ms": {"type": "integer", "minimum": 0, "maximum": 3600000, "default": 1000},
+        "heap_kb": {"type": "integer", "minimum": 0, "maximum": 256, "default": 8},
+        "stack_kb": {"type": "integer", "minimum": 1, "maximum": 64, "default": 4},
+        "perms": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"enum": ["bacnet.local", "bacnet.remote", "io", "kv"]}
+        },
+        "params": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "value"],
+            "properties": {
+              "key": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,23}$"},
+              "value": {"type": "string", "maxLength": 95}
+            }
+          }
+        },
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

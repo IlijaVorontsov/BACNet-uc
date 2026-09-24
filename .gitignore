@@ -1,0 +1,19 @@
+# build outputs
+build/
+build-*/
+twister-out*/
+wasm/build/
+*.wasm
+*.aot
+!wasm/**/testdata/*.wasm
+# python
+__pycache__/
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+# harness state
+.bacnet-uc/
+# native_sim flash images
+flash.bin
+*.flash.bin

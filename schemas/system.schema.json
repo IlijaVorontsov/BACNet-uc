@@ -1,0 +1,447 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bacnet-uc.local/schemas/system.schema.json",
+  "title": "BACnet-uc distributed system manifest",
+  "description": "Desired state of a distributed BACnet application: nodes (boards + identity + IO mapping), WebAssembly applications placed on nodes, declarative point-to-point links and acceptance tests. The MCP harness validates, plans (diff against the live nodes) and applies it. String values may reference other manifest values with {{ nodes.<name>.device.instance }} style placeholders.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "nodes"
+  ],
+  "properties": {
+    "apiVersion": {
+      "const": "bacnet-uc/v1"
+    },
+    "kind": {
+      "const": "System"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "apps": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/app"
+      }
+    },
+    "links": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/link"
+      }
+    },
+    "tests": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/test"
+      }
+    }
+  },
+  "$defs": {
+    "objectRef": {
+      "description": "BACnet object as '<type-name>:<instance>', e.g. analog-input:1",
+      "type": "string",
+      "pattern": "^[a-z-]+:[0-9]+$"
+    },
+    "pointRef": {
+      "description": "'<node>/<type-name>:<instance>'",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*/[a-z-]+:[0-9]+$"
+    },
+    "transport": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "host"
+          ],
+          "properties": {
+            "kind": {
+              "const": "udp"
+            },
+            "host": {
+              "type": "string"
+            },
+            "port": {
+              "type": "integer",
+              "default": 1337
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "device"
+          ],
+          "properties": {
+            "kind": {
+              "const": "serial"
+            },
+            "device": {
+              "type": "string"
+            },
+            "baud": {
+              "type": "integer",
+              "default": 115200
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "sim"
+            },
+            "ipv4": {
+              "type": "string",
+              "format": "ipv4",
+              "description": "Address inside the simulation network; allocated when omitted."
+            }
+          }
+        }
+      ]
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "board",
+        "transport",
+        "device"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,30}$"
+        },
+        "board": {
+          "enum": [
+            "nucleo_f767zi",
+            "frdm_mcxn947/mcxn947/cpu0",
+            "native_sim",
+            "native_sim/native/64"
+          ]
+        },
+        "transport": {
+          "$ref": "#/$defs/transport"
+        },
+        "bacnet_address": {
+          "type": "string",
+          "description": "host[:port] for BACnet/IP; defaults to the transport host and 47808."
+        },
+        "device": {
+          "$ref": "device.schema.json#/properties/device"
+        },
+        "network": {
+          "$ref": "device.schema.json#/properties/network"
+        },
+        "bacnet": {
+          "$ref": "device.schema.json#/properties/bacnet"
+        },
+        "io": {
+          "type": "array",
+          "items": {
+            "$ref": "io.schema.json#/$defs/point"
+          }
+        }
+      }
+    },
+    "app": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "node"
+      ],
+      "oneOf": [
+        {
+          "required": [
+            "source"
+          ]
+        },
+        {
+          "required": [
+            "wasm"
+          ]
+        }
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9_-]{1,23}$"
+        },
+        "node": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string",
+          "description": "C source file relative to the manifest; compiled with the BACnet-uc WASM SDK."
+        },
+        "wasm": {
+          "type": "string",
+          "description": "Prebuilt .wasm relative to the manifest."
+        },
+        "aot": {
+          "type": "boolean",
+          "default": false
+        },
+        "autostart": {
+          "type": "boolean",
+          "default": true
+        },
+        "period_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 1000
+        },
+        "heap_kb": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 8
+        },
+        "stack_kb": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 4
+        },
+        "perms": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "bacnet.local",
+              "bacnet.remote",
+              "io",
+              "kv"
+            ]
+          }
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          }
+        }
+      }
+    },
+    "link": {
+      "description": "Copy a point's present value to another point. Realised by the stock 'uc-link' application running on the destination node.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to"
+      ],
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/pointRef"
+        },
+        "to": {
+          "$ref": "#/$defs/pointRef"
+        },
+        "mode": {
+          "enum": [
+            "cov",
+            "poll"
+          ],
+          "default": "cov"
+        },
+        "period_ms": {
+          "type": "integer",
+          "minimum": 100,
+          "default": 1000,
+          "description": "Poll period, or COV fallback poll period."
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16,
+          "default": 0
+        },
+        "scale": {
+          "type": "number",
+          "default": 1.0
+        },
+        "offset": {
+          "type": "number",
+          "default": 0.0
+        }
+      }
+    },
+    "test": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "steps"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "minProperties": 1,
+            "maxProperties": 1,
+            "properties": {
+              "force": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "node",
+                  "channel",
+                  "value"
+                ],
+                "properties": {
+                  "node": {
+                    "type": "string"
+                  },
+                  "channel": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "number"
+                  }
+                }
+              },
+              "release": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "node",
+                  "channel"
+                ],
+                "properties": {
+                  "node": {
+                    "type": "string"
+                  },
+                  "channel": {
+                    "type": "string"
+                  }
+                }
+              },
+              "write": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "point",
+                  "value"
+                ],
+                "properties": {
+                  "point": {
+                    "$ref": "#/$defs/pointRef"
+                  },
+                  "property": {
+                    "type": "string",
+                    "default": "present-value"
+                  },
+                  "value": {
+                    "type": [
+                      "number",
+                      "boolean",
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "priority": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 16
+                  }
+                }
+              },
+              "wait": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "milliseconds"
+              },
+              "expect": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "point",
+                  "op",
+                  "value"
+                ],
+                "properties": {
+                  "point": {
+                    "$ref": "#/$defs/pointRef"
+                  },
+                  "property": {
+                    "type": "string",
+                    "default": "present-value"
+                  },
+                  "op": {
+                    "enum": [
+                      "eq",
+                      "ne",
+                      "gt",
+                      "ge",
+                      "lt",
+                      "le",
+                      "approx"
+                    ]
+                  },
+                  "value": {
+                    "type": [
+                      "number",
+                      "boolean",
+                      "string"
+                    ]
+                  },
+                  "tolerance": {
+                    "type": "number",
+                    "default": 0.01
+                  },
+                  "within_ms": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 0,
+                    "description": "Retry until true or this much time has passed."
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

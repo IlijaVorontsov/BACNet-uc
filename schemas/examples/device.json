@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "device": {"instance": 1001, "name": "uc-sensor", "description": "Room sensor node", "location": "Lab 1"},
+  "network": {"dhcp": false, "ipv4": "192.168.10.51", "netmask": "255.255.255.0", "gateway": "192.168.10.1"},
+  "bacnet": {
+    "udp_port": 47808,
+    "apdu_timeout_ms": 3000,
+    "apdu_retries": 3,
+    "static_bindings": [{"device": 1002, "address": "192.168.10.52", "port": 47808}]
+  },
+  "log": {"level": "inf"}
+}

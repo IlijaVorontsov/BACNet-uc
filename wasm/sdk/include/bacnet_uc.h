@@ -1,0 +1,355 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * bacnet_uc.h - guest-side API for BACnet-uc WebAssembly applications.
+ *
+ * This header is the ABI contract between a WebAssembly application and the
+ * BACnet-uc firmware (src/apps/app_host_api.c). Every function declared with
+ * UC_IMPORT is resolved by the host from the import module "bacnet_uc".
+ * Every function the application defines with UC_EXPORT is looked up by the
+ * host by name; all of them are optional except uc_app_api_version, which
+ * UC_APP_DECLARE() provides.
+ *
+ * Build (see wasm/sdk/cmake and wasm/sdk/Makefile.inc for the full recipe):
+ *   clang --target=wasm32 -O2 -nostdlib -I<sdk>/include \
+ *     -Wl,--no-entry -Wl,--allow-undefined -Wl,--strip-debug \
+ *     -Wl,--export=__heap_base -Wl,--export=__data_end \
+ *     -Wl,-z,stack-size=4096 -Wl,--initial-memory=65536 \
+ *     -o app.wasm app.c
+ *
+ * Execution model
+ *   - Each application instance runs in its own firmware thread. Host calls
+ *     into the application are never concurrent for one instance.
+ *   - uc_app_init() runs once after instantiation, then uc_app_tick() runs
+ *     every period_ms (from the app manifest, changeable at run time with
+ *     uc_set_tick_period()). Events (uc_app_on_cov, uc_app_on_write) are
+ *     delivered between ticks, in arrival order.
+ *   - Host functions may block the calling application thread (remote
+ *     BACnet requests wait for the confirmation up to timeout_ms). They never
+ *     block other applications or the BACnet stack.
+ *   - A callback that runs longer than the configured watchdog
+ *     (CONFIG_UC_APP_WATCHDOG_MS) terminates the instance.
+ *
+ * Values
+ *   Numeric property values cross the ABI as double. The host converts to
+ *   and from the property's BACnet datatype:
+ *     REAL, DOUBLE                  <-> value
+ *     UNSIGNED, SIGNED, ENUMERATED  <-> value (truncated toward zero on write)
+ *     BOOLEAN                       <-> 0.0 / 1.0
+ *     binary PV (BI/BO/BV)          <-> 0.0 inactive / 1.0 active
+ *   Other datatypes return UC_ERR_TYPE.
+ *
+ * Errors
+ *   Functions returning int32_t return >= 0 on success and a negative
+ *   UC_ERR_* code on failure.
+ */
+#ifndef BACNET_UC_H
+#define BACNET_UC_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/** ABI version. Major in the upper 16 bits, minor in the lower 16 bits. The
+ *  host refuses to start an application whose major differs from its own. */
+#define UC_API_VERSION_MAJOR 1
+#define UC_API_VERSION_MINOR 0
+#define UC_API_VERSION ((UC_API_VERSION_MAJOR << 16) | UC_API_VERSION_MINOR)
+
+#if defined(__wasm__)
+#define UC_IMPORT(name) \
+	__attribute__((import_module("bacnet_uc"), import_name(#name)))
+#define UC_EXPORT(name) __attribute__((export_name(#name), used))
+#else
+/* Allows host-side unit tests of application logic with a native stub. */
+#define UC_IMPORT(name)
+#define UC_EXPORT(name)
+#endif
+
+/* ---------------------------------------------------------------------- */
+/* Error codes                                                             */
+/* ---------------------------------------------------------------------- */
+#define UC_OK              0
+#define UC_ERR_INVALID    -1 /**< bad argument, bad pointer, bad length */
+#define UC_ERR_NOT_FOUND  -2 /**< object, property, channel, key missing */
+#define UC_ERR_PERM       -3 /**< permission not granted in the manifest */
+#define UC_ERR_TIMEOUT    -4 /**< no confirmation within timeout_ms */
+#define UC_ERR_BUSY       -5 /**< out of transaction slots, retry later */
+#define UC_ERR_NO_MEM     -6 /**< host could not allocate */
+#define UC_ERR_BACNET     -7 /**< remote BACnet Error/Reject/Abort PDU */
+#define UC_ERR_UNSUPPORTED -8 /**< feature not built into this firmware */
+#define UC_ERR_IO         -9 /**< hardware or file system error */
+#define UC_ERR_TYPE      -10 /**< property datatype not representable */
+#define UC_ERR_EXISTS    -11 /**< object already exists */
+#define UC_ERR_NO_ROUTE  -12 /**< remote device could not be bound */
+
+/* ---------------------------------------------------------------------- */
+/* Constants                                                               */
+/* ---------------------------------------------------------------------- */
+/** array_index value meaning "not an array access" (BACNET_ARRAY_ALL). */
+#define UC_ARRAY_ALL (-1)
+/** priority value for writes without a priority (non-commandable). */
+#define UC_PRIORITY_NONE 0
+/** device argument for uc_cov_subscribe() meaning "this device". */
+#define UC_DEVICE_LOCAL 0xFFFFFFFFu
+
+/* Log levels (match Zephyr LOG_LEVEL_*). */
+#define UC_LOG_ERR 1
+#define UC_LOG_WRN 2
+#define UC_LOG_INF 3
+#define UC_LOG_DBG 4
+
+/* BACnet object types (subset, ASHRAE 135 values). */
+#define UC_OBJ_ANALOG_INPUT       0u
+#define UC_OBJ_ANALOG_OUTPUT      1u
+#define UC_OBJ_ANALOG_VALUE       2u
+#define UC_OBJ_BINARY_INPUT       3u
+#define UC_OBJ_BINARY_OUTPUT      4u
+#define UC_OBJ_BINARY_VALUE       5u
+#define UC_OBJ_DEVICE             8u
+#define UC_OBJ_MULTI_STATE_INPUT  13u
+#define UC_OBJ_MULTI_STATE_OUTPUT 14u
+#define UC_OBJ_MULTI_STATE_VALUE  19u
+
+/* BACnet property identifiers (subset). */
+#define UC_PROP_DESCRIPTION     28u
+#define UC_PROP_OBJECT_NAME     77u
+#define UC_PROP_OUT_OF_SERVICE  81u
+#define UC_PROP_PRESENT_VALUE   85u
+#define UC_PROP_RELINQUISH_DEFAULT 104u
+#define UC_PROP_STATUS_FLAGS    111u
+#define UC_PROP_UNITS           117u
+#define UC_PROP_COV_INCREMENT   22u
+#define UC_PROP_NUMBER_OF_STATES 74u
+
+/* ---------------------------------------------------------------------- */
+/* Host imports: logging, time, scheduling                                 */
+/* ---------------------------------------------------------------------- */
+/** Emit a log line through the firmware logging subsystem (tagged with the
+ *  application name; ends up on the console, in /lfs/log and in syslog). */
+UC_IMPORT(uc_log)
+void uc_log(int32_t level, const char *msg, uint32_t len);
+
+/** Milliseconds since boot. */
+UC_IMPORT(uc_uptime_ms)
+uint64_t uc_uptime_ms(void);
+
+/** Change the tick period. 0 disables ticks (events only). Min 10 ms. */
+UC_IMPORT(uc_set_tick_period)
+int32_t uc_set_tick_period(uint32_t period_ms);
+
+/* ---------------------------------------------------------------------- */
+/* Host imports: deployment parameters (apps.json "params")                */
+/* ---------------------------------------------------------------------- */
+/** Copy the parameter value for key into buf (NUL-terminated if it fits).
+ *  Returns the value length without NUL, UC_ERR_NOT_FOUND, or
+ *  UC_ERR_INVALID if buf is too small. */
+UC_IMPORT(uc_param_get)
+int32_t uc_param_get(const char *key, uint32_t key_len, char *buf,
+		     uint32_t buf_len);
+
+/** Parse the parameter value for key as a number (strtod semantics). */
+UC_IMPORT(uc_param_get_number)
+int32_t uc_param_get_number(const char *key, uint32_t key_len, double *out);
+
+/* ---------------------------------------------------------------------- */
+/* Host imports: local BACnet objects (permission "bacnet.local")          */
+/* ---------------------------------------------------------------------- */
+/** Create a local object owned by this application. Supported types: AI,
+ *  AO, AV, BI, BO, BV, MSI, MSO, MSV. Objects created by an application
+ *  are deleted when it stops. Returns UC_ERR_EXISTS if the object exists
+ *  and is owned by someone else (IO configuration or another app); an
+ *  object already owned by this app is left as is and UC_OK returned. */
+UC_IMPORT(uc_obj_create)
+int32_t uc_obj_create(uint32_t type, uint32_t instance, const char *name,
+		      uint32_t name_len);
+
+/** Delete a local object owned by this application. */
+UC_IMPORT(uc_obj_delete)
+int32_t uc_obj_delete(uint32_t type, uint32_t instance);
+
+/** Read a numeric property of any local object. */
+UC_IMPORT(uc_prop_read)
+int32_t uc_prop_read(uint32_t type, uint32_t instance, uint32_t prop,
+		     int32_t array_index, double *out);
+
+/** Write a numeric property of a local object (same rules as a BACnet
+ *  WriteProperty request: commandable properties honour priority 1..16;
+ *  UC_PRIORITY_NONE omits the priority, which BACnet treats as 16). */
+UC_IMPORT(uc_prop_write)
+int32_t uc_prop_write(uint32_t type, uint32_t instance, uint32_t prop,
+		      int32_t array_index, double value, uint32_t priority);
+
+/** Relinquish (write NULL) a commandable property at priority. */
+UC_IMPORT(uc_prop_write_null)
+int32_t uc_prop_write_null(uint32_t type, uint32_t instance, uint32_t prop,
+			   uint32_t priority);
+
+/** Write a CharacterString property (object-name, description). */
+UC_IMPORT(uc_prop_write_string)
+int32_t uc_prop_write_string(uint32_t type, uint32_t instance, uint32_t prop,
+			     const char *str, uint32_t len);
+
+/* ---------------------------------------------------------------------- */
+/* Host imports: remote BACnet devices (permission "bacnet.remote")        */
+/* ---------------------------------------------------------------------- */
+/** ReadProperty on a remote device. The device is bound dynamically
+ *  (Who-Is/I-Am) or through a static binding from device.json. */
+UC_IMPORT(uc_remote_read)
+int32_t uc_remote_read(uint32_t device, uint32_t type, uint32_t instance,
+		       uint32_t prop, int32_t array_index, double *out,
+		       uint32_t timeout_ms);
+
+/** WriteProperty on a remote device. */
+UC_IMPORT(uc_remote_write)
+int32_t uc_remote_write(uint32_t device, uint32_t type, uint32_t instance,
+			uint32_t prop, int32_t array_index, double value,
+			uint32_t priority, uint32_t timeout_ms);
+
+/** WriteProperty NULL (relinquish) on a remote device. */
+UC_IMPORT(uc_remote_write_null)
+int32_t uc_remote_write_null(uint32_t device, uint32_t type,
+			     uint32_t instance, uint32_t prop,
+			     uint32_t priority, uint32_t timeout_ms);
+
+/** Subscribe to present-value changes of an object. device may be a remote
+ *  device instance (SubscribeCOV, renewed by the host before lifetime_s
+ *  expires) or UC_DEVICE_LOCAL / the local instance (host-internal change
+ *  detection, no network traffic). Returns a subscription id >= 0;
+ *  notifications arrive through uc_app_on_cov(). */
+UC_IMPORT(uc_cov_subscribe)
+int32_t uc_cov_subscribe(uint32_t device, uint32_t type, uint32_t instance,
+			 uint32_t lifetime_s);
+
+/** Cancel a subscription. */
+UC_IMPORT(uc_cov_unsubscribe)
+int32_t uc_cov_unsubscribe(int32_t sub_id);
+
+/* ---------------------------------------------------------------------- */
+/* Host imports: raw IO channels (permission "io")                         */
+/* ---------------------------------------------------------------------- */
+/** Look up an IO channel by catalog name ("di0", "ai1", ...). Returns the
+ *  channel id >= 0. Prefer BACnet objects bound in io.json; raw access is
+ *  meant for channels not mapped to an object. */
+UC_IMPORT(uc_io_find)
+int32_t uc_io_find(const char *name, uint32_t len);
+
+/** Read a channel in engineering units (di/do: 0/1, ai: mV, ao: %). */
+UC_IMPORT(uc_io_read)
+int32_t uc_io_read(int32_t channel, double *out);
+
+/** Write an output channel (do: 0/1, ao: 0..100 %). */
+UC_IMPORT(uc_io_write)
+int32_t uc_io_write(int32_t channel, double value);
+
+/* ---------------------------------------------------------------------- */
+/* Host imports: persistent key/value store (permission "kv")              */
+/* ---------------------------------------------------------------------- */
+/** Read a value stored with uc_kv_set(). Returns the stored length (which
+ *  may exceed buf_len; only buf_len bytes are copied) or an error. Keys
+ *  are 1..31 characters from [A-Za-z0-9_.-]. */
+UC_IMPORT(uc_kv_get)
+int32_t uc_kv_get(const char *key, uint32_t key_len, void *buf,
+		  uint32_t buf_len);
+
+/** Store a value (max CONFIG_UC_APP_KV_VALUE_MAX bytes) persistently in
+ *  /lfs/data/<app>/<key>. */
+UC_IMPORT(uc_kv_set)
+int32_t uc_kv_set(const char *key, uint32_t key_len, const void *val,
+		  uint32_t val_len);
+
+/* ---------------------------------------------------------------------- */
+/* Application exports (define the ones you need)                          */
+/* ---------------------------------------------------------------------- */
+/*
+ * int32_t uc_app_init(void);
+ *     Called once. Return 0 to run, non-zero to abort the start.
+ * void uc_app_tick(uint64_t now_ms);
+ *     Called every tick period.
+ * void uc_app_on_cov(int32_t sub_id, uint32_t device, uint32_t type,
+ *                    uint32_t instance, uint32_t prop, double value);
+ *     A subscribed value changed.
+ * void uc_app_on_write(uint32_t type, uint32_t instance, uint32_t prop,
+ *                      uint32_t priority, double value);
+ *     A BACnet client (or the management interface) wrote a numeric
+ *     property of an object this application owns.
+ * void uc_app_deinit(void);
+ *     Called before the instance is destroyed on a regular stop.
+ */
+
+/** Declares the ABI version export the host checks before uc_app_init. */
+#define UC_APP_DECLARE()                                                   \
+	UC_EXPORT(uc_app_api_version) uint32_t uc_app_api_version(void)    \
+	{                                                                  \
+		return UC_API_VERSION;                                     \
+	}
+
+/* ---------------------------------------------------------------------- */
+/* Convenience helpers (header-only, no libc needed)                       */
+/* ---------------------------------------------------------------------- */
+static inline uint32_t uc_strlen(const char *s)
+{
+	uint32_t n = 0;
+
+	while (s[n] != '\0') {
+		n++;
+	}
+	return n;
+}
+
+/** Log a NUL-terminated string. */
+static inline void uc_log_str(int32_t level, const char *msg)
+{
+	uc_log(level, msg, uc_strlen(msg));
+}
+
+static inline int32_t uc_param_str(const char *key, char *buf, uint32_t len)
+{
+	return uc_param_get(key, uc_strlen(key), buf, len);
+}
+
+/** Numeric parameter with a default for a missing/invalid key. */
+static inline double uc_param_num(const char *key, double fallback)
+{
+	double v;
+
+	if (uc_param_get_number(key, uc_strlen(key), &v) < 0) {
+		return fallback;
+	}
+	return v;
+}
+
+static inline int32_t uc_obj_create_str(uint32_t type, uint32_t instance,
+					const char *name)
+{
+	return uc_obj_create(type, instance, name, uc_strlen(name));
+}
+
+static inline int32_t uc_pv_read(uint32_t type, uint32_t instance,
+				 double *out)
+{
+	return uc_prop_read(type, instance, UC_PROP_PRESENT_VALUE,
+			    UC_ARRAY_ALL, out);
+}
+
+static inline int32_t uc_pv_write(uint32_t type, uint32_t instance,
+				  double value, uint32_t priority)
+{
+	return uc_prop_write(type, instance, UC_PROP_PRESENT_VALUE,
+			     UC_ARRAY_ALL, value, priority);
+}
+
+static inline int32_t uc_io_find_str(const char *name)
+{
+	return uc_io_find(name, uc_strlen(name));
+}
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* BACNET_UC_H */

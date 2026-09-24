@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# BACnet-uc is itself a Zephyr module. It contributes:
+#  - devicetree bindings for the IO channel catalog (dts/bindings)
+#  - snippets (snippets/)
+#  - external glue for modules that ship "cmake-ext"/"kconfig-ext"
+#    metadata without in-tree Zephyr glue (modules/), currently WAMR.
+name: bacnet-uc
+build:
+  settings:
+    dts_root: .
+    snippet_root: .
+    module_ext_root: .

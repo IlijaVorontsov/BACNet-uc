@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "points": [
+    {"channel": "di0", "type": "binary-input", "instance": 1, "name": "User Button", "debounce_ms": 30},
+    {"channel": "do0", "type": "binary-output", "instance": 1, "name": "Heater Relay"},
+    {"channel": "ai0", "type": "analog-input", "instance": 1, "name": "Room Temperature",
+     "units": "degrees-celsius", "scale": 0.1, "offset": -50.0, "cov_increment": 0.2, "sample_ms": 500},
+    {"channel": "ao0", "type": "analog-output", "instance": 1, "name": "Valve Position",
+     "units": "percent", "min": 0, "max": 100}
+  ]
+}

@@ -1,0 +1,149 @@
+# SPDX-License-Identifier: Apache-2.0
+
+mainmenu "BACnet-uc firmware"
+
+menu "BACnet-uc"
+
+config UC_FW_VERSION
+	string "Firmware version string"
+	default "0.1.0"
+
+# --- storage ------------------------------------------------------------
+
+config UC_STORAGE_FORMAT_ON_FAIL
+	bool "Format /lfs when mounting fails"
+	default y
+
+# --- configuration documents -------------------------------------------
+
+config UC_CONFIG_DOC_MAX
+	int "Maximum size of a configuration document (bytes)"
+	default 8192
+
+config UC_DEVICE_INSTANCE_DEFAULT
+	int "Default BACnet device instance (no device.json)"
+	range 0 4194302
+	default 260001
+
+config UC_DEVICE_NAME_DEFAULT
+	string "Default BACnet device name (no device.json)"
+	default "bacnet-uc"
+
+# --- BACnet -------------------------------------------------------------
+
+config UC_BACNET_THREAD_STACK_SIZE
+	int "BACnet thread stack size"
+	default 8192
+
+config UC_BACNET_THREAD_PRIORITY
+	int "BACnet thread priority"
+	default 5
+
+config UC_BACNET_POLL_MS
+	int "BACnet loop period (ms)"
+	default 5
+
+config UC_BACNET_EXEC_QUEUE_LEN
+	int "Executor queue length"
+	default 16
+
+config UC_BACNET_CLIENT_SLOTS
+	int "Concurrent remote client transactions"
+	default 8
+
+config UC_BACNET_COV_SUBS_MAX
+	int "Application COV subscriptions (local + remote)"
+	default 16
+
+config UC_BACNET_COV_POLL_MS
+	int "Poll period when a remote device does not support COV (ms)"
+	default 2000
+
+config UC_BACNET_STATIC_BINDINGS_MAX
+	int "Static device bindings from device.json"
+	default 16
+
+config UC_BACNET_OBJECTS_MAX
+	int "Owner table size (objects created by IO and apps)"
+	default 64
+
+config UC_NET_WAIT_MS
+	int "Time to wait for an IPv4 address before starting BACnet anyway (ms)"
+	default 30000
+
+# --- IO -----------------------------------------------------------------
+
+config UC_IO_POINTS_MAX
+	int "IO points in io.json"
+	default 32
+
+# --- WebAssembly applications ------------------------------------------
+
+config UC_APPS
+	bool "WebAssembly applications"
+	default y
+	select WAMR
+
+if UC_APPS
+
+config UC_APPS_MAX
+	int "Installed applications"
+	range 1 8
+	default 4
+
+config UC_APP_PARAMS_MAX
+	int "Parameters per application"
+	default 16
+
+config UC_APP_POOL_SIZE
+	int "WAMR memory pool (bytes)"
+	default 131072
+	help
+	  All module images, instances, linear memories and app heaps are
+	  allocated from this pool.
+
+config UC_APP_THREAD_STACK_SIZE
+	int "Native stack of an application thread"
+	default 8192
+
+config UC_APP_THREAD_PRIORITY
+	int "Application thread priority (preemptible, lower than BACnet)"
+	default 10
+
+config UC_APP_MAX_FILE_SIZE
+	int "Maximum module size (bytes)"
+	default 262144
+
+config UC_APP_WATCHDOG_MS
+	int "Maximum duration of one application callback (ms)"
+	default 2000
+
+config UC_APP_EVENT_QUEUE_LEN
+	int "Pending events per application"
+	default 16
+
+config UC_APP_KV_VALUE_MAX
+	int "Maximum value size of the app key/value store"
+	default 256
+
+endif # UC_APPS
+
+# --- management ---------------------------------------------------------
+
+config UC_MGMT
+	bool "Custom MCUmgr groups (uc_app, uc_io, uc_node)"
+	default y
+	depends on MCUMGR
+
+config UC_SHELL
+	bool "'uc' shell commands"
+	default y
+	depends on SHELL
+
+module = UC
+module-str = BACnet-uc
+source "subsys/logging/Kconfig.template.log_config"
+
+endmenu
+
+source "Kconfig.zephyr"

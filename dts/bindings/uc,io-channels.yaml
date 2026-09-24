@@ -1,0 +1,85 @@
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  BACnet-uc IO channel catalog.
+
+  Declares the physical (or simulated) IO channels a board offers to the
+  BACnet-uc firmware. Each child node is one channel; the node name is the
+  channel name used in io.json, by the management interface and by
+  WebAssembly applications (uc_io_find()).
+
+  Example:
+
+    uc_io: uc-io {
+      compatible = "uc,io-channels";
+      board-name = "nucleo_f767zi";
+
+      di0 {
+        kind = "di";
+        gpios = <&gpioc 13 GPIO_ACTIVE_HIGH>;
+        description = "User button B1";
+      };
+      do0 {
+        kind = "do";
+        gpios = <&gpiob 0 GPIO_ACTIVE_HIGH>;
+        description = "LD1 green";
+      };
+      ai0 {
+        kind = "ai";
+        io-channels = <&adc1 3>;
+        description = "A0 (PA3)";
+      };
+      ao0 {
+        kind = "ao";
+        pwms = <&pwm1 1 PWM_MSEC(1) PWM_POLARITY_NORMAL>;
+        description = "D6 (PE9) PWM";
+      };
+      ai9 {
+        kind = "ai";
+        simulated;
+        description = "Virtual analog input";
+      };
+    };
+
+compatible: "uc,io-channels"
+
+properties:
+  board-name:
+    type: string
+    description: Board name reported in the IO catalog.
+
+child-binding:
+  description: One IO channel.
+  properties:
+    kind:
+      type: string
+      required: true
+      enum: ["di", "do", "ai", "ao"]
+      description: |
+        di: digital input (GPIO), do: digital output (GPIO),
+        ai: analog input (ADC, value in mV), ao: analog output (PWM duty 0..100 %).
+    description:
+      type: string
+      description: Human readable description (connector pin, function).
+    gpios:
+      type: phandle-array
+      description: GPIO for di/do channels.
+    io-channels:
+      type: phandle-array
+      description: |
+        ADC channel for ai channels. The ADC node must contain a matching
+        channel@N child with the standard zephyr,gain/zephyr,reference/
+        zephyr,acquisition-time/zephyr,resolution properties.
+    pwms:
+      type: phandle-array
+      description: PWM channel (with period) for ao channels.
+    simulated:
+      type: boolean
+      description: |
+        Channel without hardware. Its value is held in RAM and set through
+        the management interface (uc_io force). Used on native_sim and for
+        virtual points on real boards.
+    initial-value:
+      type: int
+      default: 0
+      description: Initial value of a simulated channel (integer engineering units).
