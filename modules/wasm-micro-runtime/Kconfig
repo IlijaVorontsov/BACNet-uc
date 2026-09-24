@@ -17,11 +17,11 @@ if WAMR
 
 config WAMR_BUILD_TARGET
 	string "WAMR build target"
-	default "THUMBV7EM_VFP" if CPU_CORTEX_M7 && FP_HARDABI
-	default "THUMBV7EM" if CPU_CORTEX_M7
-	default "THUMBV8M.MAIN_VFP" if CPU_CORTEX_M33 && FP_HARDABI
-	default "THUMBV8M.MAIN" if CPU_CORTEX_M33
-	default "THUMBV7EM" if CPU_CORTEX_M4
+	default "THUMBV7EM_VFP" if (CPU_CORTEX_M7 || CPU_CORTEX_M4) && FP_HARDABI
+	default "THUMBV7EM" if CPU_CORTEX_M7 || CPU_CORTEX_M4
+	default "THUMBV8M.MAIN_VFP" if (CPU_CORTEX_M33 || CPU_CORTEX_M55) && FP_HARDABI
+	default "THUMBV8M.MAIN" if CPU_CORTEX_M33 || CPU_CORTEX_M55
+	default "THUMBV7M" if CPU_CORTEX_M3
 	default "X86_64" if ARCH_POSIX && 64BIT
 	default "X86_32" if ARCH_POSIX
 	help
@@ -42,7 +42,12 @@ config WAMR_AOT
 	help
 	  Allow loading ahead-of-time compiled modules produced by wamrc. AOT
 	  code executes from RAM, so the MPU must allow execution from the
-	  runtime heap.
+	  runtime heap. Note for ARM MPU targets: WAMR 2.4.5's
+	  bh_platform_init() "enables" execution with RASR |= ~XN on every
+	  ARMv7-M MPU region that has XN set (upstream bug: it sets every
+	  other attribute bit instead of clearing XN), and does nothing on
+	  ARMv8-M, where SRAM stays execute-never. Only enable this where the
+	  MPU setup has been taken care of.
 
 config WAMR_BULK_MEMORY
 	bool "Bulk memory operations"
@@ -57,6 +62,36 @@ config WAMR_REF_TYPES
 	help
 	  Needed by modules built with LLVM >= 19, which enables the
 	  reference-types feature for wasm32 by default.
+
+config WAMR_THREAD_MGR
+	bool "Thread manager (interruptible execution)"
+	help
+	  Build WAMR's thread manager. Wasm threads stay disabled; what the
+	  embedder gets is the suspend-flag check the interpreter then
+	  performs on every branch and call: wasm_runtime_terminate() sets
+	  the terminate flag, so a module stuck in a loop stops at its next
+	  branch. Without the thread manager wasm_runtime_terminate() only
+	  records an exception that is noticed after the running call has
+	  returned by itself. Each exec env gets its own cluster; the module's
+	  aux stack is not split into per-thread segments
+	  (WASM_ENABLE_HEAP_AUX_STACK_ALLOCATION=1). AOT code checks the flags
+	  only when it was compiled with thread manager support
+	  (wamrc --enable-multi-thread).
+
+config WAMR_OS_THREAD_STACKS
+	int "Stacks reserved for threads created by WAMR"
+	range 1 16
+	default 1
+	help
+	  WAMR's Zephyr platform layer (zephyr_thread.c) reserves this many
+	  stacks statically for threads it creates itself with
+	  os_thread_create() (wasm threads, debug engine; WAMR's default is
+	  4 x 4 KiB). Neither is built by this glue, and an embedder that calls
+	  into instances from its own threads needs none; 1 is the minimum.
+
+config WAMR_OS_THREAD_STACK_SIZE
+	int "Size of each stack reserved for WAMR threads"
+	default 1024
 
 config WAMR_LOG
 	bool "Runtime diagnostics"
