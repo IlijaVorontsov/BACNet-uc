@@ -48,3 +48,36 @@ tar xf toolchain_linux-x86_64_arm-zephyr-eabi.tar.xz && ./setup.sh -c
 - `apt-get install mosquitto mosquitto-clients` works in the container. Outbound port 8883 (test.mosquitto.org) is **not** reachable from the container; only HTTPS goes through the proxy. Test against a local broker.
 - mosquitto started as root drops to the `mosquitto` user before it reads its key: a `chmod 600` server key fails with "Permission denied".
 - A native_sim build takes about 15 s and an H563 build about 35 s on the container's 4 CPUs.
+
+## Requests from the AI harness session (`claude/ai-harness-building-control-05nrgm`)
+
+The harness session builds **uc-hub**: a per-site gateway (Python, `hub/`) and
+a browser app (`web/`) where a GLM-5.3 agent commissions BACnet-uc nodes,
+third-party BACnet/IP devices and MQTT nodes. Design:
+`docs/ai-harness/DESIGN.md` on that branch. The hub talks to the firmware only
+through the documented interfaces (SMP groups 64-66 in
+`docs/management-protocol.md`, and the MQTT topic scheme in
+`apps/mqtt_tls/README.md`). The requests below are additive and none of them
+blocks the hub; it falls back when a feature is missing (rc `UNSUPPORTED`, or no
+`caps` in `info`).
+
+Status: requested; not implemented yet. Firmware sessions: please record
+decisions or changed field names under this heading on your branch, because
+the harness session reads this file on your branch.
+
+### BACnet firmware (`claude/zephyr-bacnet-stm32-162k1g`)
+
+| # | Request | Why |
+|---|---|---|
+| B1 | `uc_node` cmd 5 `identify` (write): `{"seconds"?: uint}` (default 30, 0 = stop) -> `{}`. Blinks a board LED (`led0` alias). rc `UNSUPPORTED` without an LED. | Phone field mode: "the board that is blinking is R204". |
+| B2 | Optional `"lease_ms": uint` on `uc_io force` and on `uc_node prop_write` (with `priority`). On expiry the node releases the force, or writes NULL at that priority, by itself. | Agent writes and IO checkout forces must not stay in place when the gateway crashes or loses the network. Without this the hub can only relinquish while it is alive. |
+| B3 | `uc_node info`: add `"hwid": tstr` (MCU unique ID in hex, derived the same way as the MQTT app's client ID) and `"mac": tstr`. | Stable device key for QR labels, and re-finding a node after its DHCP address changes. |
+| B4 | Layout: the notes above reserve `harness/` for a Python MCP server. The hub lives in `hub/` (package `uc_hub`) so the branches don't conflict. It contains an SMP client for groups 64-66, a manifest plan/apply engine and an MCP server. Consider reusing it instead of building a second one. | Avoid two SMP clients and two plan engines. |
+
+### MQTT firmware (`claude/inter-session-communication-h989ye`)
+
+| # | Request | Why |
+|---|---|---|
+| M1 | Retained `info`: add `"fw"` (app version), `"hwid"` (unique ID in hex) and `"caps": {"cmds": ["ping", "led", "identify"], "telemetry": {"seq": "count", "uptime_s": "s", "sessions": "count"}}`. | The hub builds the point list from `caps` instead of hard-coding the app. |
+| M2 | JSON commands on `cmd`: `{"id": "<=16 chars", "cmd": "led", "arg": "on"}`; replies on `event` echo the ID: `{"id": ..., "ok": true, "led": true}` or `{"id": ..., "ok": false, "error": ...}`. Keep the plain-text commands. | Match replies to requests when several clients send commands. |
+| M3 | `identify [seconds]` command (default 30) that blinks the user LED. | Same as B1. |

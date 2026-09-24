@@ -29,7 +29,7 @@ report. A human stays in control of every change that reaches equipment.
 | `device.json`, `io.json`, `apps.json` schemas | `schemas/` | Validation of every per-node document before upload |
 | WASM guest SDK `bacnet_uc.h` (ABI 1.0) and the stock `uc-link` app | `wasm/` | Target for AI-written control logic. `links:` compile to `uc-link` parameters. |
 | `transport: sim` + `native_sim` boards | schemas + `firmware/boards/` | Simulation-first: every plan can be applied to a simulated copy of the site before it touches hardware |
-| Planned Python MCP server | `harness/` (mentioned in the BACnet session notes) | Becomes the tool layer of the gateway, so Claude Code and other MCP clients can use the same tools |
+| Planned Python MCP server | `harness/` (reserved in the BACnet session notes, not started) | The gateway lives in `hub/` so the branches don't conflict. It exposes its tool registry as an MCP server too, so Claude Code and other MCP clients can use the same tools. |
 | MQTT/TLS app topics (`<root>/<id>/status\|info\|telemetry\|cmd\|event`) | `apps/mqtt_tls/README.md` | First-class MQTT driver profile |
 
 The two firmware branches use different Zephyr versions (3.7.2 LTS for MQTT
@@ -509,7 +509,7 @@ agent on the other, and a change is always shown as a reviewable diff**.
 ## 15. Proposed repository layout and stack
 
 ```
-harness/                      Python 3.12, uv-managed
+hub/                          Python 3.12 (not harness/, which the BACnet branch reserved)
   src/uc_hub/
     api/                      FastAPI routes, SSE
     agent/                    run loop, context builder, playbooks/
@@ -527,7 +527,7 @@ web/                          TypeScript, React + Vite, PWA
 schemas/site.schema.json      new Site kind (embeds system.schema.json)
 ```
 
-Python matches the MCP server the BACnet session notes already plan for
+Python matches the MCP server the BACnet session notes plan for
 `harness/`, and has mature BACnet (bacpypes3), SMP (smpclient) and MQTT
 (aiomqtt) libraries.
 
