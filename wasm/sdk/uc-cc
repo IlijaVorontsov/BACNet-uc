@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+"""uc-cc - compile C sources into a BACnet-uc WebAssembly application.
+
+    uc-cc [options] -o app.wasm main.c [more.c ...]
+
+Compiles and links in one clang invocation (--target=wasm32, -nostdlib)
+with the BACnet-uc SDK include directory, then checks the module against
+the application ABI (sdk/tools/uc_check.py). Undefined symbols are only
+accepted for the "bacnet_uc" host functions (declared with import
+attributes in bacnet_uc.h) and for the WAMR libc-builtin functions listed
+in sdk/tools/uc_abi.py; anything else is a link error.
+
+Environment: UC_CLANG (clang binary, default "clang" from PATH).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shlex
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+SDK = Path(__file__).resolve().parent
+sys.path.insert(0, str(SDK / "tools"))
+
+import uc_abi  # noqa: E402
+import uc_check  # noqa: E402
+
+DEFAULT_STACK = 4096
+DEFAULT_MEMORY = uc_abi.WASM_PAGE
+PASSTHROUGH_PREFIXES = ("-W", "-f", "-std=", "-pedantic")
+
+
+def compile_flags(opt: str, debug: bool) -> list[str]:
+    flags = ["--target=wasm32", *uc_abi.CLANG_FEATURE_FLAGS, f"-O{opt}", "-nostdlib",
+             f"-I{SDK / 'include'}", "-Wall", "-Wextra"]
+    if debug:
+        flags.append("-g")
+    return flags
+
+
+def link_flags(stack: int, memory: int, exports: list[str], debug: bool,
+               allow_file: str) -> list[str]:
+    flags = [
+        "-Wl,--no-entry",
+        f"-Wl,--allow-undefined-file={allow_file}",
+        "-Wl,--stack-first",
+        f"-Wl,-z,stack-size={stack}",
+        f"-Wl,--initial-memory={memory}",
+        f"-Wl,--max-memory={memory}",
+    ]
+    flags += [f"-Wl,--export={sym}" for sym in (*uc_abi.MEMORY_EXPORTS, *exports)]
+    if not debug:
+        # no debug info and no name section; --compress-relocations rewrites
+        # the padded LEB128 relocation targets (smaller code) and needs that
+        flags += ["-Wl,--strip-all", "-Wl,--compress-relocations"]
+    return flags
+
+
+def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
+    p = argparse.ArgumentParser(
+        prog="uc-cc", description="Compile C into a BACnet-uc WebAssembly application.",
+        epilog="Unrecognised options starting with -W, -f, -std= or -pedantic are passed "
+               "to clang.")
+    p.add_argument("sources", nargs="*", help="C source files")
+    p.add_argument("-o", dest="output", help="output .wasm file")
+    p.add_argument("-I", dest="includes", action="append", default=[], metavar="DIR")
+    p.add_argument("-D", dest="defines", action="append", default=[], metavar="NAME[=VAL]")
+    p.add_argument("-U", dest="undefs", action="append", default=[], metavar="NAME")
+    p.add_argument("-O", dest="opt", default="s", choices=["0", "1", "2", "3", "s", "z"],
+                   help="optimisation level (default: s)")
+    p.add_argument("-g", dest="debug", action="store_true",
+                   help="keep debug information and names (larger module)")
+    p.add_argument("--stack-size", type=int, default=DEFAULT_STACK, metavar="BYTES",
+                   help=f"auxiliary (C) stack in linear memory (default {DEFAULT_STACK})")
+    p.add_argument("--memory", type=int, default=DEFAULT_MEMORY, metavar="BYTES",
+                   help="declared initial = maximum linear memory, multiple of 65536 "
+                        f"(default {DEFAULT_MEMORY}); WAMR shrinks it to __heap_base")
+    p.add_argument("--export", dest="exports", action="append", default=[], metavar="SYM",
+                   help="export an additional symbol")
+    p.add_argument("--allow-grow", action="store_true",
+                   help="accept memory.grow/memory.size (the memory is then not shrunk)")
+    p.add_argument("--heap-kb", type=int, default=8,
+                   help="app heap (apps.json heap_kb) for the memory estimate (default 8)")
+    p.add_argument("--no-check", action="store_true", help="skip the ABI check")
+    p.add_argument("--info", metavar="FILE", help="write the check report as JSON")
+    p.add_argument("--clang", default=os.environ.get("UC_CLANG", "clang"),
+                   help="clang executable (default: $UC_CLANG or clang)")
+    p.add_argument("--print-flags", action="store_true",
+                   help="print the compile and link flags and exit")
+    p.add_argument("-v", "--verbose", action="store_true", help="print the clang command")
+    p.add_argument("-q", "--quiet", action="store_true", help="no summary line")
+    args, rest = p.parse_known_args(argv)
+    extra = []
+    for arg in rest:
+        if arg.startswith(PASSTHROUGH_PREFIXES):
+            extra.append(arg)
+        else:
+            p.error(f"unrecognised argument {arg!r}")
+    if not args.print_flags:
+        if not args.output:
+            p.error("-o is required")
+        if not args.sources:
+            p.error("no source files")
+    if args.memory <= 0 or args.memory % uc_abi.WASM_PAGE:
+        p.error("--memory must be a positive multiple of 65536")
+    if args.stack_size < 512 or args.stack_size % 16 or args.stack_size >= args.memory:
+        p.error("--stack-size must be a multiple of 16, >= 512 and below --memory")
+    return args, extra
+
+
+def main(argv: list[str]) -> int:
+    args, extra = parse_args(argv)
+    cflags = compile_flags(args.opt, args.debug) + extra
+    cflags += [f"-I{d}" for d in args.includes]
+    cflags += [f"-D{d}" for d in args.defines] + [f"-U{u}" for u in args.undefs]
+
+    with tempfile.TemporaryDirectory(prefix="uc-cc-") as tmp:
+        allow_file = os.path.join(tmp, "libc-builtin.syms")
+        with open(allow_file, "w", encoding="ascii") as f:
+            f.write("\n".join(sorted(uc_abi.LIBC_BUILTIN)) + "\n")
+        lflags = link_flags(args.stack_size, args.memory, args.exports, args.debug, allow_file)
+
+        if args.print_flags:
+            print("CFLAGS  =", shlex.join(cflags))
+            print("LDFLAGS =", shlex.join(lflags).replace(allow_file, "<libc-builtin.syms>"))
+            print("SYMS    =", " ".join(sorted(uc_abi.LIBC_BUILTIN)))
+            return 0
+
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        cmd = [args.clang, *cflags, *lflags, "-o", str(out), *args.sources]
+        if args.verbose:
+            print(shlex.join(cmd), file=sys.stderr)
+        try:
+            rc = subprocess.run(cmd, check=False).returncode
+        except FileNotFoundError:
+            print(f"uc-cc: error: {args.clang} not found (install clang >= 16 with the "
+                  "wasm32 target and wasm-ld, or set UC_CLANG)", file=sys.stderr)
+            return 1
+        if rc != 0:
+            print("uc-cc: error: compilation failed (an 'undefined symbol' error means a "
+                  "function that neither bacnet_uc.h nor uc_libc.h provides)", file=sys.stderr)
+            return rc
+
+    if args.no_check:
+        return 0
+
+    rep = uc_check.check_file(str(out), allow_grow=args.allow_grow,
+                              heap_bytes=args.heap_kb * 1024)
+    for w in rep.warnings:
+        print(f"uc-cc: warning: {out}: {w}", file=sys.stderr)
+    for e in rep.errors:
+        print(f"uc-cc: error: {out}: {e}", file=sys.stderr)
+    if args.info:
+        Path(args.info).write_text(json.dumps(
+            {"file": str(out), "ok": rep.ok, "errors": rep.errors, "warnings": rep.warnings,
+             **rep.info}, indent=2) + "\n", encoding="utf-8")
+    if not rep.ok:
+        out.unlink(missing_ok=True)
+        return 1
+    if not args.quiet:
+        print(uc_check.summary_line(rep))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

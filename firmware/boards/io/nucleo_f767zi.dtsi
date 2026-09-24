@@ -79,7 +79,6 @@
 &adc3 {
 	pinctrl-0 = <&adc3_in9_pf3 &adc3_in15_pf5 &adc3_in8_pf10>;
 	pinctrl-names = "default";
-	st,adc-clock-source = "SYNC";
 	st,adc-prescaler = <4>;
 	#address-cells = <1>;
 	#size-cells = <0>;

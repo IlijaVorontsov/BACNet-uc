@@ -943,8 +943,8 @@ static void bn_thread(void *p1, void *p2, void *p3)
 		if (uc_bn_datalink_up()) {
 			tsm_timer_milliseconds((uint16_t)CLAMP(elapsed, 0, UINT16_MAX));
 			if (now >= next_second) {
-				uint16_t secs = (uint16_t)CLAMP((now - next_second) / MSEC_PER_SEC + 1,
-								1, UINT16_MAX);
+				int64_t late_s = (now - next_second) / MSEC_PER_SEC;
+				uint16_t secs = (uint16_t)CLAMP(late_s + 1, 1, UINT16_MAX);
 
 				next_second += (int64_t)secs * MSEC_PER_SEC;
 				address_cache_timer(secs);
