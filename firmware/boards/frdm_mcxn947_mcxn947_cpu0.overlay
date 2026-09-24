@@ -1,15 +1,15 @@
 /*
  * SPDX-License-Identifier: Apache-2.0
  *
- * FRDM-MCXN947, core 0.
+ * FRDM-MCXN947 (cpu0)
  *
  * Storage: the board's storage_partition, the whole 8 MiB Winbond W25Q64JV
- * QSPI flash on FlexSPI (4 KiB erase blocks). The application runs from
- * the internal flash, so the external flash is data only.
+ * QSPI NOR flash on FlexSPI (4 KiB erase blocks). The application runs from
+ * the internal flash, so the external flash is used for data only.
  *
- * Network: ENET QOS with the on-board PHY. The MAC address is derived from
- * the chip unique ID instead of the board default random address, so a
- * node keeps its DHCP lease across reboots.
+ * Network: ENET QOS with the on-board PHY (RMII). The board default
+ * zephyr,random-mac-address is replaced by a MAC derived from the silicon
+ * unique ID so that the node keeps its DHCP lease across reboots.
  */
 
 #include "io/frdm_mcxn947_mcxn947_cpu0.dtsi"

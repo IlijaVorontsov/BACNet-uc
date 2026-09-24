@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Twister build scenarios for the BACnet-uc firmware (build only; runtime
+# tests are in tests/unit and in the MCP harness):
+#
+#   west twister -T BACNet-uc/firmware -p native_sim/native/64 \
+#       -p nucleo_f767zi -p frdm_mcxn947/mcxn947/cpu0
+sample:
+  name: BACnet-uc firmware
+  description: >
+    BACnet/IP node with LittleFS, MCUmgr/SMP management and WebAssembly
+    applications (WAMR).
+common:
+  build_only: true
+  tags:
+    - bacnet_uc
+  platform_allow:
+    - native_sim/native/64
+    - nucleo_f767zi
+    - frdm_mcxn947/mcxn947/cpu0
+  integration_platforms:
+    - native_sim/native/64
+    - nucleo_f767zi
+    - frdm_mcxn947/mcxn947/cpu0
+tests:
+  bacnet_uc.firmware:
+    tags:
+      - bacnet_uc
+  bacnet_uc.firmware.syslog:
+    extra_args:
+      - EXTRA_CONF_FILE=overlay-syslog.conf
+  bacnet_uc.firmware.ramfs:
+    platform_allow:
+      - nucleo_f767zi
+      - frdm_mcxn947/mcxn947/cpu0
+    integration_platforms:
+      - nucleo_f767zi
+    extra_args:
+      - SNIPPET=uc-ramfs
+  bacnet_uc.firmware.mcuboot.f767:
+    sysbuild: true
+    platform_allow:
+      - nucleo_f767zi
+    integration_platforms:
+      - nucleo_f767zi
+    extra_args:
+      - EXTRA_CONF_FILE=overlay-mcuboot.conf
+  bacnet_uc.firmware.mcuboot.mcxn947:
+    sysbuild: true
+    platform_allow:
+      - frdm_mcxn947/mcxn947/cpu0
+    integration_platforms:
+      - frdm_mcxn947/mcxn947/cpu0
+    extra_args:
+      - EXTRA_CONF_FILE=overlay-mcuboot.conf
+      - SB_CONFIG_MCUBOOT_MODE_SWAP_USING_OFFSET=y

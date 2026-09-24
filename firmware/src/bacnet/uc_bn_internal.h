@@ -14,6 +14,7 @@
 #ifndef UC_BN_INTERNAL_H_
 #define UC_BN_INTERNAL_H_
 
+#include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -27,6 +28,13 @@
 
 #ifdef __cplusplus
 extern "C" {
+#endif
+
+/* uc_common.h uses -EREMOTEIO, which picolibc does not define. Same value
+ * as the fallback in uc_common.c (Linux EREMOTEIO) so that uc_err_to_api()
+ * and uc_err_to_mgmt() map it. */
+#ifndef EREMOTEIO
+#define EREMOTEIO 121
 #endif
 
 /* Encoded application data of one written value (numeric, NULL or a

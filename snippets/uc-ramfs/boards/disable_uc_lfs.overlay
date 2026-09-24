@@ -1,0 +1,9 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * uc-ramfs: replace the board's /lfs fstab entry by the RAM one.
+ */
+
+&uc_lfs {
+	status = "disabled";
+};

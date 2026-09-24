@@ -1,0 +1,14 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * uc-ramfs on NUCLEO-F767ZI: no external SPI NOR flash wired. Replace the
+ * board's /lfs fstab entry by the RAM one and drop the flash device.
+ */
+
+&uc_lfs {
+	status = "disabled";
+};
+
+&uc_nor {
+	status = "disabled";
+};

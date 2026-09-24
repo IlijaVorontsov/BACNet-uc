@@ -1,0 +1,53 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * 64 KiB of RAM presented as NOR flash (1 KiB erase blocks) by the flash
+ * simulator, with one partition mounted as LittleFS at /lfs. The simulator
+ * erases the buffer at boot, uc_storage then formats it.
+ */
+
+/ {
+	uc_ramfs_flash_controller: uc-ramfs-flash-controller {
+		compatible = "zephyr,sim-flash";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		erase-value = <0xff>;
+
+		uc_ramfs_flash: flash@0 {
+			compatible = "soc-nv-flash";
+			reg = <0x00000000 DT_SIZE_K(64)>;
+			erase-block-size = <1024>;
+			write-block-size = <1>;
+			status = "okay";
+
+			partitions {
+				compatible = "fixed-partitions";
+				#address-cells = <1>;
+				#size-cells = <1>;
+
+				uc_ramfs_partition: partition@0 {
+					label = "uc-ramfs";
+					reg = <0x00000000 DT_SIZE_K(64)>;
+				};
+			};
+		};
+	};
+
+	/* same node path and label as the board overlays: overrides them */
+	fstab {
+		compatible = "zephyr,fstab";
+
+		uc_lfs: lfs {
+			compatible = "zephyr,fstab,littlefs";
+			mount-point = "/lfs";
+			partition = <&uc_ramfs_partition>;
+			automount;
+			no-format;
+			read-size = <16>;
+			prog-size = <16>;
+			cache-size = <256>;
+			lookahead-size = <32>;
+			block-cycles = <512>;
+		};
+	};
+};

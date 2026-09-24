@@ -3,9 +3,9 @@
  *
  * File system: LittleFS at /lfs from a devicetree fstab entry.
  *
- * The fstab entry is the node labelled "uc_lfs" (board overlays, snippet
- * uc-ramfs), or else the first enabled "zephyr,fstab,littlefs" node. The
- * board overlays set "automount" and "no-format": the partition is mounted
+ * The fstab entry is the node labelled "uc_lfs_ram" (snippet uc-ramfs), else
+ * "uc_lfs" (board overlays), else the first enabled "zephyr,fstab,littlefs"
+ * node. The overlays set "automount" and "no-format": the partition is mounted
  * during boot (POST_KERNEL) when it holds a valid file system, and this
  * module decides about formatting (CONFIG_UC_STORAGE_FORMAT_ON_FAIL).
  *
@@ -34,7 +34,9 @@
 
 LOG_MODULE_REGISTER(uc_storage, CONFIG_UC_LOG_LEVEL);
 
-#if DT_NODE_EXISTS(DT_NODELABEL(uc_lfs)) && DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(uc_lfs))
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(uc_lfs_ram))
+#define UC_LFS_NODE DT_NODELABEL(uc_lfs_ram)
+#elif DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(uc_lfs))
 #define UC_LFS_NODE DT_NODELABEL(uc_lfs)
 #elif DT_HAS_COMPAT_STATUS_OKAY(zephyr_fstab_littlefs)
 #define UC_LFS_NODE DT_COMPAT_GET_ANY_STATUS_OKAY(zephyr_fstab_littlefs)

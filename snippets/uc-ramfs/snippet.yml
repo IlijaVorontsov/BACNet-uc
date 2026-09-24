@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# uc-ramfs: /lfs on a RAM-backed flash simulator (volatile: the content is
+# lost at every reset). For boards without external flash, or to run a
+# board without its flash module:
+#
+#   west build -b <board> BACNet-uc/firmware -S uc-ramfs
+#
+# The fstab entry replaces the board's /fstab/lfs (label uc_lfs) if the
+# board overlay defines one.
+name: uc-ramfs
+append:
+  EXTRA_DTC_OVERLAY_FILE: uc-ramfs.overlay
+  EXTRA_CONF_FILE: uc-ramfs.conf

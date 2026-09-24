@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# The tests use the firmware's own Kconfig (CONFIG_UC_* limits and
+# defaults), which also sources Kconfig.zephyr.
+rsource "../../Kconfig"

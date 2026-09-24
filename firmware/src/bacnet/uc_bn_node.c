@@ -18,6 +18,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/net_ip.h>
+#include <zephyr/net/socket.h>
 #include <zephyr/spinlock.h>
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/util.h>
@@ -26,6 +27,7 @@
 #include "bacnet/bacaddr.h"
 #include "bacnet/datalink/bip.h"
 #include "bacnet/datalink/bvlc.h"
+#include "bacnet/datalink/datalink.h"
 #include "bacnet/basic/bbmd/h_bbmd.h"
 #include "bacnet/basic/binding/address.h"
 #include "bacnet/basic/object/device.h"
@@ -88,6 +90,10 @@ static bool bn_nsos_fallback;
 static bool bn_addr_wait_logged;
 static int64_t bn_fd_next_ms;
 static bool bn_fd_active;
+
+#if defined(CONFIG_NET_NATIVE_OFFLOADED_SOCKETS)
+static void bn_nsos_find_sockets(void);
+#endif
 
 /* Status snapshot. */
 static struct k_spinlock bn_status_lock;
@@ -576,6 +582,9 @@ static bool bn_datalink_start(void)
 	}
 	LOG_INF("BACnet/IP %u.%u.%u.%u:%u, device %u", unicast.address[0], unicast.address[1],
 		unicast.address[2], unicast.address[3], port, Device_Object_Instance_Number());
+#if defined(CONFIG_NET_NATIVE_OFFLOADED_SOCKETS)
+	bn_nsos_find_sockets();
+#endif
 
 	return true;
 }
@@ -583,6 +592,8 @@ static bool bn_datalink_start(void)
 /* ---------------------------------------------------------------------- */
 /* Status                                                                  */
 /* ---------------------------------------------------------------------- */
+
+static uint32_t bn_packet_count(void);
 
 static void bn_status_update(void)
 {
@@ -603,7 +614,7 @@ static void bn_status_update(void)
 		uc_net_ipv4_str(st.ipv4, sizeof(st.ipv4));
 		st.udp_port = bn_run_cfg.udp_port;
 	}
-	st.packets = (uint32_t)bacnet_basic_packet_count();
+	st.packets = bn_packet_count();
 	st.objects = Device_Object_List_Count();
 	st.uptime_s = (uint32_t)bacnet_basic_uptime_seconds();
 
@@ -740,8 +751,114 @@ static void bn_set_ready(void)
 	k_sem_give(&bn_ready_sem);
 }
 
+#if defined(CONFIG_NET_NATIVE_OFFLOADED_SOCKETS)
+/*
+ * native_sim host sockets (NSOS, Zephyr 4.4) cannot be used with the
+ * select() in bip_receive():
+ *  - a zero-timeout poll never reports readiness (the host epoll result
+ *    arrives through an interrupt only while a poll waits), so the
+ *    receive in bacnet_basic_task() never sees a packet;
+ *  - a waiting poll on the socket's own poll entry calls
+ *    k_condvar_signal(poll->cond) with an uninitialised pointer
+ *    (nsos_socket_create() uses k_malloc()) and crashes.
+ * So the two BACnet/IP sockets are located after bip_init() and read here
+ * with MSG_DONTWAIT (no poll involved), then passed through the same BVLC
+ * and NPDU handlers as bip_receive() does.
+ */
+static uint8_t bn_rx_buf[MAX_MPDU];
+static uint32_t bn_rx_count;
+static int bn_nsos_fd[2] = { -1, -1 }; /* unicast, broadcast */
+
+static void bn_nsos_find_sockets(void)
+{
+	BACNET_IP_ADDRESS me = { 0 };
+
+	(void)bip_get_addr(&me);
+	bn_nsos_fd[0] = -1;
+	bn_nsos_fd[1] = -1;
+	for (int fd = 0; fd < CONFIG_ZVFS_OPEN_MAX; fd++) {
+		struct net_sockaddr_in sin = { 0 };
+		net_socklen_t len = sizeof(sin);
+
+		if (zsock_getsockname(fd, (struct net_sockaddr *)&sin, &len) != 0) {
+			continue;
+		}
+		if ((sin.sin_family != NET_AF_INET) || (net_ntohs(sin.sin_port) != me.port)) {
+			continue;
+		}
+		if ((bn_nsos_fd[0] < 0) && (memcmp(&sin.sin_addr, me.address, 4) == 0)) {
+			bn_nsos_fd[0] = fd;
+		} else if ((bn_nsos_fd[1] < 0) && (sin.sin_addr.s_addr == 0)) {
+			bn_nsos_fd[1] = fd;
+		}
+	}
+	if ((bn_nsos_fd[0] < 0) || (bn_nsos_fd[1] < 0)) {
+		LOG_ERR("NSOS: BACnet/IP sockets not found (%d, %d)", bn_nsos_fd[0],
+			bn_nsos_fd[1]);
+	}
+}
+
+static bool bn_nsos_receive_one(int idx)
+{
+	struct net_sockaddr_in sin = { 0 };
+	net_socklen_t sin_len = sizeof(sin);
+	BACNET_IP_ADDRESS addr = { 0 };
+	BACNET_ADDRESS src = { 0 };
+	ssize_t len;
+	int offset;
+
+	if (bn_nsos_fd[idx] < 0) {
+		return false;
+	}
+	len = zsock_recvfrom(bn_nsos_fd[idx], bn_rx_buf, sizeof(bn_rx_buf), ZSOCK_MSG_DONTWAIT,
+			     (struct net_sockaddr *)&sin, &sin_len);
+	if (len <= 0) {
+		return false;
+	}
+	if ((len < 4) || (bn_rx_buf[0] != BVLL_TYPE_BACNET_IP)) {
+		return true;
+	}
+	memcpy(addr.address, &sin.sin_addr, 4);
+	addr.port = net_ntohs(sin.sin_port);
+	offset = (idx == 0) ? bvlc_handler(&addr, &src, bn_rx_buf, (uint16_t)len)
+			    : bvlc_broadcast_handler(&addr, &src, bn_rx_buf, (uint16_t)len);
+	if ((offset > 0) && (offset < len)) {
+		npdu_handler(&src, &bn_rx_buf[offset], (uint16_t)(len - offset));
+		bn_rx_count++;
+	}
+
+	return true;
+}
+
+static void bn_nsos_receive(void)
+{
+	for (int n = 0; n < BN_RX_BURST; n++) {
+		bool unicast = bn_nsos_receive_one(0);
+		bool bcast = bn_nsos_receive_one(1);
+
+		if (!unicast && !bcast) {
+			break;
+		}
+	}
+}
+#endif
+
+static uint32_t bn_packet_count(void)
+{
+	uint32_t count = (uint32_t)bacnet_basic_packet_count();
+
+#if defined(CONFIG_NET_NATIVE_OFFLOADED_SOCKETS)
+	count += bn_rx_count;
+#endif
+
+	return count;
+}
+
 static void bn_stack_task(void)
 {
+#if defined(CONFIG_NET_NATIVE_OFFLOADED_SOCKETS)
+	bn_nsos_receive();
+#endif
 	/* stack and datalink receive: one packet per bacnet_basic_task() */
 	for (int n = 0; n < BN_RX_BURST; n++) {
 		unsigned long before = bacnet_basic_packet_count();

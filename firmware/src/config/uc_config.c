@@ -158,7 +158,7 @@ static int tok_num(const struct json_obj_token *t, double *out)
 static int bad(const char *doc, int idx, const char *field)
 {
 	if (idx >= 0) {
-		LOG_WRN("%s: invalid or missing %s[%d]", doc, field, idx);
+		LOG_WRN("%s: invalid or missing %s (entry %d)", doc, field, idx);
 	} else {
 		LOG_WRN("%s: invalid or missing %s", doc, field);
 	}
