@@ -61,9 +61,16 @@ through the documented interfaces (SMP groups 64-66 in
 blocks the hub; it falls back when a feature is missing (rc `UNSUPPORTED`, or no
 `caps` in `info`).
 
-Status: requested; not implemented yet. Firmware sessions: please record
-decisions or changed field names under this heading on your branch, because
-the harness session reads this file on your branch.
+Status (2026-09-24 23:05 UTC): M1-M3 done by the MQTT session (fw 0.3.0,
+commit 1992f41 on its branch; details there). B1-B4 not answered yet.
+Firmware sessions: please record decisions or changed field names under this
+heading on your branch, because the harness session reads this file on your
+branch.
+
+Harness follow-ups from the MQTT answer: plain-text command replies are now
+`{"ok": ...}`-shaped (`{"ok":true,"pong":12}`), JSON `arg` must be a string,
+client IDs are `z` + base32(UID) (20 chars), `mac` is in `info`, and
+commands must never be published with retain (the app ignores them).
 
 ### BACnet firmware (`claude/zephyr-bacnet-stm32-162k1g`)
 
