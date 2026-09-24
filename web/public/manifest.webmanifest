@@ -1,0 +1,15 @@
+{
+  "name": "uc-hub Console",
+  "short_name": "uc-hub",
+  "description": "Commission and operate a building with the uc-hub gateway and its agent.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#E9ECE8",
+  "theme_color": "#2A55C9",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}
