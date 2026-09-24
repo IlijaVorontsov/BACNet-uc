@@ -3,19 +3,27 @@ sample:
   name: MQTT over Ethernet + TLS
 common:
   build_only: true
+  platform_allow:
+    - nucleo_h563zi
+    - native_sim/native/64
+  integration_platforms:
+    - nucleo_h563zi
   tags:
     - net
     - mqtt
     - tls
 tests:
   app.mqtt_tls:
-    platform_allow:
-      - nucleo_h563zi
-      - native_sim/native/64
-    integration_platforms:
-      - nucleo_h563zi
-  app.mqtt_tls.plain:
-    platform_allow:
-      - nucleo_h563zi
+    tags:
+      - tls
+  # Compile check of the mutual-TLS path. The mosquitto.org CA stands in for
+  # the client certificate and key, so this image is not meant to be run.
+  app.mqtt_tls.mtls:
     extra_configs:
-      - CONFIG_MQTT_LIB_TLS=n
+      - CONFIG_APP_MQTT_TLS_CLIENT_AUTH=y
+      - CONFIG_APP_MQTT_TLS_CLIENT_CERT_FILE="certs/mosquitto.org.crt"
+      - CONFIG_APP_MQTT_TLS_CLIENT_KEY_FILE="certs/mosquitto.org.crt"
+  # Plain MQTT on port 1883, without the TLS stack (prj_plain.conf).
+  app.mqtt_tls.plain:
+    extra_args:
+      - FILE_SUFFIX=plain

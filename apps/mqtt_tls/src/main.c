@@ -102,6 +102,19 @@ static uint32_t next_backoff(uint32_t *backoff_ms)
 	return delay;
 }
 
+/* Sleep without starving the watchdog. */
+static void sleep_fed(uint32_t ms)
+{
+	while (ms > 0U) {
+		uint32_t chunk = MIN(ms, 5000U);
+
+		app_wdt_feed();
+		k_sleep(K_MSEC(chunk));
+		ms -= chunk;
+	}
+	app_wdt_feed();
+}
+
 int main(void)
 {
 	uint32_t backoff_ms = CONFIG_APP_MQTT_RECONNECT_MIN_MS;
@@ -113,15 +126,25 @@ int main(void)
 
 	ret = app_mqtt_init();
 	if (ret < 0) {
+		LOG_ERR("Invalid configuration, MQTT client not started");
 		return ret;
 	}
 
 #if defined(CONFIG_APP_MQTT_TLS)
 	ret = app_tls_creds_register();
 	if (ret < 0) {
+		LOG_ERR("Invalid TLS credentials, MQTT client not started");
 		return ret;
 	}
 #endif
+
+	/* Armed only once the configuration is known to be usable, so a
+	 * misconfigured device logs its error instead of reboot-looping.
+	 */
+	ret = app_wdt_init();
+	if (ret < 0) {
+		return ret;
+	}
 
 	app_net_init();
 
@@ -131,7 +154,9 @@ int main(void)
 
 		if (!app_net_is_up()) {
 			LOG_INF("Waiting for network...");
-			(void)app_net_wait_up(K_FOREVER);
+			while (app_net_wait_up(K_SECONDS(5)) != 0) {
+				app_wdt_feed();
+			}
 		}
 
 		ret = app_mqtt_run_session(&healthy);
@@ -141,7 +166,7 @@ int main(void)
 
 		delay = next_backoff(&backoff_ms);
 		LOG_WRN("Session ended (%d), reconnecting in %u ms", ret, delay);
-		k_sleep(K_MSEC(delay));
+		sleep_fed(delay);
 	}
 
 	return 0;

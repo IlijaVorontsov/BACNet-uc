@@ -11,9 +11,12 @@ target_sources(app PRIVATE
   src/mqtt_app.c
   src/device_id.c
 )
+target_sources_ifdef(CONFIG_APP_WATCHDOG app PRIVATE src/watchdog.c)
 
 if(CONFIG_APP_MQTT_TLS)
   target_sources(app PRIVATE src/tls_creds.c)
+  # tls_creds.c parses the credentials with mbedTLS at boot.
+  target_link_libraries(app PRIVATE mbedTLS)
 
   # Embed the TLS credentials named in Kconfig into the image. Each file is
   # turned into a C byte list (<name>.inc) that src/tls_creds.c includes.

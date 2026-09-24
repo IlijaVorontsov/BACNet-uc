@@ -34,8 +34,27 @@ int app_client_id_get(char *buf, size_t len);
 /** Security tag under which all of the application's credentials live. */
 #define APP_TLS_SEC_TAG 0x4d5154 /* "MQT" */
 
-/** Register the embedded CA (and client) credentials. */
+/** Check and register the embedded CA (and client) credentials. */
 int app_tls_creds_register(void);
+
+/* watchdog.c ---------------------------------------------------------------- */
+
+#if defined(CONFIG_APP_WATCHDOG)
+/** Arm the task watchdog channel for the main loop. */
+int app_wdt_init(void);
+
+/** Tell the watchdog that the main loop is making progress. */
+void app_wdt_feed(void);
+#else
+static inline int app_wdt_init(void)
+{
+	return 0;
+}
+
+static inline void app_wdt_feed(void)
+{
+}
+#endif
 
 /* mqtt_app.c ---------------------------------------------------------------- */
 
@@ -46,8 +65,8 @@ int app_mqtt_init(void);
  * Run one MQTT session: resolve, connect, serve until the connection is lost.
  *
  * @param[out] was_connected set to true if the broker accepted the session
- *             (CONNACK with return code 0) and it stayed up long enough to
- *             count as healthy, so the caller can reset its back-off.
+ *             and it stayed up long enough to count as healthy, so the
+ *             caller can reset its back-off.
  * @return negative errno describing why the session ended.
  */
 int app_mqtt_run_session(bool *was_connected);

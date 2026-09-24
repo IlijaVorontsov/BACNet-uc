@@ -22,19 +22,31 @@ config APP_MQTT_CLIENT_ID
 	default ""
 	help
 	  Leave empty to derive a stable identifier from the MCU's unique
-	  device ID ("<prefix>-<hex id>"), so every board gets its own id
-	  without per-device configuration.
+	  device ID (APP_MQTT_CLIENT_ID_PREFIX followed by the 96-bit STM32
+	  UID in 20 base32 characters), so every board gets its own id
+	  without per-device configuration. Must not contain '+', '#' or
+	  '/', since it is also a topic level.
 
 config APP_MQTT_CLIENT_ID_PREFIX
 	string "Prefix of the derived client identifier"
-	default "zephyr"
+	default "z"
+	help
+	  MQTT 3.1.1 brokers are only required to accept client identifiers
+	  of 1-23 alphanumeric characters. With a 20-character device ID, a
+	  prefix of up to 3 letters or digits stays within that limit. Most
+	  brokers accept longer identifiers.
 
 config APP_MQTT_TOPIC_ROOT
 	string "Root of the device's topic tree"
 	default "bacnet-uc"
 	help
-	  Topics are "<root>/<client id>/status", ".../telemetry", ".../cmd"
-	  and ".../event".
+	  Topics are "<root>/<client id>/status", ".../info", ".../telemetry",
+	  ".../cmd" and ".../event". May contain '/', but no wildcards and no
+	  leading '$'.
+
+	  Commands on ".../cmd" must be published without the retain flag:
+	  retained commands are ignored, because the broker would replay them
+	  after every reconnect.
 
 config APP_MQTT_USERNAME
 	string "User name (empty: none)"
@@ -44,7 +56,9 @@ config APP_MQTT_PASSWORD
 	string "Password (empty: none)"
 	default ""
 	help
-	  Stored in the firmware image in clear text. Prefer client
+	  Requires APP_MQTT_USERNAME (MQTT 3.1.1). Stored in the firmware
+	  image in clear text, and sent in clear text on the wire unless both
+	  APP_MQTT_TLS and APP_MQTT_TLS_PEER_VERIFY are enabled. Prefer client
 	  certificates (APP_MQTT_TLS_CLIENT_AUTH) where the broker supports
 	  them.
 
@@ -58,25 +72,35 @@ config APP_MQTT_PUBLISH_QOS
 	default 1
 	range 0 1
 	help
-	  QoS 2 is not offered: the application does not persist in-flight
-	  messages across reconnects, so it would add round trips without
-	  adding delivery guarantees.
+	  QoS 1 makes the broker acknowledge each message and gives
+	  at-least-once delivery from the broker to its subscribers. The
+	  device itself keeps no outgoing queue and uses clean sessions, so a
+	  message still in flight when the connection drops is lost either
+	  way. QoS 2 is not offered for the same reason.
 
 config APP_MQTT_CONNACK_TIMEOUT_MS
-	int "Time to wait for CONNACK after the TCP/TLS connection is up (ms)"
+	int "Time to wait for CONNACK or SUBACK (ms)"
 	default 10000
+	range 1000 120000
+	help
+	  Applies after the TCP/TLS connection is up. The TCP connect and the
+	  TLS handshake are bounded separately by
+	  CONFIG_NET_SOCKETS_CONNECT_TIMEOUT.
 
 config APP_MQTT_RECONNECT_MIN_MS
 	int "Initial reconnect back-off (ms)"
 	default 1000
+	range 100 600000
 
 config APP_MQTT_RECONNECT_MAX_MS
 	int "Maximum reconnect back-off (ms)"
 	default 60000
+	range 100 600000
 
 config APP_MQTT_BUFFER_SIZE
 	int "MQTT RX and TX buffer size (bytes)"
 	default 1024
+	range 256 65535
 	help
 	  Upper bound for one outgoing MQTT packet and for the fixed and
 	  variable header of an incoming one. Incoming payloads are read
@@ -85,6 +109,7 @@ config APP_MQTT_BUFFER_SIZE
 config APP_MQTT_MAX_PAYLOAD_SIZE
 	int "Largest command payload that is processed (bytes)"
 	default 128
+	range 1 4096
 	help
 	  Longer payloads on the command topic are read and discarded so the
 	  connection stays in sync.
@@ -103,19 +128,33 @@ config APP_MQTT_TLS_CA_CERT_FILE
 	  Path is relative to the application directory unless absolute.
 	  The default is the CA of the public test broker test.mosquitto.org.
 
+	  Must be signed with SHA-256 or stronger: SHA-1 is not built in, so
+	  roots that are self-signed with SHA-1 (e.g. "DigiCert Global Root
+	  CA") cannot be loaded. Use a SHA-256 root or the SHA-256-signed
+	  intermediate as trust anchor instead. The file is parsed at boot and
+	  errors are reported there.
+
 config APP_MQTT_TLS_PEER_VERIFY
 	bool "Verify the broker certificate"
 	default y
 	help
+	  Checks the broker's certificate chain against the CA and its name
+	  against APP_MQTT_TLS_HOSTNAME. Validity dates are NOT checked
+	  (CONFIG_MBEDTLS_HAVE_TIME_DATE is off, as the board has no trusted
+	  clock at boot), so expired certificates are accepted.
+
 	  Disabling this makes the connection vulnerable to
 	  man-in-the-middle attacks. Only for bring-up.
 
 config APP_MQTT_TLS_HOSTNAME
-	string "Expected host name in the broker certificate (and SNI)"
+	string "Expected host name in the broker certificate, and SNI"
 	default ""
 	help
-	  Leave empty to use APP_MQTT_BROKER_HOSTNAME. Set it when the broker
-	  is addressed by IP address but its certificate carries a DNS name.
+	  Sent as TLS Server Name Indication and matched against the broker
+	  certificate. Leave empty to use APP_MQTT_BROKER_HOSTNAME. Set it
+	  when the broker is addressed by IP address: an IP literal is then
+	  sent as SNI, which RFC 6066 forbids and multi-tenant cloud brokers
+	  reject.
 
 config APP_MQTT_TLS_CLIENT_AUTH
 	bool "Authenticate with a client certificate (mutual TLS)"
@@ -123,16 +162,21 @@ config APP_MQTT_TLS_CLIENT_AUTH
 config APP_MQTT_TLS_CLIENT_CERT_FILE
 	string "Client certificate (PEM or .der)"
 	depends on APP_MQTT_TLS_CLIENT_AUTH
-	default "certs/client.crt"
+	default "certs/dev/client.crt"
+	help
+	  The default matches the output of scripts/gen_dev_certs.sh.
 
 config APP_MQTT_TLS_CLIENT_KEY_FILE
-	string "Client private key (PEM or .der)"
+	string "Client private key (unencrypted PEM or .der)"
 	depends on APP_MQTT_TLS_CLIENT_AUTH
-	default "certs/client.key"
+	default "certs/dev/client.key"
 	help
-	  The key is stored unencrypted in flash. Protect it with flash
-	  read-out protection (RDP) on production parts, or move it into a
-	  secure element.
+	  The default matches the output of scripts/gen_dev_certs.sh.
+
+	  The key is stored unencrypted in flash, and in the build directory
+	  (zephyr/include/generated/app_creds). Protect it with flash read-out
+	  protection (RDP) on production parts, or move it into a secure
+	  element.
 
 endif # APP_MQTT_TLS
 
@@ -144,6 +188,31 @@ config APP_WAIT_FOR_NETWORK
 	  Uses the connection manager to wait until the default interface is
 	  up and has an IPv4 address, and drops the MQTT session when the
 	  network goes away.
+
+config APP_ETH_PHY_ADVERTISE_100FD_ONLY
+	bool "Advertise only 100BASE-TX full duplex on the Ethernet PHY"
+	default y if SOC_SERIES_STM32H5X && ETH_STM32_HAL
+	depends on DT_HAS_ETHERNET_PHY_ENABLED && PHY_GENERIC_MII
+	help
+	  Zephyr 3.7's STM32H5 Ethernet driver runs the MAC at 100 Mbit/s full
+	  duplex regardless of what the PHY negotiates. Restricting the PHY's
+	  advertisement makes a 10 Mbit/s or half-duplex partner fail visibly
+	  (no link) instead of silently dropping frames.
+
+config APP_WATCHDOG
+	bool "Reboot if the main loop stalls"
+	default y if $(dt_alias_enabled,watchdog0)
+	depends on TASK_WDT
+	help
+	  Uses a task watchdog channel, backed by the hardware watchdog.
+	  Every blocking call in the application is bounded well below the
+	  timeout, so a reset means a genuine wedge.
+
+config APP_WATCHDOG_TIMEOUT_SEC
+	int "Watchdog timeout (seconds)"
+	depends on APP_WATCHDOG
+	default 120
+	range 60 3600
 
 config APP_DHCPV4
 	bool "Start DHCPv4 on the default interface"

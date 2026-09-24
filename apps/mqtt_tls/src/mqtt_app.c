@@ -7,6 +7,11 @@
  * Everything runs on the calling (main) thread; the MQTT library invokes
  * mqtt_evt_handler() from inside mqtt_input()/mqtt_connect(), so no locking
  * is needed around the session state.
+ *
+ * No call in here may block without bound: connect() and the TLS handshake
+ * are limited by CONFIG_NET_SOCKETS_CONNECT_TIMEOUT, every other socket read
+ * and write by SO_RCVTIMEO/SO_SNDTIMEO (see set_socket_timeouts()), and the
+ * watchdog is fed on every loop iteration as a backstop.
  */
 
 #include <errno.h>
@@ -18,7 +23,6 @@
 #include <zephyr/net/mqtt.h>
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/socket.h>
-#include <zephyr/random/random.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/version.h>
 
@@ -32,8 +36,11 @@ LOG_MODULE_DECLARE(app, CONFIG_APP_LOG_LEVEL);
 /* Poll at least this often so network loss and timers are noticed promptly. */
 #define MAX_POLL_INTERVAL_MS 1000
 
-/* Time to wait for PINGRESP before declaring the connection dead. */
+/* Time to wait for PINGRESP before declaring the connection dead. Also the
+ * bound for any single blocking socket read or write inside a session.
+ */
 #define PINGRESP_TIMEOUT_MS (MIN(CONFIG_MQTT_KEEPALIVE, 30) * MSEC_PER_SEC)
+#define SOCKET_IO_TIMEOUT_MS PINGRESP_TIMEOUT_MS
 
 /* A session must stay up this long before the caller resets its back-off,
  * so a broker that accepts and immediately drops us (duplicate client id,
@@ -44,7 +51,11 @@ LOG_MODULE_DECLARE(app, CONFIG_APP_LOG_LEVEL);
 #define STATUS_ONLINE "online"
 #define STATUS_OFFLINE "offline"
 
-BUILD_ASSERT(CONFIG_MQTT_KEEPALIVE > 0, "keep-alive is required for dead-peer detection");
+BUILD_ASSERT(CONFIG_MQTT_KEEPALIVE > 0 && CONFIG_MQTT_KEEPALIVE <= UINT16_MAX,
+	     "MQTT keep-alive must be 1..65535 s (it is also used for dead-peer detection)");
+BUILD_ASSERT(sizeof(CONFIG_APP_MQTT_PASSWORD) == 1 || sizeof(CONFIG_APP_MQTT_USERNAME) > 1,
+	     "MQTT 3.1.1 does not allow a password without a user name");
+BUILD_ASSERT(CONFIG_APP_MQTT_MAX_PAYLOAD_SIZE > 0, "payload buffer must not be empty");
 
 static uint8_t rx_buffer[CONFIG_APP_MQTT_BUFFER_SIZE];
 static uint8_t tx_buffer[CONFIG_APP_MQTT_BUFFER_SIZE];
@@ -81,6 +92,9 @@ static const sec_tag_t sec_tags[] = { APP_TLS_SEC_TAG };
 static struct {
 	bool connected;       /* CONNACK accepted, no DISCONNECT since */
 	bool connack_failed;  /* CONNACK refused or malformed */
+	bool subscribed;      /* SUBACK granted the command subscription */
+	bool subscribe_failed;
+	uint16_t subscribe_msg_id;
 	bool ping_outstanding;
 	int64_t ping_sent_at;
 	int64_t last_rx;
@@ -187,6 +201,7 @@ static int subscribe_commands(void)
 		.message_id = next_message_id(),
 	};
 
+	s.subscribe_msg_id = list.message_id;
 	LOG_INF("Subscribing to %s", topic_cmd);
 
 	return mqtt_subscribe(&client, &list);
@@ -200,7 +215,9 @@ static bool topic_equals(const struct mqtt_utf8 *t, const char *str)
 }
 
 /* Read the payload of an incoming PUBLISH. Oversized payloads are drained
- * so that the stream stays aligned on MQTT packet boundaries.
+ * so that the stream stays aligned on MQTT packet boundaries. Each read is
+ * bounded by SO_RCVTIMEO, so a peer that stalls mid-payload ends the session
+ * instead of wedging the thread.
  * Returns the payload length, -EMSGSIZE if it was discarded, or another
  * negative errno if the connection failed.
  */
@@ -219,6 +236,7 @@ static int read_payload(const struct mqtt_publish_param *pub)
 	}
 
 	while (len > 0U) {
+		app_wdt_feed();
 		ret = mqtt_read_publish_payload_blocking(
 			&client, payload_buf,
 			MIN(len, CONFIG_APP_MQTT_MAX_PAYLOAD_SIZE));
@@ -244,7 +262,7 @@ static void handle_publish(const struct mqtt_publish_param *pub)
 	len = read_payload(pub);
 	if (len < 0 && len != -EMSGSIZE) {
 		LOG_ERR("Failed to read payload: %d", len);
-		/* The library tears the connection down on read errors. */
+		/* The library has already torn the connection down. */
 		return;
 	}
 
@@ -266,8 +284,28 @@ static void handle_publish(const struct mqtt_publish_param *pub)
 	}
 
 	if (!topic_equals(topic, topic_cmd)) {
-		LOG_WRN("Ignoring message on unexpected topic %.*s",
-			(int)topic->size, (const char *)topic->utf8);
+		char name[64];
+		size_t n = MIN(topic->size, sizeof(name) - 1);
+
+		/* The topic in rx_buffer is not NUL-terminated. */
+		memcpy(name, topic->utf8, n);
+		name[n] = '\0';
+		LOG_WRN("Ignoring message on unexpected topic %s", name);
+		return;
+	}
+
+	/* Live messages are always delivered with RETAIN=0 [MQTT-3.3.1-9].
+	 * RETAIN=1 means a stale command stored on the broker, which would
+	 * otherwise be replayed after every reconnect.
+	 */
+	if (pub->retain_flag) {
+		LOG_WRN("Ignoring retained command (commands must not be retained)");
+		return;
+	}
+
+	/* Clearing a retained message publishes an empty payload. */
+	if (len == 0) {
+		LOG_INF("Ignoring empty command");
 		return;
 	}
 
@@ -286,16 +324,35 @@ static void handle_publish(const struct mqtt_publish_param *pub)
 	}
 }
 
+static const char *connack_reason(int code)
+{
+	switch (code) {
+	case MQTT_UNACCEPTABLE_PROTOCOL_VERSION:
+		return "unacceptable protocol version";
+	case MQTT_IDENTIFIER_REJECTED:
+		return "client identifier rejected (too long or invalid characters?)";
+	case MQTT_SERVER_UNAVAILABLE:
+		return "server unavailable";
+	case MQTT_BAD_USER_NAME_OR_PASSWORD:
+		return "bad user name or password";
+	case MQTT_NOT_AUTHORIZED:
+		return "not authorized";
+	default:
+		return "malformed CONNACK";
+	}
+}
+
 static void mqtt_evt_handler(struct mqtt_client *const c,
 			     const struct mqtt_evt *evt)
 {
 	switch (evt->type) {
 	case MQTT_EVT_CONNACK:
 		if (evt->result != 0) {
-			/* result is the CONNACK return code (1..5, e.g. 5 = not
-			 * authorised) or a negative errno for a malformed packet.
+			/* result is the CONNACK return code (1..5) or a
+			 * negative errno for a malformed packet.
 			 */
-			LOG_ERR("Broker refused connection: %d", evt->result);
+			LOG_ERR("Broker refused connection: %d (%s)", evt->result,
+				connack_reason(evt->result));
 			s.connack_failed = true;
 			break;
 		}
@@ -338,11 +395,18 @@ static void mqtt_evt_handler(struct mqtt_client *const c,
 	case MQTT_EVT_SUBACK: {
 		const struct mqtt_suback_param *ack = &evt->param.suback;
 
+		if (ack->message_id != s.subscribe_msg_id) {
+			LOG_WRN("SUBACK for unknown message id %u", ack->message_id);
+			break;
+		}
 		if (evt->result != 0 || ack->return_codes.len == 0U ||
 		    ack->return_codes.data[0] == MQTT_SUBACK_FAILURE) {
-			LOG_ERR("Subscription to %s rejected", topic_cmd);
+			LOG_ERR("Subscription to %s rejected by the broker (check its ACL)",
+				topic_cmd);
+			s.subscribe_failed = true;
 		} else {
 			LOG_INF("Subscribed (granted QoS %u)", ack->return_codes.data[0]);
+			s.subscribed = true;
 		}
 		break;
 	}
@@ -398,15 +462,18 @@ static void client_setup(void)
 	client.client_id.size = strlen(client_id);
 	client.protocol_version = MQTT_VERSION_3_1_1;
 	client.keepalive = CONFIG_MQTT_KEEPALIVE;
+	/* The application keeps no state across connections (it
+	 * re-subscribes and does not resend in-flight messages), so it
+	 * always asks for a clean session.
+	 */
 	client.clean_session = 1U;
 
 	client.will_topic = &will_topic;
 	client.will_message = &will_message;
 	client.will_retain = 1U;
 
-	/* MQTT 3.1.1 allows a user name without a password, not vice versa. */
 	client.user_name = (username.size > 0U) ? &username : NULL;
-	client.password = (username.size > 0U && password.size > 0U) ? &password : NULL;
+	client.password = (password.size > 0U) ? &password : NULL;
 
 	client.rx_buf = rx_buffer;
 	client.rx_buf_size = sizeof(rx_buffer);
@@ -424,6 +491,7 @@ static void client_setup(void)
 	tls->cipher_count = 0U;
 	tls->sec_tag_list = sec_tags;
 	tls->sec_tag_count = ARRAY_SIZE(sec_tags);
+	/* Used for SNI and for matching the broker certificate. */
 	tls->hostname = (sizeof(CONFIG_APP_MQTT_TLS_HOSTNAME) > 1)
 				? CONFIG_APP_MQTT_TLS_HOSTNAME
 				: CONFIG_APP_MQTT_BROKER_HOSTNAME;
@@ -431,6 +499,26 @@ static void client_setup(void)
 #else
 	client.transport.type = MQTT_TRANSPORT_NON_SECURE;
 #endif
+}
+
+/* Bound every blocking read and write on the session socket. Without this a
+ * TLS socket waits forever (its default timeouts are K_FOREVER), e.g. when
+ * the peer stalls in the middle of a PUBLISH payload.
+ */
+static int set_socket_timeouts(void)
+{
+	struct zsock_timeval tv = {
+		.tv_sec = SOCKET_IO_TIMEOUT_MS / MSEC_PER_SEC,
+		.tv_usec = (SOCKET_IO_TIMEOUT_MS % MSEC_PER_SEC) * USEC_PER_MSEC,
+	};
+
+	if (zsock_setsockopt(mqtt_sock(), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0 ||
+	    zsock_setsockopt(mqtt_sock(), SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) < 0) {
+		LOG_ERR("Cannot set socket timeouts: %d", -errno);
+		return -errno;
+	}
+
+	return 0;
 }
 
 /* Wait until the MQTT socket is readable or @p timeout_ms passes.
@@ -475,19 +563,25 @@ static int input(void)
 	return ret;
 }
 
-static int wait_for_connack(void)
+/* Process incoming packets until *done or *failed becomes true, the
+ * connection drops, or @p timeout_ms passes.
+ */
+static int pump_until(const bool *done, const bool *failed, int timeout_ms,
+		      const char *what)
 {
-	int64_t deadline = k_uptime_get() + CONFIG_APP_MQTT_CONNACK_TIMEOUT_MS;
+	int64_t deadline = k_uptime_get() + timeout_ms;
 	int ret;
 
-	while (!s.connected) {
+	while (!*done) {
 		int64_t remaining = deadline - k_uptime_get();
 
-		if (s.connack_failed) {
+		app_wdt_feed();
+
+		if (*failed) {
 			return -ECONNREFUSED;
 		}
 		if (remaining <= 0) {
-			LOG_ERR("No CONNACK within %d ms", CONFIG_APP_MQTT_CONNACK_TIMEOUT_MS);
+			LOG_ERR("No %s within %d ms", what, timeout_ms);
 			return -ETIMEDOUT;
 		}
 
@@ -500,7 +594,7 @@ static int wait_for_connack(void)
 		}
 
 		ret = input();
-		if (s.connack_failed) {
+		if (*failed) {
 			return -ECONNREFUSED;
 		}
 		if (ret < 0) {
@@ -560,6 +654,8 @@ static int serve(void)
 		int64_t now = k_uptime_get();
 		int timeout;
 
+		app_wdt_feed();
+
 		if (!s.connected) {
 			return -ENOTCONN;
 		}
@@ -606,6 +702,11 @@ static int serve(void)
 	}
 }
 
+static bool is_valid_topic_level(const char *str, const char *forbidden)
+{
+	return str[0] != '\0' && strpbrk(str, forbidden) == NULL;
+}
+
 int app_mqtt_init(void)
 {
 	int ret;
@@ -614,6 +715,22 @@ int app_mqtt_init(void)
 	if (ret < 0) {
 		LOG_ERR("Client ID does not fit: %d", ret);
 		return ret;
+	}
+
+	/* The root may contain '/' (several levels) but no wildcards, and must
+	 * not start with '$' (reserved for broker topics). The client id is a
+	 * single topic level.
+	 */
+	if (!is_valid_topic_level(CONFIG_APP_MQTT_TOPIC_ROOT, "+#") ||
+	    CONFIG_APP_MQTT_TOPIC_ROOT[0] == '$' ||
+	    !is_valid_topic_level(client_id, "+#/")) {
+		LOG_ERR("Topic root or client ID contains '+', '#', '/' or a leading '$'");
+		return -EINVAL;
+	}
+
+	if (strlen(client_id) > 23) {
+		LOG_WRN("Client ID is %u characters; MQTT 3.1.1 brokers only have to "
+			"accept 23", (unsigned int)strlen(client_id));
 	}
 
 #define MAKE_TOPIC(buf, leaf)                                                   \
@@ -636,16 +753,22 @@ int app_mqtt_init(void)
 	LOG_INF("Topics: %s/%s/{status,info,telemetry,cmd,event}",
 		CONFIG_APP_MQTT_TOPIC_ROOT, client_id);
 
+#if defined(CONFIG_APP_MQTT_TLS) && !defined(CONFIG_APP_MQTT_TLS_PEER_VERIFY)
+	LOG_WRN("Broker certificate is NOT verified: the connection can be intercepted");
+#endif
+
 	return 0;
 }
 
 int app_mqtt_run_session(bool *was_connected)
 {
 	int64_t connected_at;
+	int64_t t0;
 	int ret;
 
 	*was_connected = false;
 
+	app_wdt_feed();
 	ret = resolve_broker();
 	if (ret < 0) {
 		return ret;
@@ -654,21 +777,40 @@ int app_mqtt_run_session(bool *was_connected)
 	client_setup();
 	s.connected = false;
 	s.connack_failed = false;
+	s.subscribed = false;
+	s.subscribe_failed = false;
 	s.ping_outstanding = false;
-	s.last_rx = k_uptime_get();
 
 	LOG_INF("Connecting to %s:%d (%s)", CONFIG_APP_MQTT_BROKER_HOSTNAME,
 		CONFIG_APP_MQTT_BROKER_PORT,
 		IS_ENABLED(CONFIG_APP_MQTT_TLS) ? "TLS" : "plain TCP");
 
-	/* Blocks for the TCP connect and the full TLS handshake. */
+	/* Blocks for the TCP connect and then the full TLS handshake, each
+	 * bounded by CONFIG_NET_SOCKETS_CONNECT_TIMEOUT. The handshake bound
+	 * includes the certificate and ECDHE computations.
+	 */
+	app_wdt_feed();
+	t0 = k_uptime_get();
 	ret = mqtt_connect(&client);
 	if (ret < 0) {
-		LOG_ERR("mqtt_connect failed: %d", ret);
+		if (ret == -EAGAIN || ret == -ETIMEDOUT) {
+			LOG_ERR("TCP connect or TLS handshake timed out after %d ms",
+				(int)(k_uptime_get() - t0));
+		} else {
+			LOG_ERR("mqtt_connect failed: %d", ret);
+		}
 		return ret;
 	}
+	LOG_INF("TCP + TLS connected in %d ms", (int)(k_uptime_get() - t0));
+	s.last_rx = k_uptime_get();
 
-	ret = wait_for_connack();
+	ret = set_socket_timeouts();
+	if (ret < 0) {
+		goto out;
+	}
+
+	ret = pump_until(&s.connected, &s.connack_failed,
+			 CONFIG_APP_MQTT_CONNACK_TIMEOUT_MS, "CONNACK");
 	if (ret < 0) {
 		goto out;
 	}
@@ -679,6 +821,13 @@ int app_mqtt_run_session(bool *was_connected)
 	ret = subscribe_commands();
 	if (ret < 0) {
 		LOG_ERR("Subscribe failed: %d", ret);
+		goto out;
+	}
+
+	/* Only announce "online" once the device can actually take commands. */
+	ret = pump_until(&s.subscribed, &s.subscribe_failed,
+			 CONFIG_APP_MQTT_CONNACK_TIMEOUT_MS, "SUBACK");
+	if (ret < 0) {
 		goto out;
 	}
 
