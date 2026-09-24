@@ -1,0 +1,162 @@
+# SPDX-License-Identifier: Apache-2.0
+
+mainmenu "MQTT over Ethernet + TLS application"
+
+menu "MQTT application"
+
+config APP_MQTT_BROKER_HOSTNAME
+	string "Broker host name or IPv4 address"
+	default "test.mosquitto.org"
+	help
+	  Resolved with DNS before every connection attempt, so a broker that
+	  moves to a new address is picked up on the next reconnect.
+
+config APP_MQTT_BROKER_PORT
+	int "Broker TCP port"
+	default 8883 if APP_MQTT_TLS
+	default 1883
+	range 1 65535
+
+config APP_MQTT_CLIENT_ID
+	string "MQTT client identifier"
+	default ""
+	help
+	  Leave empty to derive a stable identifier from the MCU's unique
+	  device ID ("<prefix>-<hex id>"), so every board gets its own id
+	  without per-device configuration.
+
+config APP_MQTT_CLIENT_ID_PREFIX
+	string "Prefix of the derived client identifier"
+	default "zephyr"
+
+config APP_MQTT_TOPIC_ROOT
+	string "Root of the device's topic tree"
+	default "bacnet-uc"
+	help
+	  Topics are "<root>/<client id>/status", ".../telemetry", ".../cmd"
+	  and ".../event".
+
+config APP_MQTT_USERNAME
+	string "User name (empty: none)"
+	default ""
+
+config APP_MQTT_PASSWORD
+	string "Password (empty: none)"
+	default ""
+	help
+	  Stored in the firmware image in clear text. Prefer client
+	  certificates (APP_MQTT_TLS_CLIENT_AUTH) where the broker supports
+	  them.
+
+config APP_MQTT_PUBLISH_INTERVAL_SEC
+	int "Telemetry publish interval (seconds)"
+	default 10
+	range 1 86400
+
+config APP_MQTT_PUBLISH_QOS
+	int "QoS of telemetry messages"
+	default 1
+	range 0 1
+	help
+	  QoS 2 is not offered: the application does not persist in-flight
+	  messages across reconnects, so it would add round trips without
+	  adding delivery guarantees.
+
+config APP_MQTT_CONNACK_TIMEOUT_MS
+	int "Time to wait for CONNACK after the TCP/TLS connection is up (ms)"
+	default 10000
+
+config APP_MQTT_RECONNECT_MIN_MS
+	int "Initial reconnect back-off (ms)"
+	default 1000
+
+config APP_MQTT_RECONNECT_MAX_MS
+	int "Maximum reconnect back-off (ms)"
+	default 60000
+
+config APP_MQTT_BUFFER_SIZE
+	int "MQTT RX and TX buffer size (bytes)"
+	default 1024
+	help
+	  Upper bound for one outgoing MQTT packet and for the fixed and
+	  variable header of an incoming one. Incoming payloads are read
+	  separately (see APP_MQTT_MAX_PAYLOAD_SIZE).
+
+config APP_MQTT_MAX_PAYLOAD_SIZE
+	int "Largest command payload that is processed (bytes)"
+	default 128
+	help
+	  Longer payloads on the command topic are read and discarded so the
+	  connection stays in sync.
+
+config APP_MQTT_TLS
+	bool "Use TLS (MQTTS)"
+	default y
+	depends on MQTT_LIB_TLS
+
+if APP_MQTT_TLS
+
+config APP_MQTT_TLS_CA_CERT_FILE
+	string "CA certificate used to verify the broker (PEM or .der)"
+	default "certs/mosquitto.org.crt"
+	help
+	  Path is relative to the application directory unless absolute.
+	  The default is the CA of the public test broker test.mosquitto.org.
+
+config APP_MQTT_TLS_PEER_VERIFY
+	bool "Verify the broker certificate"
+	default y
+	help
+	  Disabling this makes the connection vulnerable to
+	  man-in-the-middle attacks. Only for bring-up.
+
+config APP_MQTT_TLS_HOSTNAME
+	string "Expected host name in the broker certificate (and SNI)"
+	default ""
+	help
+	  Leave empty to use APP_MQTT_BROKER_HOSTNAME. Set it when the broker
+	  is addressed by IP address but its certificate carries a DNS name.
+
+config APP_MQTT_TLS_CLIENT_AUTH
+	bool "Authenticate with a client certificate (mutual TLS)"
+
+config APP_MQTT_TLS_CLIENT_CERT_FILE
+	string "Client certificate (PEM or .der)"
+	depends on APP_MQTT_TLS_CLIENT_AUTH
+	default "certs/client.crt"
+
+config APP_MQTT_TLS_CLIENT_KEY_FILE
+	string "Client private key (PEM or .der)"
+	depends on APP_MQTT_TLS_CLIENT_AUTH
+	default "certs/client.key"
+	help
+	  The key is stored unencrypted in flash. Protect it with flash
+	  read-out protection (RDP) on production parts, or move it into a
+	  secure element.
+
+endif # APP_MQTT_TLS
+
+config APP_WAIT_FOR_NETWORK
+	bool "Wait for an IPv4 address before connecting"
+	default y
+	depends on NET_CONNECTION_MANAGER
+	help
+	  Uses the connection manager to wait until the default interface is
+	  up and has an IPv4 address, and drops the MQTT session when the
+	  network goes away.
+
+config APP_DHCPV4
+	bool "Start DHCPv4 on the default interface"
+	default y
+	depends on NET_DHCPV4 && !NET_CONFIG_SETTINGS
+	help
+	  When CONFIG_NET_CONFIG_SETTINGS is used instead, the net_config
+	  library assigns the (static or DHCP) address.
+
+endmenu
+
+module = APP
+module-str = app
+source "subsys/logging/Kconfig.template.log_config"
+
+source "Kconfig.zephyr"
