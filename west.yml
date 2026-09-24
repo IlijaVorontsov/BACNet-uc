@@ -1,0 +1,27 @@
+# West manifest for the BACNet-uc firmware workspace (T2 topology: this repo is
+# the manifest repository, Zephyr and its modules are fetched next to it).
+#
+#   west init -l BACNet-uc   # from the directory that contains this repo
+#   west update
+#
+# Only the modules the STM32 applications need are imported, which keeps
+# `west update` at a few hundred MB instead of several GB.
+manifest:
+  version: "0.13"
+
+  remotes:
+    - name: zephyrproject-rtos
+      url-base: https://github.com/zephyrproject-rtos
+
+  projects:
+    - name: zephyr
+      remote: zephyrproject-rtos
+      revision: v3.7.2
+      import:
+        name-allowlist:
+          - cmsis
+          - hal_stm32
+          - mbedtls
+
+  self:
+    path: BACNet-uc
