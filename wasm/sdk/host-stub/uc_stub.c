@@ -823,6 +823,7 @@ int32_t uc_remote_read(uint32_t device, uint32_t type, uint32_t instance, uint32
 		       int32_t array_index, double *out, uint32_t timeout_ms)
 {
 	struct stub_remote *r = NULL;
+	struct stub_obj *o;
 	int32_t err;
 
 	if ((out == NULL) || !object_id_ok(type, instance)) {
@@ -832,8 +833,7 @@ int32_t uc_remote_read(uint32_t device, uint32_t type, uint32_t instance, uint32
 		if (!has_perm(UC_STUB_PERM_LOCAL)) {
 			return ret(UC_ERR_PERM);
 		}
-		struct stub_obj *o = obj_find(type, instance);
-
+		o = obj_find(type, instance);
 		if (o == NULL) {
 			return ret(UC_ERR_NOT_FOUND);
 		}
@@ -1108,13 +1108,14 @@ int32_t uc_kv_set(const char *key, uint32_t key_len, const void *val, uint32_t v
 
 void uc_stub_reset(void)
 {
+	const struct uc_stub_app *app = st.app;
 	const char *v = getenv("UC_STUB_VERBOSE");
 
 	memset(&st, 0, sizeof(st));
+	st.app = app;
 	st.perms = UC_STUB_PERM_ALL;
 	st.local_device = 1000;
 	st.cfg_period = 1000;
-	st.app = uc_stub_native_app();
 	st.verbose = (v != NULL) && (v[0] != '\0') && (v[0] != '0');
 }
 
