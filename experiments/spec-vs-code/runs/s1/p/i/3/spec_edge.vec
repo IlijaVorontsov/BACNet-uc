@@ -1,0 +1,418 @@
+# Spec-derived edge cases (ASHRAE 135 clause 20.2), written by hand from the
+# standard -- complements acceptance.vec.  Run: python3 run_vectors.py spec_edge.vec
+### unsigned-boundaries
+enc_unsigned 0
+enc_unsigned 255
+enc_unsigned 256
+enc_unsigned 65535
+enc_unsigned 65536
+enc_unsigned 16777215
+enc_unsigned 16777216
+enc_unsigned 4294967295
+---
+OK 2100
+OK 21ff
+OK 220100
+OK 22ffff
+OK 23010000
+OK 23ffffff
+OK 2401000000
+OK 24ffffffff
+### signed-boundaries
+enc_signed 0
+enc_signed -1
+enc_signed 127
+enc_signed 128
+enc_signed -128
+enc_signed -129
+enc_signed 32767
+enc_signed 32768
+enc_signed -32768
+enc_signed -32769
+enc_signed 8388607
+enc_signed 8388608
+enc_signed -8388608
+enc_signed -8388609
+enc_signed 2147483647
+enc_signed -2147483648
+---
+OK 3100
+OK 31ff
+OK 317f
+OK 320080
+OK 3180
+OK 32ff7f
+OK 327fff
+OK 33008000
+OK 328000
+OK 33ff7fff
+OK 337fffff
+OK 3400800000
+OK 33800000
+OK 34ff7fffff
+OK 347fffffff
+OK 3480000000
+### real-bit-exact
+enc_real 00000000
+enc_real 80000000
+enc_real 7fc00001
+enc_real ff800000
+enc_real 00000001
+---
+OK 4400000000
+OK 4480000000
+OK 447fc00001
+OK 44ff800000
+OK 4400000001
+### octet-string-short
+enc_octets -
+enc_octets 01020304
+enc_octets 0102030405
+---
+OK 60
+OK 6401020304
+OK 65050102030405
+### char-string-lengths
+enc_str -
+enc_str 616263
+enc_str 61626364
+enc_str 410042
+enc_str f09f9880
+---
+OK 7100
+OK 7400616263
+OK 75050061626364
+OK 7400410042
+OK 750500f09f9880
+### char-string-invalid-utf8
+enc_str ff
+enc_str c080
+enc_str eda080
+enc_str f4908080
+enc_str e282
+enc_str 80
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+### bit-string-lengths
+enc_bits -
+enc_bits 1
+enc_bits 11111111
+enc_bits 111111111
+enc_bits 10000000000000000000000000000001
+enc_bits 02
+---
+OK 8100
+OK 820780
+OK 8200ff
+OK 8307ff80
+OK 85050080000001
+OK 820640
+### enumerated
+enc_enum 256
+enc_enum 4294967295
+---
+OK 920100
+OK 94ffffffff
+### date-ranges
+enc_date 1900 1 1 1
+enc_date 2154 12 31 7
+enc_date 65535 255 255 255
+enc_date 2024 13 32 1
+enc_date 2024 14 34 255
+enc_date 1899 1 1 1
+enc_date 2155 1 1 1
+enc_date 2024 0 1 1
+enc_date 2024 15 1 1
+enc_date 2024 1 0 1
+enc_date 2024 1 35 1
+enc_date 2024 1 1 0
+enc_date 2024 1 1 8
+---
+OK a400010101
+OK a4fe0c1f07
+OK a4ffffffff
+OK a47c0d2001
+OK a47c0e22ff
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+### time-ranges
+enc_time 0 0 0 0
+enc_time 23 59 59 99
+enc_time 255 255 255 255
+enc_time 24 0 0 0
+enc_time 0 60 0 0
+enc_time 0 0 60 0
+enc_time 0 0 0 100
+---
+OK b400000000
+OK b4173b3b63
+OK b4ffffffff
+ERR
+ERR
+ERR
+ERR
+### object-id-ranges
+enc_oid 1023 4194303
+enc_oid 8 1234
+enc_oid 1024 0
+enc_oid 0 4194304
+---
+OK c4ffffffff
+OK c4020004d2
+ERR
+ERR
+### context-tags
+enc_ctx_unsigned 0 0
+enc_ctx_unsigned 14 1
+enc_ctx_unsigned 15 1
+enc_ctx_unsigned 254 5
+enc_ctx_unsigned 255 5
+enc_ctx_unsigned 3 4294967295
+enc_ctx_bool 0 1
+enc_ctx_bool 2 0
+enc_ctx_bool 20 1
+enc_ctx_bool 255 1
+---
+OK 0900
+OK e901
+OK f90f01
+OK f9fe05
+ERR
+OK 3cffffffff
+OK 0901
+OK 2900
+OK f91401
+ERR
+### opening-closing-extended
+enc_open 0
+enc_close 0
+enc_open 14
+enc_close 14
+enc_open 15
+enc_close 15
+enc_open 254
+enc_close 254
+enc_open 255
+enc_close 255
+---
+OK 0e
+OK 0f
+OK ee
+OK ef
+OK fe0f
+OK ff0f
+OK fefe
+OK fffe
+ERR
+ERR
+### capacity
+enc_unsigned 72 @2
+enc_unsigned 72 @1
+enc_unsigned 72 @0
+enc_null @0
+enc_bool 0 @0
+enc_str 61626364 @7
+enc_str 61626364 @6
+enc_octets rep:aa:254 @258
+enc_octets rep:aa:254 @257
+enc_ctx_unsigned 15 1 @3
+enc_ctx_unsigned 15 1 @2
+enc_open 15 @2
+enc_open 15 @1
+enc_bits 111111111 @4
+enc_bits 111111111 @3
+enc_date 2024 1 1 1 @4
+enc_oid 1 1 @4
+---
+OK 2148
+ERR
+ERR
+ERR
+ERR
+OK 75050061626364
+ERR
+OK 65fe00feaaaaaaaaaaaaaaaaaaaaaaaa..067d41560c8042e2/258
+ERR
+OK f90f01
+ERR
+OK fe0f
+ERR
+OK 8307ff80
+ERR
+ERR
+ERR
+### decode-integers
+dec_app 2100
+dec_app 24ffffffff
+dec_app 250500ffffffff
+dec_app 20
+dec_app 21
+dec_app 220048
+dec_app 31ff
+dec_app 3480000000
+dec_app 320080
+dec_app 32ff80
+dec_app 32007f
+dec_app 9100
+dec_app 2148ff
+---
+OK n=2 u 0
+OK n=5 u 4294967295
+ERR
+ERR
+ERR
+ERR
+OK n=2 i -1
+OK n=5 i -2147483648
+OK n=3 i 128
+ERR
+ERR
+OK n=2 enum 0
+OK n=2 u 72
+### decode-fixed
+dec_app 10
+dec_app 11
+dec_app 12
+dec_app 00
+dec_app 0100
+dec_app 4400000000
+dec_app 43000000
+dec_app 45000000000000
+dec_app 55083ff0000000000000
+---
+OK n=1 bool 0
+OK n=1 bool 1
+ERR
+OK n=1 null
+ERR
+OK n=5 r 00000000
+ERR
+ERR
+ERR
+### decode-strings
+dec_app 60
+dec_app 64aabbccdd
+dec_app 6505aaaaaaaaaa
+dec_app 650401020304
+dec_app 70
+dec_app 7100
+dec_app 7202ff
+dec_app 7200ff
+dec_app 7505+00+rep:41:4
+---
+OK n=1 oct -
+OK n=5 oct aabbccdd
+OK n=7 oct aaaaaaaaaa
+ERR
+ERR
+OK n=2 str cs=0 -
+OK n=3 str cs=2 ff
+ERR
+OK n=7 str cs=0 41414141
+### decode-bits
+dec_app 8100
+dec_app 8101
+dec_app 8108ff
+dec_app 8203a8
+dec_app 8203af
+dec_app 80
+---
+OK n=2 bits -
+ERR
+ERR
+OK n=3 bits 10101
+OK n=3 bits 10101
+ERR
+### decode-date-time-oid
+dec_app a45b011804
+dec_app a4ff0d2105
+dec_app a45b001804
+dec_app b411232d11
+dec_app b418000000
+dec_app c4ffffffff
+dec_app a35b0118
+---
+OK n=5 date 1991 1 24 4
+OK n=5 date 65535 13 33 5
+ERR
+OK n=5 time 17 35 45 17
+ERR
+OK n=5 oid 1023 4194303
+ERR
+### decode-rejects-non-application
+dec_app d0
+dec_app e0
+dec_app f00f
+dec_app 0948
+dec_app 0e
+dec_app -
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+### decode-truncated-content
+dec_app 6505aaaa
+dec_app 65fe0100+rep:00:255
+dec_app c400c000
+---
+ERR
+ERR
+ERR
+### dec-tag
+dec_tag 0e
+dec_tag 1f
+dec_tag fe0f
+dec_tag fffe
+dec_tag feff
+dec_tag f80e
+dec_tag f90f
+dec_tag 06
+dec_tag 6505
+dec_tag 65fe0100
+dec_tag 65ff00010000
+dec_tag 65ffffffffff
+dec_tag 65fe00fd
+dec_tag 65ff0000ffff
+dec_tag 6504
+dec_tag 65
+dec_tag 65fe01
+dec_tag fd0f05
+dec_tag -
+dec_tag f8
+dec_tag 11
+---
+OK hl=1 tag=0 ctx open
+OK hl=1 tag=1 ctx close
+OK hl=2 tag=15 ctx open
+OK hl=2 tag=254 ctx close
+ERR
+ERR
+OK hl=2 tag=15 ctx lvt=1
+ERR
+OK hl=2 tag=6 app lvt=5
+OK hl=4 tag=6 app lvt=256
+OK hl=6 tag=6 app lvt=65536
+OK hl=6 tag=6 app lvt=4294967295
+ERR
+ERR
+ERR
+ERR
+ERR
+OK hl=3 tag=15 ctx lvt=5
+ERR
+ERR
+OK hl=1 tag=1 app lvt=1

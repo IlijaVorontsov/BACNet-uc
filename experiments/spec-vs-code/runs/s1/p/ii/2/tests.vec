@@ -1,0 +1,565 @@
+# Unit tests for bacapp.c (vector format: see run_vectors.py / driver.c).
+# Expected encodings follow ASHRAE 135 clause 20.2.
+
+### tag-ctx-unsigned-short-tags
+enc_ctx_unsigned 0 0
+enc_ctx_unsigned 1 255
+enc_ctx_unsigned 14 5
+enc_ctx_unsigned 3 4294967295
+enc_ctx_unsigned 2 65536
+---
+OK 0900
+OK 19ff
+OK e905
+OK 3cffffffff
+OK 2b010000
+### tag-ctx-unsigned-extended-tags
+enc_ctx_unsigned 15 5
+enc_ctx_unsigned 100 256
+enc_ctx_unsigned 254 0
+enc_ctx_unsigned 255 0
+---
+OK f90f05
+OK fa640100
+OK f9fe00
+ERR
+### tag-ctx-boolean
+enc_ctx_bool 0 1
+enc_ctx_bool 2 0
+enc_ctx_bool 20 1
+enc_ctx_bool 255 1
+---
+OK 0901
+OK 2900
+OK f91401
+ERR
+### tag-opening-closing
+enc_open 0
+enc_close 0
+enc_open 14
+enc_close 14
+enc_open 15
+enc_close 15
+enc_open 254
+enc_close 254
+enc_open 255
+enc_close 255
+---
+OK 0e
+OK 0f
+OK ee
+OK ef
+OK fe0f
+OK ff0f
+OK fefe
+OK fffe
+ERR
+ERR
+### dec-tag-opening-closing
+dec_tag 0e
+dec_tag 1f
+dec_tag fe0f
+dec_tag fffe
+---
+OK hl=1 tag=0 ctx open
+OK hl=1 tag=1 ctx close
+OK hl=2 tag=15 ctx open
+OK hl=2 tag=254 ctx close
+### dec-tag-app-class-lengths
+dec_tag 00
+dec_tag 11
+dec_tag 24
+dec_tag 6505
+dec_tag 65fd
+dec_tag 65fe00fe
+dec_tag 65feffff
+dec_tag 65ff00010000
+dec_tag 65ffffffffff
+---
+OK hl=1 tag=0 app lvt=0
+OK hl=1 tag=1 app lvt=1
+OK hl=1 tag=2 app lvt=4
+OK hl=2 tag=6 app lvt=5
+OK hl=2 tag=6 app lvt=253
+OK hl=4 tag=6 app lvt=254
+OK hl=4 tag=6 app lvt=65535
+OK hl=6 tag=6 app lvt=65536
+OK hl=6 tag=6 app lvt=4294967295
+### dec-tag-extended-tag-and-length
+dec_tag f90f
+dec_tag fd0f05
+dec_tag fdfefeffff
+dec_tag fdfeff00010000
+---
+OK hl=2 tag=15 ctx lvt=1
+OK hl=3 tag=15 ctx lvt=5
+OK hl=5 tag=254 ctx lvt=65535
+OK hl=7 tag=254 ctx lvt=65536
+### dec-tag-header-only
+dec_tag 29
+dec_tag 2148ffff
+---
+OK hl=1 tag=2 ctx lvt=1
+OK hl=1 tag=2 app lvt=1
+### dec-tag-malformed
+dec_tag -
+dec_tag f9
+dec_tag f9ff05
+dec_tag 06
+dec_tag 07
+dec_tag 65
+dec_tag 65fe00
+dec_tag 65ff000100
+dec_tag fd0f
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+### null
+enc_null
+enc_null @1
+enc_null @0
+dec_app 00
+dec_app 0100
+---
+OK 00
+OK 00
+ERR
+OK n=1 null
+ERR
+### boolean-app
+enc_bool 0
+enc_bool 1
+enc_bool 1 @0
+dec_app 10
+dec_app 11
+dec_app 12
+dec_app 1501
+---
+OK 10
+OK 11
+ERR
+OK n=1 bool 0
+OK n=1 bool 1
+ERR
+ERR
+### unsigned-octet-boundaries
+enc_unsigned 0
+enc_unsigned 255
+enc_unsigned 256
+enc_unsigned 65535
+enc_unsigned 65536
+enc_unsigned 16777215
+enc_unsigned 16777216
+enc_unsigned 4294967295
+---
+OK 2100
+OK 21ff
+OK 220100
+OK 22ffff
+OK 23010000
+OK 23ffffff
+OK 2401000000
+OK 24ffffffff
+### unsigned-decode
+dec_app 2100
+dec_app 220100
+dec_app 23010000
+dec_app 24ffffffff
+dec_app 220048
+dec_app 25050000000048
+dec_app 25050100000000
+dec_app 20
+dec_app 2201
+dec_app 2148ff
+---
+OK n=2 u 0
+OK n=3 u 256
+OK n=4 u 65536
+OK n=5 u 4294967295
+OK n=3 u 72
+OK n=7 u 72
+ERR
+ERR
+ERR
+OK n=2 u 72
+### enumerated
+enc_enum 255
+enc_enum 256
+enc_enum 4294967295
+dec_app 9100
+dec_app 94ffffffff
+dec_app 90
+---
+OK 91ff
+OK 920100
+OK 94ffffffff
+OK n=2 enum 0
+OK n=5 enum 4294967295
+ERR
+### signed-octet-boundaries
+enc_signed 0
+enc_signed -1
+enc_signed 127
+enc_signed 128
+enc_signed -128
+enc_signed -129
+enc_signed 32767
+enc_signed 32768
+enc_signed -32768
+enc_signed -32769
+enc_signed 8388607
+enc_signed 8388608
+enc_signed -8388608
+enc_signed -8388609
+enc_signed 2147483647
+enc_signed -2147483648
+---
+OK 3100
+OK 31ff
+OK 317f
+OK 320080
+OK 3180
+OK 32ff7f
+OK 327fff
+OK 33008000
+OK 328000
+OK 33ff7fff
+OK 337fffff
+OK 3400800000
+OK 33800000
+OK 34ff7fffff
+OK 347fffffff
+OK 3480000000
+### signed-decode
+dec_app 3100
+dec_app 31ff
+dec_app 3180
+dec_app 32ff7f
+dec_app 320080
+dec_app 33800000
+dec_app 347fffffff
+dec_app 3480000000
+dec_app 32ffff
+dec_app 3505ffffffff80
+dec_app 3505ff7fffffff
+dec_app 35050080000000
+dec_app 30
+dec_app 33ffff
+---
+OK n=2 i 0
+OK n=2 i -1
+OK n=2 i -128
+OK n=3 i -129
+OK n=3 i 128
+OK n=4 i -8388608
+OK n=5 i 2147483647
+OK n=5 i -2147483648
+OK n=3 i -1
+OK n=7 i -128
+ERR
+ERR
+ERR
+ERR
+### real
+enc_real 00000000
+enc_real 80000000
+enc_real 3f800000
+enc_real 7f800000
+enc_real 7fc00001
+enc_real 00000001
+enc_real 3f800000 @4
+enc_real 3f800000 @5
+dec_app 443f800000
+dec_app 4480000000
+dec_app 447fc00001
+dec_app 43000000
+dec_app 45050000000000
+dec_app 443f80
+---
+OK 4400000000
+OK 4480000000
+OK 443f800000
+OK 447f800000
+OK 447fc00001
+OK 4400000001
+ERR
+OK 443f800000
+OK n=5 r 3f800000
+OK n=5 r 80000000
+OK n=5 r 7fc00001
+ERR
+ERR
+ERR
+### double-unsupported
+dec_app 55083ff0000000000000
+---
+ERR
+### octet-string-lengths
+enc_octets -
+enc_octets 01020304
+enc_octets 0102030405
+enc_octets rep:ab:253
+enc_octets rep:ab:254
+enc_octets rep:cd:65535 @70000
+enc_octets rep:cd:65536 @70000
+---
+OK 60
+OK 6401020304
+OK 65050102030405
+OK 65fdabababababababababababababab..c456215935f4a136/255
+OK 65fe00feabababababababababababab..d51d44ebca21dc68/258
+OK 65feffffcdcdcdcdcdcdcdcdcdcdcdcd..426aa0f29ba69973/65539
+OK 65ff00010000cdcdcdcdcdcdcdcdcdcd..1a344786437731bc/65542
+### octet-string-capacity
+enc_octets 01020304 @4
+enc_octets 01020304 @5
+enc_octets rep:ab:253 @254
+enc_octets rep:ab:253 @255
+enc_octets rep:ab:254 @257
+enc_octets rep:ab:79994 @80000
+enc_octets rep:ab:79995 @80000
+enc_octets - @0
+enc_octets - @1
+enc_octets rep:ab:5 @1023
+enc_octets rep:ab:2000
+---
+ERR
+OK 6401020304
+ERR
+OK 65fdabababababababababababababab..c456215935f4a136/255
+ERR
+OK 65ff0001387aabababababababababab..edbf4b69f9528a48/80000
+ERR
+ERR
+OK 60
+OK 6505ababababab
+ERR
+### octet-string-decode
+dec_app 60
+dec_app 631234ff
+dec_app 65fd+rep:ab:253
+dec_app 65feffff+rep:cd:65535
+dec_app 65ff00010000+rep:cd:65536
+dec_app 631234
+dec_app 65ff00010000+rep:cd:65535
+dec_app 65ffffffffff+00
+---
+OK n=1 oct -
+OK n=4 oct 1234ff
+OK n=255 oct abababababababababababababababab..19df98fb74ac3c3c/253
+OK n=65539 oct cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd..d9c287b6d26cee3c/65535
+OK n=65542 oct cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd..727b8ca78f1a0383/65536
+ERR
+ERR
+ERR
+### char-string
+enc_str -
+enc_str 41
+enc_str 41 @2
+enc_str 41 @3
+enc_str 410042
+enc_str 41424344
+enc_str c3a4e282ac
+enc_str rep:41:65535 @70000
+dec_app 7100
+dec_app 720041
+dec_app 720341
+dec_app 75ff0001000000+rep:41:65535
+dec_app 70
+dec_app 7300
+---
+OK 7100
+OK 720041
+ERR
+OK 720041
+OK 7400410042
+OK 75050041424344
+OK 750600c3a4e282ac
+OK 75ff0001000000414141414141414141..b50fbb111ee6766d/65542
+OK n=2 str cs=0 -
+OK n=3 str cs=0 41
+OK n=3 str cs=3 41
+OK n=65542 str cs=0 41414141414141414141414141414141..e45b61deb77ceeb0/65535
+ERR
+ERR
+### bit-string-encode
+enc_bits -
+enc_bits 1
+enc_bits 00000000
+enc_bits 11111111
+enc_bits 111111111
+enc_bits 0000000000000001
+enc_bits 12
+enc_bits 10101 @2
+enc_bits 10101 @3
+enc_bits rep:1:2032
+enc_bits rep:1:2031
+---
+OK 8100
+OK 820780
+OK 820000
+OK 8200ff
+OK 8307ff80
+OK 83000001
+OK 8206c0
+ERR
+OK 8203a8
+OK 85fe00ff00ffffffffffffffffffffff..46aea06791e5bfcd/259
+OK 85fe00ff01ffffffffffffffffffffff..6f83740d990b3005/259
+### bit-string-decode
+dec_app 8100
+dec_app 8203a8
+dec_app 8203af
+dec_app 8307ff80
+dec_app 85fe00ff+00+rep:ff:254
+dec_app 85fe00ff+01+rep:ff:253+fe
+dec_app 80
+dec_app 8101
+dec_app 8208ff
+dec_app 8203
+---
+OK n=2 bits -
+OK n=3 bits 10101
+OK n=3 bits 10101
+OK n=4 bits 111111111
+OK n=259 bits 2032bits..6c9bbcb6085bdb27
+OK n=259 bits 2031bits..6c9bbcb6085bdba7
+ERR
+ERR
+ERR
+ERR
+### date-encode
+enc_date 1900 1 1 1
+enc_date 2154 12 31 7
+enc_date 2024 13 32 255
+enc_date 2024 14 33 1
+enc_date 2024 2 34 1
+enc_date 65535 255 255 255
+enc_date 1899 1 1 1
+enc_date 2155 1 1 1
+enc_date 255 1 1 1
+enc_date 2024 0 1 1
+enc_date 2024 15 1 1
+enc_date 2024 1 0 1
+enc_date 2024 1 35 1
+enc_date 2024 1 1 0
+enc_date 2024 1 1 8
+enc_date 2024 1 1 1 @4
+---
+OK a400010101
+OK a4fe0c1f07
+OK a47c0d20ff
+OK a47c0e2101
+OK a47c022201
+OK a4ffffffff
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+### date-decode
+dec_app a45b011804
+dec_app a400010101
+dec_app a4fe0c1f07
+dec_app a4ff0102ff
+dec_app a47c000000
+dec_app a37c0d20
+dec_app a47c0d20
+---
+OK n=5 date 1991 1 24 4
+OK n=5 date 1900 1 1 1
+OK n=5 date 2154 12 31 7
+OK n=5 date 65535 1 2 255
+OK n=5 date 2024 0 0 0
+ERR
+ERR
+### time
+enc_time 0 0 0 0
+enc_time 23 59 59 99
+enc_time 255 255 255 255
+enc_time 12 255 0 255
+enc_time 24 0 0 0
+enc_time 0 60 0 0
+enc_time 0 0 60 0
+enc_time 0 0 0 100
+dec_app b411232d11
+dec_app b4ffffffff
+dec_app b5050000000000
+dec_app b4000000
+---
+OK b400000000
+OK b4173b3b63
+OK b4ffffffff
+OK b40cff00ff
+ERR
+ERR
+ERR
+ERR
+OK n=5 time 17 35 45 17
+OK n=5 time 255 255 255 255
+ERR
+ERR
+### object-id
+enc_oid 0 0
+enc_oid 8 4194303
+enc_oid 1023 4194303
+enc_oid 1024 0
+enc_oid 0 4194304
+enc_oid 3 15 @4
+dec_app c4023fffff
+dec_app c4ffffffff
+dec_app c300c000
+---
+OK c400000000
+OK c4023fffff
+OK c4ffffffff
+ERR
+ERR
+ERR
+OK n=5 oid 8 4194303
+OK n=5 oid 1023 4194303
+ERR
+### dec-app-rejects-non-application
+dec_app 0948
+dec_app 0e
+dec_app 0f
+dec_app d100
+dec_app e100
+dec_app f10f00
+dec_app -
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+### dec-app-extended-tag-number-accepted
+dec_app f10248
+---
+OK n=3 u 72
+### roundtrip-samples
+dec_app 3480000000
+dec_app 9203e8
+dec_app 4447c35000
+dec_app 75050041424344
+dec_app 8206c0
+---
+OK n=5 i -2147483648
+OK n=3 enum 1000
+OK n=5 r 47c35000
+OK n=7 str cs=0 41424344
+OK n=3 bits 11

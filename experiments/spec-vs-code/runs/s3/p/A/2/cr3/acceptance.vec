@@ -1,0 +1,351 @@
+# Acceptance test: known-good encodings (ASHRAE 135 clause 20.2 examples) and round trips.
+# Blocks real-nan-encoded .. encoder-capacity are CR-102 regression vectors: edge cases (NaN/Inf,
+# length and tag-number boundaries, capacity limits) whose output had to stay exactly as before the
+# CR-102 refactor. CR-103 item 2 deliberately changed the two NaN blocks: NaN used to be rejected
+# (ERR) and is now encoded like any other bit pattern.
+# Blocks from char-string-utf8-valid onwards are CR-103 vectors (UTF-8 validation, NaN, and
+# Unsigned/Enumerated 0 keeping its one content octet).
+### unsigned-72
+enc_unsigned 72
+---
+OK 2148
+### signed-72
+enc_signed 72
+---
+OK 3148
+### real-72
+enc_real 42900000
+---
+OK 4442900000
+### boolean-true
+enc_bool 1
+---
+OK 11
+### null
+enc_null
+---
+OK 00
+### octet-string
+enc_octets 1234ff
+---
+OK 631234ff
+### character-string
+enc_str 546869732069732061204241436e657420737472696e6721
+---
+OK 751900546869732069732061204241436e657420737472696e6721
+### bit-string
+enc_bits 10101
+---
+OK 8203a8
+### enumerated-0
+enc_enum 0
+---
+OK 9100
+### date
+enc_date 1991 1 24 4
+---
+OK a45b011804
+### time
+enc_time 17 35 45 17
+---
+OK b411232d11
+### object-id
+enc_oid 3 15
+---
+OK c400c0000f
+### context-unsigned
+enc_ctx_unsigned 0 256
+---
+OK 0a0100
+### opening-closing
+enc_open 1
+enc_close 1
+---
+OK 1e
+OK 1f
+### decode-unsigned
+dec_app 2148
+---
+OK n=2 u 72
+### decode-real
+dec_app 4442900000
+---
+OK n=5 r 42900000
+### decode-string
+dec_app 751900546869732069732061204241436e657420737472696e6721
+---
+OK n=27 str cs=0 546869732069732061204241436e657420737472696e6721
+### decode-object-id
+dec_app c400c0000f
+---
+OK n=5 oid 3 15
+### decode-context-header
+dec_tag 0a0100
+---
+OK hl=1 tag=0 ctx lvt=2
+### double-72
+enc_double 4052000000000000
+---
+OK 55084052000000000000
+### decode-double
+dec_app 55084052000000000000
+---
+OK n=10 d 4052000000000000
+### double-bad-length
+dec_app 5504+rep:00:4
+dec_app 5509+rep:00:9
+---
+ERR
+ERR
+### context-enumerated
+enc_ctx_enum 0 1
+enc_ctx_enum 3 256
+---
+OK 0901
+OK 3a0100
+### context-signed
+enc_ctx_signed 2 72
+enc_ctx_signed 1 -129
+---
+OK 2948
+OK 1aff7f
+### real-nan-encoded
+enc_real 7fc00000
+enc_real ffc00000
+enc_real 7f800001
+enc_real 7fffffff
+---
+OK 447fc00000
+OK 44ffc00000
+OK 447f800001
+OK 447fffffff
+### real-inf-and-negative-zero
+enc_real 7f800000
+enc_real ff800000
+enc_real 80000000
+---
+OK 447f800000
+OK 44ff800000
+OK 4480000000
+### double-nan-encoded
+enc_double 7ff8000000000000
+enc_double fff8000000000000
+enc_double 7ff0000000000001
+enc_double 7ff0000100000000
+---
+OK 55087ff8000000000000
+OK 5508fff8000000000000
+OK 55087ff0000000000001
+OK 55087ff0000100000000
+### double-inf-and-negative-zero
+enc_double 7ff0000000000000
+enc_double fff0000000000000
+enc_double 8000000000000000
+---
+OK 55087ff0000000000000
+OK 5508fff0000000000000
+OK 55088000000000000000
+### unsigned-length-boundaries
+enc_unsigned 255
+enc_unsigned 256
+enc_unsigned 65536
+enc_unsigned 4294967295
+---
+OK 21ff
+OK 220100
+OK 23010000
+OK 24ffffffff
+### signed-length-boundaries
+enc_signed 127
+enc_signed 128
+enc_signed -128
+enc_signed -129
+enc_signed 8388608
+enc_signed -2147483648
+---
+OK 317f
+OK 320080
+OK 3180
+OK 32ff7f
+OK 3400800000
+OK 3480000000
+### context-extended-tag
+enc_ctx_unsigned 20 5
+enc_ctx_signed 254 -1
+enc_ctx_bool 3 1
+enc_open 20
+enc_close 20
+---
+OK f91405
+OK f9feff
+OK 3901
+OK fe14
+OK ff14
+### context-tag-255-rejected
+enc_ctx_unsigned 255 0
+enc_ctx_enum 255 0
+enc_ctx_signed 255 0
+enc_ctx_bool 255 0
+enc_open 255
+enc_close 255
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+### octet-string-extended-length
+enc_octets rep:ab:5
+enc_octets rep:ab:253
+enc_octets rep:ab:254
+---
+OK 6505ababababab
+OK 65fdabababababababababababababab..c456215935f4a136/255
+OK 65fe00feabababababababababababab..d51d44ebca21dc68/258
+### encoder-capacity
+enc_bool 1 @1
+enc_double 4052000000000000 @9
+enc_double 4052000000000000 @10
+enc_ctx_unsigned 20 256 @4
+enc_ctx_unsigned 20 256 @3
+---
+OK 11
+ERR
+OK 55084052000000000000
+OK fa140100
+ERR
+### char-string-utf8-valid
+enc_str -
+enc_str 00
+enc_str c280
+enc_str dfbf
+enc_str e0a080
+enc_str ed9fbf
+enc_str ee8080
+enc_str efbfbf
+enc_str f0908080
+enc_str f48fbfbf
+enc_str 54656d70203231c2b043
+enc_str e282ac+f09f9880
+enc_str rep:41:300+e282ac
+---
+OK 7100
+OK 720000
+OK 7300c280
+OK 7300dfbf
+OK 7400e0a080
+OK 7400ed9fbf
+OK 7400ee8080
+OK 7400efbfbf
+OK 750500f0908080
+OK 750500f48fbfbf
+OK 750b0054656d70203231c2b043
+OK 750800e282acf09f9880
+OK 75fe0130004141414141414141414141..2fb711cfdae63d0d/308
+### char-string-utf8-truncated-or-invalid
+enc_str 80
+enc_str bf
+enc_str 41+80+41
+enc_str c3
+enc_str e282
+enc_str f09f98
+enc_str 41c3
+enc_str rep:41:300+f09f98
+enc_str c341
+enc_str e228a1
+enc_str e28228
+enc_str f0289880
+enc_str f09f2880
+enc_str f09f9828
+enc_str c0
+enc_str c1
+enc_str f5808080
+enc_str f7bfbfbf
+enc_str f888808080
+enc_str fe
+enc_str ff
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+### char-string-utf8-overlong
+enc_str c080
+enc_str c1bf
+enc_str e08080
+enc_str e09fbf
+enc_str f0808080
+enc_str f08fbfbf
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+### char-string-utf8-surrogates-and-above-10ffff
+enc_str eda080
+enc_str edbfbf
+enc_str eda0bdedb880
+enc_str f4908080
+enc_str f4bfbfbf
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+### nan-round-trip-and-capacity
+dec_app 447fc00000
+dec_app 44ff800001
+dec_app 55087ff8000000000000
+dec_app 5508fff0000000000001
+enc_real 7fc00000 @4
+enc_real 7fc00000 @5
+enc_double 7ff8000000000000 @9
+enc_double 7ff8000000000000 @10
+---
+OK n=5 r 7fc00000
+OK n=5 r ff800001
+OK n=10 d 7ff8000000000000
+OK n=10 d fff0000000000001
+ERR
+OK 447fc00000
+ERR
+OK 55087ff8000000000000
+### unsigned-enumerated-zero-one-content-octet
+enc_unsigned 0
+enc_enum 0
+enc_ctx_unsigned 1 0
+enc_ctx_enum 2 0
+dec_app 2100
+dec_app 9100
+dec_app 20
+dec_app 90
+---
+OK 2100
+OK 9100
+OK 1900
+OK 2900
+OK n=2 u 0
+OK n=2 enum 0
+ERR
+ERR

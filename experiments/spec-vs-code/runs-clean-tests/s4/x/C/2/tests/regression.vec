@@ -1,0 +1,175 @@
+# Regression vectors for the fixes listed in REVIEW.md.
+### r01 stale-tick-does-not-fire-delay-timer
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 10 35
+s 20 35
+tick 5
+tick 40
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@40:35.000
+### r02 stale-tick-does-not-escalate
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 50 35
+tick 40
+tick 149
+tick 150
+---
+cfg
+NORMAL
+HIGH TO_HIGH@50:35.000
+HIGH
+HIGH
+HIGH ESCALATE@150:35.000
+### r03 stale-ack-ignored
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 50 35
+ack 40
+tick 150
+---
+cfg
+NORMAL
+HIGH TO_HIGH@50:35.000
+HIGH
+HIGH ESCALATE@150:35.000
+### r04 stale-maint-ignored
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 0
+s 50 20
+maint 40 on
+s 60 35
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@60:35.000
+### r05 high-to-low-direct
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 0
+s 0 35
+s 10 5
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+LOW TO_LOW@10:5.000
+### r06 high-to-low-direct-with-delay
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 0 35
+s 30 35
+s 40 5
+s 69 5
+s 70 5
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000
+HIGH
+HIGH
+LOW TO_LOW@70:5.000
+### r07 high-deadband-boundary-is-strict
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 0
+s 0 35
+s 10 28
+s 20 27.9
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+HIGH
+NORMAL TO_NORMAL@20:27.900
+### r08 low-deadband-boundary-is-strict
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 0
+s 0 5
+s 10 12
+s 20 12.1
+---
+cfg
+NORMAL
+LOW TO_LOW@0:5.000
+LOW
+NORMAL TO_NORMAL@20:12.100
+### r09 alarm-reported-at-maint-off-escalates
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+maint 0 on
+s 10 35
+maint 20 off
+tick 119
+tick 120
+---
+cfg
+NORMAL
+NORMAL
+HIGH
+HIGH TO_HIGH@20:35.000
+HIGH
+HIGH ESCALATE@120:35.000
+### r10 alarm-reported-at-maint-off-restarts-escalation
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 0 35
+maint 10 on
+s 20 5
+maint 30 off
+tick 100
+tick 130
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+HIGH
+LOW
+LOW TO_LOW@30:5.000
+LOW
+LOW ESCALATE@130:5.000
+### r11 fault-recovery-sample-checks-escalation
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 0 35
+sf 50 1
+s 150 20
+tick 160
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+FAULT TO_FAULT@50:1.000
+NORMAL TO_NORMAL@150:20.000 ESCALATE@150:20.000
+NORMAL
+### r12 fault-recovery-sample-is-evaluated
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 0
+sf 10 1
+s 20 35
+---
+cfg
+NORMAL
+FAULT TO_FAULT@10:1.000
+HIGH TO_NORMAL@20:35.000 TO_HIGH@20:35.000
+### r13 fault-recovery-sample-starts-delay
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+sf 10 1
+s 20 35
+s 49 35
+s 50 35
+---
+cfg
+NORMAL
+FAULT TO_FAULT@10:1.000
+NORMAL TO_NORMAL@20:35.000
+NORMAL
+HIGH TO_HIGH@50:35.000

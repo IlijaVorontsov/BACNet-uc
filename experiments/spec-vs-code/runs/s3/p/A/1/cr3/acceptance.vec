@@ -1,0 +1,315 @@
+# Acceptance test: known-good encodings (ASHRAE 135 clause 20.2 examples) and round trips.
+### unsigned-72
+enc_unsigned 72
+---
+OK 2148
+### signed-72
+enc_signed 72
+---
+OK 3148
+### real-72
+enc_real 42900000
+---
+OK 4442900000
+### boolean-true
+enc_bool 1
+---
+OK 11
+### null
+enc_null
+---
+OK 00
+### octet-string
+enc_octets 1234ff
+---
+OK 631234ff
+### character-string
+enc_str 546869732069732061204241436e657420737472696e6721
+---
+OK 751900546869732069732061204241436e657420737472696e6721
+### bit-string
+enc_bits 10101
+---
+OK 8203a8
+### enumerated-0
+enc_enum 0
+---
+OK 9100
+### date
+enc_date 1991 1 24 4
+---
+OK a45b011804
+### time
+enc_time 17 35 45 17
+---
+OK b411232d11
+### object-id
+enc_oid 3 15
+---
+OK c400c0000f
+### context-unsigned
+enc_ctx_unsigned 0 256
+---
+OK 0a0100
+### opening-closing
+enc_open 1
+enc_close 1
+---
+OK 1e
+OK 1f
+### decode-unsigned
+dec_app 2148
+---
+OK n=2 u 72
+### decode-real
+dec_app 4442900000
+---
+OK n=5 r 42900000
+### decode-string
+dec_app 751900546869732069732061204241436e657420737472696e6721
+---
+OK n=27 str cs=0 546869732069732061204241436e657420737472696e6721
+### decode-object-id
+dec_app c400c0000f
+---
+OK n=5 oid 3 15
+### decode-context-header
+dec_tag 0a0100
+---
+OK hl=1 tag=0 ctx lvt=2
+### double-72
+enc_double 4052000000000000
+---
+OK 55084052000000000000
+### decode-double
+dec_app 55084052000000000000
+---
+OK n=10 d 4052000000000000
+### context-enumerated
+enc_ctx_enum 9 0
+---
+OK 9900
+### context-signed
+enc_ctx_signed 1 -1
+---
+OK 19ff
+### real-nan-encoded
+# CR-102 regression vectors (through capacity-errors): behavior that the
+# no-float refactor and the shared tag-header / minimal-length integer
+# writers must preserve.  CR-103 item 2 changed the two NaN blocks: NaN
+# (quiet or signalling, either sign, any payload) was rejected and is now
+# encoded bit for bit like any other value.
+enc_real 7fc00000
+enc_real 7f800001
+enc_real ffc00000
+---
+OK 447fc00000
+OK 447f800001
+OK 44ffc00000
+### real-inf-negzero
+enc_real 7f800000
+enc_real ff800000
+enc_real 80000000
+---
+OK 447f800000
+OK 44ff800000
+OK 4480000000
+### double-nan-encoded
+enc_double 7ff8000000000000
+enc_double 7ff0000000000001
+enc_double fff0000000000001
+enc_double 7ff0000100000000
+---
+OK 55087ff8000000000000
+OK 55087ff0000000000001
+OK 5508fff0000000000001
+OK 55087ff0000100000000
+### double-inf-negzero
+enc_double 7ff0000000000000
+enc_double fff0000000000000
+enc_double 8000000000000000
+---
+OK 55087ff0000000000000
+OK 5508fff0000000000000
+OK 55088000000000000000
+### boolean-false
+enc_bool 0
+---
+OK 10
+### context-boolean
+enc_ctx_bool 2 1
+enc_ctx_bool 20 0
+---
+OK 2901
+OK f91400
+### extended-tag-numbers
+enc_open 20
+enc_close 254
+enc_ctx_signed 15 -32769
+---
+OK fe14
+OK fffe
+OK fb0fff7fff
+### reserved-tag-255
+enc_open 255
+enc_close 255
+enc_ctx_unsigned 255 1
+enc_ctx_enum 255 1
+enc_ctx_signed 255 1
+enc_ctx_bool 255 1
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+### minimal-length-integers
+enc_signed -128
+enc_signed -129
+enc_signed 128
+enc_signed -2147483648
+enc_unsigned 4294967295
+---
+OK 3180
+OK 32ff7f
+OK 320080
+OK 3480000000
+OK 24ffffffff
+### extended-lengths
+enc_octets rep:ab:5
+enc_octets rep:ab:253
+enc_octets rep:ab:254
+enc_octets rep:ab:65535 @70000
+enc_octets rep:ab:65536 @70000
+---
+OK 6505ababababab
+OK 65fdabababababababababababababab..c456215935f4a136/255
+OK 65fe00feabababababababababababab..d51d44ebca21dc68/258
+OK 65feffffabababababababababababab..68b00b5ca1769915/65539
+OK 65ff00010000abababababababababab..07c1678433a731bc/65542
+### capacity-errors
+enc_null @0
+enc_unsigned 256 @2
+enc_unsigned 256 @3
+enc_double 4052000000000000 @9
+---
+ERR
+ERR
+OK 220100
+ERR
+### utf8-well-formed
+# CR-103 vectors (from here to the end of the file).
+# Item 1: well-formed UTF-8 (RFC 3629) is accepted: the empty string, U+0000,
+# and the lowest/highest octets of every sequence length (U+0080, U+07FF,
+# U+0800, U+D7FF, U+E000, U+FFFF, U+10000, U+10FFFF), then e-acute, the euro
+# sign and U+1F600.
+enc_str -
+enc_str 00
+enc_str 7f
+enc_str c280+dfbf
+enc_str e0a080+ed9fbf+ee8080+efbfbf
+enc_str f0908080+f48fbfbf
+enc_str c3a9+e282ac+f09f9880
+enc_str rep:41:300+f48fbfbf
+---
+OK 7100
+OK 720000
+OK 72007f
+OK 750500c280dfbf
+OK 750d00e0a080ed9fbfee8080efbfbf
+OK 750900f0908080f48fbfbf
+OK 750a00c3a9e282acf09f9880
+OK 75fe0131004141414141414141414141..fb2de7bebf30cbe5/309
+### utf8-ill-formed
+# Item 1: ill-formed UTF-8 is rejected and the buffer is left unchanged.
+# Stray continuation octets; truncated 2/3/4-octet sequences (also at the
+# end of a long string); a non-continuation octet inside a sequence;
+# overlong forms (C0, C1, E0 80..9F, F0 80..8F); surrogates U+D800, U+DFFF
+# and a CESU-8 surrogate pair; code points above U+10FFFF (F4 90, F5..F7);
+# the octets F8..FF.
+enc_str 80
+enc_str 41+bf
+enc_str c2
+enc_str e282
+enc_str f09f98
+enc_str rep:41:300+e282
+enc_str c241
+enc_str e28241
+enc_str f09f4180
+enc_str c080
+enc_str c1bf
+enc_str e09fbf
+enc_str f08fbfbf
+enc_str eda080
+enc_str edbfbf
+enc_str eda0bdedb880
+enc_str f4908080
+enc_str f5808080
+enc_str f7bfbfbf
+enc_str f8888080
+enc_str fe
+enc_str ff
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+### utf8-capacity
+# Item 1: the capacity check is unchanged for well-formed text.
+enc_str e282ac @4
+enc_str e282ac @5
+---
+ERR
+OK 7400e282ac
+### nan-round-trip
+# Item 2: a NaN decodes to the same bit pattern; capacity is still checked.
+dec_app 447fc00000
+dec_app 55087ff8000000000000
+enc_real 7fc00000 @4
+enc_double 7ff8000000000000 @9
+---
+OK n=5 r 7fc00000
+OK n=10 d 7ff8000000000000
+ERR
+ERR
+### unsigned-enumerated-zero
+# Item 3 (not implemented, conflicts with ASHRAE 135 clauses 20.2.4 and
+# 20.2.11): Unsigned and Enumerated values have at least one contents octet,
+# so 0 stays 21 00 / 91 00 (the standard's own example is Enumerated 0 ->
+# X'91' X'00'), and contents of length 0 are rejected when decoding.
+enc_unsigned 0
+enc_enum 0
+enc_ctx_unsigned 1 0
+enc_ctx_enum 1 0
+dec_app 2100
+dec_app 9100
+dec_app 20
+dec_app 90
+---
+OK 2100
+OK 9100
+OK 1900
+OK 1900
+OK n=2 u 0
+OK n=2 enum 0
+ERR
+ERR

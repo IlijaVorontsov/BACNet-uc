@@ -1,0 +1,164 @@
+# CR-103 vectors.
+# Item 1 (implemented): bac_enc_char_string accepts only well-formed UTF-8 (RFC 3629),
+#   rule E7a as amended by CR-103. Rejected text -> ERR with the buffer untouched (G1).
+# Items 2 and 3 (declined, see NOTES.md): the last two blocks pin the unchanged behaviour.
+# Run: python3 run_vectors.py acceptance.vec cr102.vec cr103.vec
+### utf8-well-formed
+# first/last code point of every sequence form, noncharacter, BOM, mixed text
+enc_str 00
+enc_str 7f
+enc_str c280
+enc_str dfbf
+enc_str e0a080
+enc_str e18080
+enc_str ed9fbf
+enc_str ee8080
+enc_str efbfbf
+enc_str efbbbf
+enc_str f0908080
+enc_str f1808080
+enc_str f3bfbfbf
+enc_str f48fbfbf
+enc_str 41c3a9e282acf09f9880
+---
+OK 720000
+OK 72007f
+OK 7300c280
+OK 7300dfbf
+OK 7400e0a080
+OK 7400e18080
+OK 7400ed9fbf
+OK 7400ee8080
+OK 7400efbfbf
+OK 7400efbbbf
+OK 750500f0908080
+OK 750500f1808080
+OK 750500f3bfbfbf
+OK 750500f48fbfbf
+OK 750b0041c3a9e282acf09f9880
+### utf8-truncated
+# sequence cut short by the end of the text or by a non-continuation octet;
+# 636166e9 is "cafe" with an e-acute in Latin-1 (not UTF-8)
+enc_str c3
+enc_str e282
+enc_str f09f98
+enc_str 41e282
+enc_str c341
+enc_str e28241
+enc_str f09f9841
+enc_str e1807f
+enc_str f18080c0
+enc_str 636166e9
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+### utf8-invalid-octets
+# stray continuation octets, octets that never occur in UTF-8, old 5/6-octet forms
+enc_str 80
+enc_str bf
+enc_str 4180
+enc_str c3a9a9
+enc_str fe
+enc_str ff
+enc_str f888808080
+enc_str fc8480808080
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+### utf8-overlong
+# C0/C1 leads, E0 80..9F, F0 80..8F; 2e2ec0af is the classic overlong "../"
+enc_str c080
+enc_str c1bf
+enc_str e08080
+enc_str e09fbf
+enc_str f0808080
+enc_str f08fbfbf
+enc_str 2e2ec0af
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+### utf8-surrogates
+# U+D800, U+DB7F, U+DFFF and a CESU-8 surrogate pair (U+1F600)
+enc_str eda080
+enc_str edadbf
+enc_str edbfbf
+enc_str eda0bdedb880
+---
+ERR
+ERR
+ERR
+ERR
+### utf8-above-10ffff
+# U+110000, U+13FFFF, F5..F7 leads
+enc_str f4908080
+enc_str f4bfbfbf
+enc_str f5808080
+enc_str f7bfbfbf
+---
+ERR
+ERR
+ERR
+ERR
+### utf8-capacity-and-g1
+# rejected text leaves the buffer untouched (ERR, not ERR DIRTY) even when it would fit;
+# the check covers the whole text, including a truncated sequence at the very end
+enc_str rep:41:300+c3
+enc_str rep:41:300+c3a9
+enc_str c3a9 @4
+enc_str c3a9 @3
+enc_str c3 @0
+enc_str c3 @1024
+---
+ERR
+OK 75fe012f004141414141414141414141..29249348cb670574/307
+OK 7300c3a9
+ERR
+ERR
+ERR
+### cr103-item2-declined-nan-still-refused
+# E5a/E15a unchanged (decision D-7); the decoder still accepts NaN (D5, D10)
+enc_real 7fc00000
+enc_double 7ff8000000000000
+dec_app 447fc00000
+dec_app 55087ff8000000000000
+---
+ERR
+ERR
+OK n=5 r 7fc00000
+OK n=10 d 7ff8000000000000
+### cr103-item3-declined-zero-has-one-content-octet
+# E3/E12/E16 unchanged: ASHRAE 135 requires at least one content octet; D4 rejects length 0
+enc_unsigned 0
+enc_enum 0
+enc_ctx_unsigned 0 0
+enc_ctx_enum 2 0
+dec_app 2100
+dec_app 20
+dec_app 90
+---
+OK 2100
+OK 9100
+OK 0900
+OK 2900
+OK n=2 u 0
+ERR
+ERR

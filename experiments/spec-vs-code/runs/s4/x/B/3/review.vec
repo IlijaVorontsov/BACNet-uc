@@ -1,0 +1,179 @@
+# Regression vectors added during review (expected values derived from SPEC.md).
+### A3-deadband-return-is-strict
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 1 31
+s 2 28
+s 3 27.9
+---
+cfg
+NORMAL
+HIGH TO_HIGH@1:31.000
+HIGH
+NORMAL TO_NORMAL@3:27.900
+### A4-direct-high-to-low
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 1 31
+s 2 5
+s 3 31
+---
+cfg
+NORMAL
+HIGH TO_HIGH@1:31.000
+LOW TO_LOW@2:5.000
+HIGH TO_HIGH@3:31.000
+### A4-direct-high-to-low-with-delay
+cfg high=30 low=10 deadband=2 delay=10 escalate=0
+init 0
+s 0 31
+s 10 31
+s 20 5
+s 30 5
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@10:31.000
+HIGH
+LOW TO_LOW@30:5.000
+### A12-backwards-tick-ignored
+cfg high=30 low=10 deadband=2 delay=30 escalate=0
+init 100
+s 100 35
+tick 50
+ack 50
+maint 50 on
+s 50 35
+tick 129
+tick 130
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@130:35.000
+### A12-backwards-no-escalation
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 100
+s 100 35
+tick 50
+maint 60 on
+maint 70 off
+tick 199
+tick 200
+---
+cfg
+NORMAL
+HIGH TO_HIGH@100:35.000
+HIGH
+HIGH
+HIGH
+HIGH
+HIGH ESCALATE@200:35.000
+### A12-backwards-maint-ignored
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 100
+s 100 20
+maint 50 on
+s 110 35
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@110:35.000
+### A6a-recovery-evaluated-delay0
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+sf 1 20
+s 2 35
+---
+cfg
+NORMAL
+FAULT TO_FAULT@1:20.000
+HIGH TO_NORMAL@2:35.000 TO_HIGH@2:35.000
+### A6a-recovery-starts-pending
+cfg high=30 low=10 deadband=2 delay=10 escalate=0
+init 0
+s 1 nan
+s 2 5
+tick 11
+tick 12
+---
+cfg
+NORMAL
+FAULT TO_FAULT@1:nan
+NORMAL TO_NORMAL@2:5.000
+NORMAL
+LOW TO_LOW@12:5.000
+### A6a-recovery-runs-escalation-check
+cfg high=30 low=10 deadband=2 delay=0 escalate=10
+init 0
+s 1 35
+sf 5 nan
+s 20 20
+---
+cfg
+NORMAL
+HIGH TO_HIGH@1:35.000
+FAULT TO_FAULT@5:nan
+NORMAL TO_NORMAL@20:20.000 ESCALATE@20:20.000
+### A10-catchup-starts-episode
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+maint 0 on
+s 10 35
+maint 20 off
+tick 119
+tick 120
+---
+cfg
+NORMAL
+NORMAL
+HIGH
+HIGH TO_HIGH@20:35.000
+HIGH
+HIGH ESCALATE@120:35.000
+### A10-catchup-after-acked-episode-rearms
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 5 35
+ack 6
+maint 7 on
+s 10 20
+s 11 5
+maint 20 off
+tick 119
+tick 120
+---
+cfg
+NORMAL
+HIGH TO_HIGH@5:35.000
+HIGH
+HIGH
+NORMAL
+LOW
+LOW TO_LOW@20:5.000
+LOW
+LOW ESCALATE@120:5.000
+### A10-catchup-episode-ack-prevents-escalation
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+maint 0 on
+s 10 5
+maint 20 off
+ack 30
+tick 500
+---
+cfg
+NORMAL
+NORMAL
+LOW
+LOW TO_LOW@20:5.000
+LOW
+LOW

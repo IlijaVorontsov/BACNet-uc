@@ -1,0 +1,125 @@
+# Regression vectors for the fixes listed in REVIEW.md.
+### high-return-boundary-is-strict
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 1 35
+s 2 28
+s 3 27.9
+---
+cfg
+NORMAL
+HIGH TO_HIGH@1:35.000
+HIGH
+NORMAL TO_NORMAL@3:27.900
+### low-return-boundary-is-strict
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 1 5
+s 2 12
+s 3 12.1
+---
+cfg
+NORMAL
+LOW TO_LOW@1:5.000
+LOW
+NORMAL TO_NORMAL@3:12.100
+### high-to-low-direct
+cfg high=30 low=10 deadband=2 delay=10 escalate=0
+init 0
+s 0 35
+s 10 35
+s 20 5
+s 30 5
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+LOW TO_LOW@30:5.000
+### low-to-high-direct
+cfg high=30 low=10 deadband=2 delay=10 escalate=0
+init 0
+s 0 5
+s 10 5
+s 20 35
+s 30 35
+---
+cfg
+NORMAL
+NORMAL
+LOW TO_LOW@10:5.000
+LOW
+HIGH TO_HIGH@30:35.000
+### alarm-during-maintenance-escalates-after-report
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+maint 0 on
+s 10 35
+maint 20 off
+tick 119
+tick 120
+---
+cfg
+NORMAL
+NORMAL
+HIGH
+HIGH TO_HIGH@20:35.000
+HIGH
+HIGH ESCALATE@120:35.000
+### alarm-during-maintenance-ack-stops-escalation
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+maint 0 on
+s 10 5
+maint 20 off
+ack 50
+tick 500
+---
+cfg
+NORMAL
+NORMAL
+LOW
+LOW TO_LOW@20:5.000
+LOW
+LOW
+### stale-tick-does-not-fire-delay
+cfg high=30 low=10 deadband=2 delay=60 escalate=0
+init 0
+s 100 35
+tick 50
+tick 159
+tick 160
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@160:35.000
+### stale-tick-does-not-escalate
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 0
+s 100 35
+tick 50
+maint 60 off
+tick 699
+tick 700
+---
+cfg
+NORMAL
+HIGH TO_HIGH@100:35.000
+HIGH
+HIGH
+HIGH
+HIGH ESCALATE@700:35.000
+### stale-sample-rejected
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 100
+s 50 35
+s 100 35
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@100:35.000

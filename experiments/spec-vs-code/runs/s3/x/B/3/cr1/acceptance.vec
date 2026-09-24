@@ -1,0 +1,140 @@
+# Acceptance test: the alarm scenarios we care about.
+### high-alarm-ack-and-return
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 10 25
+s 20 35
+s 30 35
+s 40 35
+s 50 35
+ack 60
+s 70 27
+s 80 27
+s 90 27
+s 100 27
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@50:35.000
+HIGH
+HIGH
+HIGH
+HIGH
+NORMAL TO_NORMAL@100:27.000
+### low-alarm-unacknowledged-escalates
+cfg high=30 low=10 deadband=2 delay=20 escalate=300
+init 0
+s 0 5
+s 10 5
+s 20 5
+tick 200
+tick 320
+tick 400
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+LOW TO_LOW@20:5.000
+LOW
+LOW ESCALATE@320:5.000
+LOW
+### short-spikes-do-not-alarm
+cfg high=30 low=10 deadband=2 delay=60 escalate=600
+init 0
+s 10 20
+s 20 40
+s 30 20
+s 40 40
+s 50 20
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+### return-to-normal-uses-time-delay-normal
+# CR-201: HIGH -> NORMAL waits time_delay_normal_s (10), not time_delay_s (30).
+cfg high=30 low=10 deadband=2 delay=30 escalate=0 delay_normal=10
+init 0
+s 0 35
+s 30 35
+s 40 25
+s 45 25
+s 50 25
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000
+HIGH
+HIGH
+NORMAL TO_NORMAL@50:25.000
+### direct-high-low-keeps-time-delay
+# CR-201: LOW -> HIGH (direct) uses time_delay_s (5); LOW/HIGH -> NORMAL uses 100.
+cfg high=30 low=10 deadband=2 delay=5 escalate=0 delay_normal=100
+init 0
+s 0 5
+s 5 5
+s 10 35
+s 14 35
+s 15 35
+s 20 20
+s 119 20
+s 120 20
+---
+cfg
+NORMAL
+NORMAL
+LOW TO_LOW@5:5.000
+LOW
+LOW
+HIGH TO_HIGH@15:35.000
+HIGH
+HIGH
+NORMAL TO_NORMAL@120:20.000
+### time-delay-normal-zero-and-fault-recovery
+# CR-201: delay_normal=0 returns immediately; entering alarm still uses time_delay_s;
+# FAULT -> NORMAL recovery stays immediate regardless of time_delay_normal_s.
+cfg high=30 low=10 deadband=2 delay=20 escalate=0 delay_normal=0
+init 0
+s 0 35
+s 20 35
+s 21 20
+sf 22 20
+s 23 20
+s 24 35
+s 44 35
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@20:35.000
+NORMAL TO_NORMAL@21:20.000
+FAULT TO_FAULT@22:20.000
+NORMAL TO_NORMAL@23:20.000
+NORMAL
+HIGH TO_HIGH@44:35.000
+### time-delay-normal-sentinel-means-same
+# CR-201: delay_normal=4294967295 (0xFFFFFFFF) means "same as time_delay_s".
+cfg high=30 low=10 deadband=2 delay=20 escalate=0 delay_normal=4294967295
+init 0
+s 0 35
+s 20 35
+s 30 20
+s 49 20
+s 50 20
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@20:35.000
+HIGH
+HIGH
+NORMAL TO_NORMAL@50:20.000

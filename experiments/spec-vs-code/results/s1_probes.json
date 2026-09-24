@@ -1,0 +1,2443 @@
+{
+ "p": [
+  {
+   "question": "NaN REAL is refused (private decision D-7)",
+   "rule": "E5a",
+   "id": "p0159",
+   "expected": [
+    "ERR"
+   ],
+   "answers": {
+    "i-1": {
+     "ok": false,
+     "got": [
+      "OK 447fc00000"
+     ]
+    },
+    "i-2": {
+     "ok": false,
+     "got": [
+      "OK 447fc00000"
+     ]
+    },
+    "i-3": {
+     "ok": false,
+     "got": [
+      "OK 447fc00000"
+     ]
+    },
+    "i-4": {
+     "ok": false,
+     "got": [
+      "OK 447fc00000"
+     ]
+    },
+    "ii-1": {
+     "ok": false,
+     "got": [
+      "OK 447fc00000"
+     ]
+    },
+    "ii-2": {
+     "ok": false,
+     "got": [
+      "OK 447fc00000"
+     ]
+    },
+    "ii-3": {
+     "ok": false,
+     "got": [
+      "OK 447fc00000"
+     ]
+    },
+    "ii-4": {
+     "ok": false,
+     "got": [
+      "OK 447fc00000"
+     ]
+    },
+    "iii-1": {
+     "ok": true,
+     "got": [
+      "ERR"
+     ]
+    },
+    "iii-2": {
+     "ok": true,
+     "got": [
+      "ERR"
+     ]
+    },
+    "iii-3": {
+     "ok": true,
+     "got": [
+      "ERR"
+     ]
+    },
+    "iii-4": {
+     "ok": true,
+     "got": [
+      "ERR"
+     ]
+    }
+   }
+  },
+  {
+   "question": "bit value 2 is rejected (private)",
+   "rule": "E8a",
+   "id": "p0245",
+   "expected": [
+    "ERR"
+   ],
+   "answers": {
+    "i-1": {
+     "ok": false,
+     "got": [
+      "OK 820780"
+     ]
+    },
+    "i-2": {
+     "ok": false,
+     "got": [
+      "OK 820780"
+     ]
+    },
+    "i-3": {
+     "ok": false,
+     "got": [
+      "OK 820780"
+     ]
+    },
+    "i-4": {
+     "ok": false,
+     "got": [
+      "OK 820780"
+     ]
+    },
+    "ii-1": {
+     "ok": false,
+     "got": [
+      "OK 820780"
+     ]
+    },
+    "ii-2": {
+     "ok": false,
+     "got": [
+      "OK 820780"
+     ]
+    },
+    "ii-3": {
+     "ok": false,
+     "got": [
+      "OK 820780"
+     ]
+    },
+    "ii-4": {
+     "ok": true,
+     "got": [
+      "ERR"
+     ]
+    },
+    "iii-1": {
+     "ok": true,
+     "got": [
+      "ERR"
+     ]
+    },
+    "iii-2": {
+     "ok": true,
+     "got": [
+      "ERR"
+     ]
+    },
+    "iii-3": {
+     "ok": true,
+     "got": [
+      "ERR"
+     ]
+    },
+    "iii-4": {
+     "ok": true,
+     "got": [
+      "ERR"
+     ]
+    }
+   }
+  },
+  {
+   "question": "decoder accepts non-minimal unsigned 22 00 05 (private leniency)",
+   "rule": "D4",
+   "id": "p0479",
+   "expected": [
+    "OK n=3 u 5"
+   ],
+   "answers": {
+    "i-1": {
+     "ok": true,
+     "got": [
+      "OK n=3 u 5"
+     ]
+    },
+    "i-2": {
+     "ok": true,
+     "got": [
+      "OK n=3 u 5"
+     ]
+    },
+    "i-3": {
+     "ok": false,
+     "got": [
+      "ERR"
+     ]
+    },
+    "i-4": {
+     "ok": true,
+     "got": [
+      "OK n=3 u 5"
+     ]
+    },
+    "ii-1": {
+     "ok": true,
+     "got": [
+      "OK n=3 u 5"
+     ]
+    },
+    "ii-2": {
+     "ok": true,
+     "got": [
+      "OK n=3 u 5"
+     ]
+    },
+    "ii-3": {
+     "ok": true,
+     "got": [
+      "OK n=3 u 5"
+     ]
+    },
+    "ii-4": {
+     "ok": false,
+     "got": [
+      "ERR"
+     ]
+    },
+    "iii-1": {
+     "ok": true,
+     "got": [
+      "OK n=3 u 5"
+     ]
+    },
+    "iii-2": {
+     "ok": true,
+     "got": [
+      "OK n=3 u 5"
+     ]
+    },
+    "iii-3": {
+     "ok": true,
+     "got": [
+      "OK n=3 u 5"
+     ]
+    },
+    "iii-4": {
+     "ok": true,
+     "got": [
+      "OK n=3 u 5"
+     ]
+    }
+   }
+  },
+  {
+   "question": "decoder accepts extended length for a short value 65 03 .. (private leniency)",
+   "rule": "D1b",
+   "id": "p0540",
+   "expected": [
+    "OK n=5 oct 00aabb"
+   ],
+   "answers": {
+    "i-1": {
+     "ok": true,
+     "got": [
+      "OK n=5 oct 00aabb"
+     ]
+    },
+    "i-2": {
+     "ok": true,
+     "got": [
+      "OK n=5 oct 00aabb"
+     ]
+    },
+    "i-3": {
+     "ok": false,
+     "got": [
+      "ERR"
+     ]
+    },
+    "i-4": {
+     "ok": true,
+     "got": [
+      "OK n=5 oct 00aabb"
+     ]
+    },
+    "ii-1": {
+     "ok": true,
+     "got": [
+      "OK n=5 oct 00aabb"
+     ]
+    },
+    "ii-2": {
+     "ok": true,
+     "got": [
+      "OK n=5 oct 00aabb"
+     ]
+    },
+    "ii-3": {
+     "ok": true,
+     "got": [
+      "OK n=5 oct 00aabb"
+     ]
+    },
+    "ii-4": {
+     "ok": false,
+     "got": [
+      "ERR"
+     ]
+    },
+    "iii-1": {
+     "ok": true,
+     "got": [
+      "OK n=5 oct 00aabb"
+     ]
+    },
+    "iii-2": {
+     "ok": true,
+     "got": [
+      "OK n=5 oct 00aabb"
+     ]
+    },
+    "iii-3": {
+     "ok": true,
+     "got": [
+      "OK n=5 oct 00aabb"
+     ]
+    },
+    "iii-4": {
+     "ok": true,
+     "got": [
+      "OK n=5 oct 00aabb"
+     ]
+    }
+   }
+  },
+  {
+   "question": "decoder does NOT range-check date fields (private)",
+   "rule": "D9",
+   "id": "p0509",
+   "expected": [
+    "OK n=5 date 1900 0 0 0"
+   ],
+   "answers": {
+    "i-1": {
+     "ok": false,
+     "got": [
+      "ERR"
+     ]
+    },
+    "i-2": {
+     "ok": true,
+     "got": [
+      "OK n=5 date 1900 0 0 0"
+     ]
+    },
+    "i-3": {
+     "ok": false,
+     "got": [
+      "ERR"
+     ]
+    },
+    "i-4": {
+     "ok": true,
+     "got": [
+      "OK n=5 date 1900 0 0 0"
+     ]
+    },
+    "ii-1": {
+     "ok": false,
+     "got": [
+      "ERR"
+     ]
+    },
+    "ii-2": {
+     "ok": true,
+     "got": [
+      "OK n=5 date 1900 0 0 0"
+     ]
+    },
+    "ii-3": {
+     "ok": false,
+     "got": [
+      "ERR"
+     ]
+    },
+    "ii-4": {
+     "ok": false,
+     "got": [
+      "ERR"
+     ]
+    },
+    "iii-1": {
+     "ok": true,
+     "got": [
+      "OK n=5 date 1900 0 0 0"
+     ]
+    },
+    "iii-2": {
+     "ok": true,
+     "got": [
+      "OK n=5 date 1900 0 0 0"
+     ]
+    },
+    "iii-3": {
+     "ok": true,
+     "got": [
+      "OK n=5 date 1900 0 0 0"
+     ]
+    },
+    "iii-4": {
+     "ok": true,
+     "got": [
+      "OK n=5 date 1900 0 0 0"
+     ]
+    }
+   }
+  },
+  {
+   "question": "encoder does NOT validate UTF-8 (private)",
+   "rule": "E7a",
+   "id": "p0208",
+   "expected": [
+    "OK 7200ff"
+   ],
+   "answers": {
+    "i-1": {
+     "ok": true,
+     "got": [
+      "OK 7200ff"
+     ]
+    },
+    "i-2": {
+     "ok": true,
+     "got": [
+      "OK 7200ff"
+     ]
+    },
+    "i-3": {
+     "ok": false,
+     "got": [
+      "ERR"
+     ]
+    },
+    "i-4": {
+     "ok": false,
+     "got": [
+      "ERR"
+     ]
+    },
+    "ii-1": {
+     "ok": false,
+     "got": [
+      "ERR"
+     ]
+    },
+    "ii-2": {
+     "ok": true,
+     "got": [
+      "OK 7200ff"
+     ]
+    },
+    "ii-3": {
+     "ok": true,
+     "got": [
+      "OK 7200ff"
+     ]
+    },
+    "ii-4": {
+     "ok": false,
+     "got": [
+      "ERR"
+     ]
+    },
+    "iii-1": {
+     "ok": true,
+     "got": [
+      "OK 7200ff"
+     ]
+    },
+    "iii-2": {
+     "ok": true,
+     "got": [
+      "OK 7200ff"
+     ]
+    },
+    "iii-3": {
+     "ok": true,
+     "got": [
+      "OK 7200ff"
+     ]
+    },
+    "iii-4": {
+     "ok": true,
+     "got": [
+      "OK 7200ff"
+     ]
+    }
+   }
+  },
+  {
+   "question": "-128 encodes as 31 80 (standard)",
+   "rule": "E4",
+   "id": "p0088",
+   "expected": [
+    "OK 3180"
+   ],
+   "answers": {
+    "i-1": {
+     "ok": true,
+     "got": [
+      "OK 3180"
+     ]
+    },
+    "i-2": {
+     "ok": true,
+     "got": [
+      "OK 3180"
+     ]
+    },
+    "i-3": {
+     "ok": true,
+     "got": [
+      "OK 3180"
+     ]
+    },
+    "i-4": {
+     "ok": true,
+     "got": [
+      "OK 3180"
+     ]
+    },
+    "ii-1": {
+     "ok": true,
+     "got": [
+      "OK 3180"
+     ]
+    },
+    "ii-2": {
+     "ok": true,
+     "got": [
+      "OK 3180"
+     ]
+    },
+    "ii-3": {
+     "ok": true,
+     "got": [
+      "OK 3180"
+     ]
+    },
+    "ii-4": {
+     "ok": true,
+     "got": [
+      "OK 3180"
+     ]
+    },
+    "iii-1": {
+     "ok": true,
+     "got": [
+      "OK 3180"
+     ]
+    },
+    "iii-2": {
+     "ok": true,
+     "got": [
+      "OK 3180"
+     ]
+    },
+    "iii-3": {
+     "ok": true,
+     "got": [
+      "OK 3180"
+     ]
+    },
+    "iii-4": {
+     "ok": true,
+     "got": [
+      "OK 3180"
+     ]
+    }
+   }
+  },
+  {
+   "question": "length 253 uses 1 length octet (standard)",
+   "rule": "G4",
+   "id": "p0173",
+   "expected": [
+    "OK 65fdabababababababababababababab..c456215935f4a136/255"
+   ],
+   "answers": {
+    "i-1": {
+     "ok": true,
+     "got": [
+      "OK 65fdabababababababababababababab..c456215935f4a136/255"
+     ]
+    },
+    "i-2": {
+     "ok": true,
+     "got": [
+      "OK 65fdabababababababababababababab..c456215935f4a136/255"
+     ]
+    },
+    "i-3": {
+     "ok": true,
+     "got": [
+      "OK 65fdabababababababababababababab..c456215935f4a136/255"
+     ]
+    },
+    "i-4": {
+     "ok": true,
+     "got": [
+      "OK 65fdabababababababababababababab..c456215935f4a136/255"
+     ]
+    },
+    "ii-1": {
+     "ok": true,
+     "got": [
+      "OK 65fdabababababababababababababab..c456215935f4a136/255"
+     ]
+    },
+    "ii-2": {
+     "ok": true,
+     "got": [
+      "OK 65fdabababababababababababababab..c456215935f4a136/255"
+     ]
+    },
+    "ii-3": {
+     "ok": true,
+     "got": [
+      "OK 65fdabababababababababababababab..c456215935f4a136/255"
+     ]
+    },
+    "ii-4": {
+     "ok": true,
+     "got": [
+      "OK 65fdabababababababababababababab..c456215935f4a136/255"
+     ]
+    },
+    "iii-1": {
+     "ok": true,
+     "got": [
+      "OK 65fdabababababababababababababab..c456215935f4a136/255"
+     ]
+    },
+    "iii-2": {
+     "ok": true,
+     "got": [
+      "OK 65fdabababababababababababababab..c456215935f4a136/255"
+     ]
+    },
+    "iii-3": {
+     "ok": true,
+     "got": [
+      "OK 65fdabababababababababababababab..c456215935f4a136/255"
+     ]
+    },
+    "iii-4": {
+     "ok": true,
+     "got": [
+      "OK 65fdabababababababababababababab..c456215935f4a136/255"
+     ]
+    }
+   }
+  },
+  {
+   "question": "context boolean has a content octet (standard)",
+   "rule": "E13",
+   "id": "p0327",
+   "expected": [
+    "OK 3901"
+   ],
+   "answers": {
+    "i-1": {
+     "ok": true,
+     "got": [
+      "OK 3901"
+     ]
+    },
+    "i-2": {
+     "ok": true,
+     "got": [
+      "OK 3901"
+     ]
+    },
+    "i-3": {
+     "ok": true,
+     "got": [
+      "OK 3901"
+     ]
+    },
+    "i-4": {
+     "ok": true,
+     "got": [
+      "OK 3901"
+     ]
+    },
+    "ii-1": {
+     "ok": true,
+     "got": [
+      "OK 3901"
+     ]
+    },
+    "ii-2": {
+     "ok": true,
+     "got": [
+      "OK 3901"
+     ]
+    },
+    "ii-3": {
+     "ok": true,
+     "got": [
+      "OK 3901"
+     ]
+    },
+    "ii-4": {
+     "ok": true,
+     "got": [
+      "OK 3901"
+     ]
+    },
+    "iii-1": {
+     "ok": true,
+     "got": [
+      "OK 3901"
+     ]
+    },
+    "iii-2": {
+     "ok": true,
+     "got": [
+      "OK 3901"
+     ]
+    },
+    "iii-3": {
+     "ok": true,
+     "got": [
+      "OK 3901"
+     ]
+    },
+    "iii-4": {
+     "ok": true,
+     "got": [
+      "OK 3901"
+     ]
+    }
+   }
+  },
+  {
+   "question": "no partial write when cap too small (private G1)",
+   "rule": "G1",
+   "id": "p0188",
+   "expected": [
+    "ERR"
+   ],
+   "answers": {
+    "i-1": {
+     "ok": true,
+     "got": [
+      "ERR"
+     ]
+    },
+    "i-2": {
+     "ok": true,
+     "got": [
+      "ERR"
+     ]
+    },
+    "i-3": {
+     "ok": true,
+     "got": [
+      "ERR"
+     ]
+    },
+    "i-4": {
+     "ok": true,
+     "got": [
+      "ERR"
+     ]
+    },
+    "ii-1": {
+     "ok": true,
+     "got": [
+      "ERR"
+     ]
+    },
+    "ii-2": {
+     "ok": true,
+     "got": [
+      "ERR"
+     ]
+    },
+    "ii-3": {
+     "ok": true,
+     "got": [
+      "ERR"
+     ]
+    },
+    "ii-4": {
+     "ok": true,
+     "got": [
+      "ERR"
+     ]
+    },
+    "iii-1": {
+     "ok": true,
+     "got": [
+      "ERR"
+     ]
+    },
+    "iii-2": {
+     "ok": true,
+     "got": [
+      "ERR"
+     ]
+    },
+    "iii-3": {
+     "ok": true,
+     "got": [
+      "ERR"
+     ]
+    },
+    "iii-4": {
+     "ok": true,
+     "got": [
+      "ERR"
+     ]
+    }
+   }
+  }
+ ],
+ "x": [
+  {
+   "question": "value exactly at the limit is NOT an alarm (BACnet)",
+   "rule": "A2",
+   "id": "x001",
+   "expected": [
+    "cfg",
+    "NORMAL",
+    "NORMAL",
+    "NORMAL",
+    "NORMAL",
+    "NORMAL"
+   ],
+   "answers": {
+    "i-1": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "i-2": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "i-3": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "i-4": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "ii-1": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "ii-2": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "ii-3": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "ii-4": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "iii-1": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "iii-2": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "iii-3": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "iii-4": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL"
+     ]
+    }
+   }
+  },
+  {
+   "question": "direct HIGH->LOW without passing NORMAL (BACnet)",
+   "rule": "A4",
+   "id": "x011",
+   "expected": [
+    "cfg",
+    "NORMAL",
+    "HIGH TO_HIGH@0:35.000",
+    "LOW TO_LOW@10:5.000",
+    "HIGH TO_HIGH@20:35.000",
+    "NORMAL TO_NORMAL@30:20.000"
+   ],
+   "answers": {
+    "i-1": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "LOW TO_LOW@10:5.000",
+      "HIGH TO_HIGH@20:35.000",
+      "NORMAL TO_NORMAL@30:20.000"
+     ]
+    },
+    "i-2": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "LOW TO_LOW@10:5.000",
+      "HIGH TO_HIGH@20:35.000",
+      "NORMAL TO_NORMAL@30:20.000"
+     ]
+    },
+    "i-3": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "LOW TO_LOW@10:5.000",
+      "HIGH TO_HIGH@20:35.000",
+      "NORMAL TO_NORMAL@30:20.000"
+     ]
+    },
+    "i-4": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "LOW TO_LOW@10:5.000",
+      "HIGH TO_HIGH@20:35.000",
+      "NORMAL TO_NORMAL@30:20.000"
+     ]
+    },
+    "ii-1": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "LOW TO_LOW@10:5.000",
+      "HIGH TO_HIGH@20:35.000",
+      "NORMAL TO_NORMAL@30:20.000"
+     ]
+    },
+    "ii-2": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "LOW TO_LOW@10:5.000",
+      "HIGH TO_HIGH@20:35.000",
+      "NORMAL TO_NORMAL@30:20.000"
+     ]
+    },
+    "ii-3": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "LOW TO_LOW@10:5.000",
+      "HIGH TO_HIGH@20:35.000",
+      "NORMAL TO_NORMAL@30:20.000"
+     ]
+    },
+    "ii-4": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "LOW TO_LOW@10:5.000",
+      "HIGH TO_HIGH@20:35.000",
+      "NORMAL TO_NORMAL@30:20.000"
+     ]
+    },
+    "iii-1": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "LOW TO_LOW@10:5.000",
+      "HIGH TO_HIGH@20:35.000",
+      "NORMAL TO_NORMAL@30:20.000"
+     ]
+    },
+    "iii-2": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "LOW TO_LOW@10:5.000",
+      "HIGH TO_HIGH@20:35.000",
+      "NORMAL TO_NORMAL@30:20.000"
+     ]
+    },
+    "iii-3": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "LOW TO_LOW@10:5.000",
+      "HIGH TO_HIGH@20:35.000",
+      "NORMAL TO_NORMAL@30:20.000"
+     ]
+    },
+    "iii-4": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "LOW TO_LOW@10:5.000",
+      "HIGH TO_HIGH@20:35.000",
+      "NORMAL TO_NORMAL@30:20.000"
+     ]
+    }
+   }
+  },
+  {
+   "question": "+/-inf is a value, not a sensor fault (private)",
+   "rule": "A6",
+   "id": "x028",
+   "expected": [
+    "cfg",
+    "NORMAL",
+    "HIGH TO_HIGH@0:inf",
+    "LOW TO_LOW@10:-inf",
+    "NORMAL TO_NORMAL@20:20.000"
+   ],
+   "answers": {
+    "i-1": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "FAULT TO_FAULT@0:inf",
+      "FAULT",
+      "NORMAL TO_NORMAL@20:20.000"
+     ]
+    },
+    "i-2": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:inf",
+      "LOW TO_LOW@10:-inf",
+      "NORMAL TO_NORMAL@20:20.000"
+     ]
+    },
+    "i-3": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "FAULT TO_FAULT@0:inf",
+      "FAULT",
+      "NORMAL TO_NORMAL@20:20.000"
+     ]
+    },
+    "i-4": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "FAULT TO_FAULT@0:inf",
+      "FAULT",
+      "NORMAL TO_NORMAL@20:20.000"
+     ]
+    },
+    "ii-1": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "FAULT TO_FAULT@0:inf",
+      "FAULT",
+      "NORMAL TO_NORMAL@20:20.000"
+     ]
+    },
+    "ii-2": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "FAULT TO_FAULT@0:inf",
+      "FAULT",
+      "NORMAL TO_NORMAL@20:20.000"
+     ]
+    },
+    "ii-3": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "FAULT TO_FAULT@0:inf",
+      "FAULT",
+      "NORMAL TO_NORMAL@20:20.000"
+     ]
+    },
+    "ii-4": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "FAULT TO_FAULT@0:inf",
+      "FAULT",
+      "NORMAL TO_NORMAL@20:20.000"
+     ]
+    },
+    "iii-1": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:inf",
+      "LOW TO_LOW@10:-inf",
+      "NORMAL TO_NORMAL@20:20.000"
+     ]
+    },
+    "iii-2": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:inf",
+      "LOW TO_LOW@10:-inf",
+      "NORMAL TO_NORMAL@20:20.000"
+     ]
+    },
+    "iii-3": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:inf",
+      "LOW TO_LOW@10:-inf",
+      "NORMAL TO_NORMAL@20:20.000"
+     ]
+    },
+    "iii-4": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:inf",
+      "LOW TO_LOW@10:-inf",
+      "NORMAL TO_NORMAL@20:20.000"
+     ]
+    }
+   }
+  },
+  {
+   "question": "returned-to-normal alarm still escalates if unacked (private SP-3)",
+   "rule": "A8",
+   "id": "x037",
+   "expected": [
+    "cfg",
+    "NORMAL",
+    "HIGH TO_HIGH@0:35.000",
+    "NORMAL TO_NORMAL@10:20.000",
+    "NORMAL",
+    "NORMAL ESCALATE@100:20.000",
+    "NORMAL"
+   ],
+   "answers": {
+    "i-1": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "NORMAL TO_NORMAL@10:20.000",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "i-2": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "NORMAL TO_NORMAL@10:20.000",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "i-3": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "NORMAL TO_NORMAL@10:20.000",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "i-4": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "NORMAL TO_NORMAL@10:20.000",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "ii-1": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "NORMAL TO_NORMAL@10:20.000",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "ii-2": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "NORMAL TO_NORMAL@10:20.000",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "ii-3": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "NORMAL TO_NORMAL@10:20.000",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "ii-4": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "NORMAL TO_NORMAL@10:20.000",
+      "NORMAL",
+      "NORMAL ESCALATE@100:20.000",
+      "NORMAL"
+     ]
+    },
+    "iii-1": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "NORMAL TO_NORMAL@10:20.000",
+      "NORMAL",
+      "NORMAL ESCALATE@100:20.000",
+      "NORMAL"
+     ]
+    },
+    "iii-2": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "NORMAL TO_NORMAL@10:20.000",
+      "NORMAL",
+      "NORMAL ESCALATE@100:20.000",
+      "NORMAL"
+     ]
+    },
+    "iii-3": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "NORMAL TO_NORMAL@10:20.000",
+      "NORMAL",
+      "NORMAL ESCALATE@100:20.000",
+      "NORMAL"
+     ]
+    },
+    "iii-4": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "NORMAL TO_NORMAL@10:20.000",
+      "NORMAL",
+      "NORMAL ESCALATE@100:20.000",
+      "NORMAL"
+     ]
+    }
+   }
+  },
+  {
+   "question": "escalate_after = 0 disables escalation (private)",
+   "rule": "A9",
+   "id": "x042",
+   "expected": [
+    "cfg",
+    "NORMAL",
+    "HIGH TO_HIGH@0:35.000",
+    "HIGH",
+    "HIGH"
+   ],
+   "answers": {
+    "i-1": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "HIGH",
+      "HIGH"
+     ]
+    },
+    "i-2": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "HIGH",
+      "HIGH"
+     ]
+    },
+    "i-3": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "HIGH",
+      "HIGH"
+     ]
+    },
+    "i-4": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "HIGH",
+      "HIGH"
+     ]
+    },
+    "ii-1": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "HIGH",
+      "HIGH"
+     ]
+    },
+    "ii-2": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "HIGH",
+      "HIGH"
+     ]
+    },
+    "ii-3": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000 ESCALATE@0:35.000",
+      "HIGH",
+      "HIGH"
+     ]
+    },
+    "ii-4": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000 ESCALATE@0:35.000",
+      "HIGH",
+      "HIGH"
+     ]
+    },
+    "iii-1": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "HIGH",
+      "HIGH"
+     ]
+    },
+    "iii-2": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "HIGH",
+      "HIGH"
+     ]
+    },
+    "iii-3": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "HIGH",
+      "HIGH"
+     ]
+    },
+    "iii-4": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@0:35.000",
+      "HIGH",
+      "HIGH"
+     ]
+    }
+   }
+  },
+  {
+   "question": "ack in the same call that fires a delayed alarm acknowledges it (private)",
+   "rule": "A5a",
+   "id": "x021",
+   "expected": [
+    "cfg",
+    "NORMAL",
+    "NORMAL",
+    "HIGH TO_HIGH@40:35.000",
+    "HIGH",
+    "HIGH"
+   ],
+   "answers": {
+    "i-1": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH TO_HIGH@40:35.000",
+      "HIGH",
+      "HIGH"
+     ]
+    },
+    "i-2": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH TO_HIGH@40:35.000",
+      "HIGH ESCALATE@100:35.000",
+      "HIGH"
+     ]
+    },
+    "i-3": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH TO_HIGH@40:35.000",
+      "HIGH ESCALATE@100:35.000",
+      "HIGH"
+     ]
+    },
+    "i-4": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH TO_HIGH@40:35.000",
+      "HIGH ESCALATE@100:35.000",
+      "HIGH"
+     ]
+    },
+    "ii-1": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH TO_HIGH@40:35.000",
+      "HIGH ESCALATE@100:35.000",
+      "HIGH"
+     ]
+    },
+    "ii-2": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH TO_HIGH@40:35.000",
+      "HIGH ESCALATE@100:35.000",
+      "HIGH"
+     ]
+    },
+    "ii-3": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH TO_HIGH@40:35.000",
+      "HIGH ESCALATE@100:35.000",
+      "HIGH"
+     ]
+    },
+    "ii-4": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH TO_HIGH@40:35.000",
+      "HIGH ESCALATE@100:35.000",
+      "HIGH"
+     ]
+    },
+    "iii-1": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH TO_HIGH@40:35.000",
+      "HIGH",
+      "HIGH"
+     ]
+    },
+    "iii-2": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH TO_HIGH@40:35.000",
+      "HIGH",
+      "HIGH"
+     ]
+    },
+    "iii-3": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH TO_HIGH@40:35.000",
+      "HIGH",
+      "HIGH"
+     ]
+    },
+    "iii-4": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH TO_HIGH@40:35.000",
+      "HIGH",
+      "HIGH"
+     ]
+    }
+   }
+  },
+  {
+   "question": "maintenance exit sends catch-up for silent alarm (private)",
+   "rule": "A10",
+   "id": "x049",
+   "expected": [
+    "cfg",
+    "NORMAL",
+    "NORMAL",
+    "HIGH",
+    "HIGH TO_HIGH@30:35.000",
+    "HIGH"
+   ],
+   "answers": {
+    "i-1": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH",
+      "HIGH TO_HIGH@30:35.000",
+      "HIGH"
+     ]
+    },
+    "i-2": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH",
+      "HIGH TO_HIGH@30:35.000",
+      "HIGH"
+     ]
+    },
+    "i-3": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH",
+      "HIGH TO_HIGH@30:35.000",
+      "HIGH"
+     ]
+    },
+    "i-4": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH",
+      "HIGH TO_HIGH@30:35.000",
+      "HIGH"
+     ]
+    },
+    "ii-1": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH",
+      "HIGH TO_HIGH@30:35.000",
+      "HIGH"
+     ]
+    },
+    "ii-2": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH",
+      "HIGH TO_HIGH@30:35.000",
+      "HIGH"
+     ]
+    },
+    "ii-3": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH",
+      "HIGH TO_HIGH@30:35.000",
+      "HIGH"
+     ]
+    },
+    "ii-4": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH",
+      "HIGH TO_HIGH@30:35.000",
+      "HIGH"
+     ]
+    },
+    "iii-1": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH",
+      "HIGH TO_HIGH@30:35.000",
+      "HIGH"
+     ]
+    },
+    "iii-2": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH",
+      "HIGH TO_HIGH@30:35.000",
+      "HIGH"
+     ]
+    },
+    "iii-3": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH",
+      "HIGH TO_HIGH@30:35.000",
+      "HIGH"
+     ]
+    },
+    "iii-4": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH",
+      "HIGH TO_HIGH@30:35.000",
+      "HIGH"
+     ]
+    }
+   }
+  },
+  {
+   "question": "catch-up alarm after maintenance starts an escalation episode (private)",
+   "rule": "A10",
+   "id": "x050",
+   "expected": [
+    "cfg",
+    "NORMAL",
+    "NORMAL",
+    "HIGH",
+    "HIGH TO_HIGH@30:35.000",
+    "HIGH",
+    "HIGH ESCALATE@130:35.000"
+   ],
+   "answers": {
+    "i-1": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH",
+      "HIGH TO_HIGH@30:35.000",
+      "HIGH",
+      "HIGH ESCALATE@130:35.000"
+     ]
+    },
+    "i-2": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH",
+      "HIGH TO_HIGH@30:35.000",
+      "HIGH",
+      "HIGH ESCALATE@130:35.000"
+     ]
+    },
+    "i-3": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH",
+      "HIGH TO_HIGH@30:35.000",
+      "HIGH",
+      "HIGH ESCALATE@130:35.000"
+     ]
+    },
+    "i-4": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH",
+      "HIGH TO_HIGH@30:35.000",
+      "HIGH",
+      "HIGH ESCALATE@130:35.000"
+     ]
+    },
+    "ii-1": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH",
+      "HIGH TO_HIGH@30:35.000",
+      "HIGH",
+      "HIGH ESCALATE@130:35.000"
+     ]
+    },
+    "ii-2": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH",
+      "HIGH TO_HIGH@30:35.000",
+      "HIGH",
+      "HIGH ESCALATE@130:35.000"
+     ]
+    },
+    "ii-3": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH",
+      "HIGH TO_HIGH@30:35.000",
+      "HIGH",
+      "HIGH ESCALATE@130:35.000"
+     ]
+    },
+    "ii-4": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH",
+      "HIGH TO_HIGH@30:35.000",
+      "HIGH",
+      "HIGH ESCALATE@130:35.000"
+     ]
+    },
+    "iii-1": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH",
+      "HIGH TO_HIGH@30:35.000",
+      "HIGH",
+      "HIGH ESCALATE@130:35.000"
+     ]
+    },
+    "iii-2": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH",
+      "HIGH TO_HIGH@30:35.000",
+      "HIGH",
+      "HIGH ESCALATE@130:35.000"
+     ]
+    },
+    "iii-3": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH",
+      "HIGH TO_HIGH@30:35.000",
+      "HIGH",
+      "HIGH ESCALATE@130:35.000"
+     ]
+    },
+    "iii-4": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH",
+      "HIGH TO_HIGH@30:35.000",
+      "HIGH",
+      "HIGH ESCALATE@130:35.000"
+     ]
+    }
+   }
+  },
+  {
+   "question": "fault recovery with out-of-range value & delay 0 gives TO_NORMAL+TO_HIGH (private)",
+   "rule": "A6a",
+   "id": "x030",
+   "expected": [
+    "cfg",
+    "NORMAL",
+    "FAULT TO_FAULT@5:0.000",
+    "HIGH TO_NORMAL@10:35.000 TO_HIGH@10:35.000",
+    "NORMAL TO_NORMAL@20:20.000"
+   ],
+   "answers": {
+    "i-1": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "FAULT TO_FAULT@5:0.000",
+      "HIGH TO_NORMAL@10:35.000 TO_HIGH@10:35.000",
+      "NORMAL TO_NORMAL@20:20.000"
+     ]
+    },
+    "i-2": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "FAULT TO_FAULT@5:0.000",
+      "HIGH TO_NORMAL@10:35.000 TO_HIGH@10:35.000",
+      "NORMAL TO_NORMAL@20:20.000"
+     ]
+    },
+    "i-3": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "FAULT TO_FAULT@5:0.000",
+      "HIGH TO_NORMAL@10:35.000 TO_HIGH@10:35.000",
+      "NORMAL TO_NORMAL@20:20.000"
+     ]
+    },
+    "i-4": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "FAULT TO_FAULT@5:0.000",
+      "HIGH TO_NORMAL@10:35.000 TO_HIGH@10:35.000",
+      "NORMAL TO_NORMAL@20:20.000"
+     ]
+    },
+    "ii-1": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "FAULT TO_FAULT@5:0.000",
+      "HIGH TO_HIGH@10:35.000",
+      "NORMAL TO_NORMAL@20:20.000"
+     ]
+    },
+    "ii-2": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "FAULT TO_FAULT@5:0.000",
+      "HIGH TO_NORMAL@10:35.000 TO_HIGH@10:35.000",
+      "NORMAL TO_NORMAL@20:20.000"
+     ]
+    },
+    "ii-3": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "FAULT TO_FAULT@5:0.000",
+      "HIGH TO_NORMAL@10:35.000 TO_HIGH@10:35.000",
+      "NORMAL TO_NORMAL@20:20.000"
+     ]
+    },
+    "ii-4": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "FAULT TO_FAULT@5:0.000",
+      "HIGH TO_NORMAL@10:35.000 TO_HIGH@10:35.000",
+      "NORMAL TO_NORMAL@20:20.000"
+     ]
+    },
+    "iii-1": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "FAULT TO_FAULT@5:0.000",
+      "HIGH TO_NORMAL@10:35.000 TO_HIGH@10:35.000",
+      "NORMAL TO_NORMAL@20:20.000"
+     ]
+    },
+    "iii-2": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "FAULT TO_FAULT@5:0.000",
+      "HIGH TO_NORMAL@10:35.000 TO_HIGH@10:35.000",
+      "NORMAL TO_NORMAL@20:20.000"
+     ]
+    },
+    "iii-3": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "FAULT TO_FAULT@5:0.000",
+      "HIGH TO_NORMAL@10:35.000 TO_HIGH@10:35.000",
+      "NORMAL TO_NORMAL@20:20.000"
+     ]
+    },
+    "iii-4": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "FAULT TO_FAULT@5:0.000",
+      "HIGH TO_NORMAL@10:35.000 TO_HIGH@10:35.000",
+      "NORMAL TO_NORMAL@20:20.000"
+     ]
+    }
+   }
+  },
+  {
+   "question": "calls with time going backwards are ignored (private)",
+   "rule": "A12",
+   "id": "x059",
+   "expected": [
+    "cfg",
+    "NORMAL",
+    "NORMAL",
+    "NORMAL",
+    "HIGH TO_HIGH@120:35.000",
+    "HIGH",
+    "HIGH",
+    "NORMAL TO_NORMAL@120:20.000"
+   ],
+   "answers": {
+    "i-1": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@50:35.000",
+      "NORMAL TO_NORMAL@100:20.000",
+      "HIGH TO_HIGH@120:35.000",
+      "NORMAL TO_NORMAL@110:20.000",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "i-2": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@50:35.000",
+      "NORMAL TO_NORMAL@100:20.000",
+      "HIGH TO_HIGH@120:35.000",
+      "NORMAL TO_NORMAL@110:20.000",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "i-3": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@50:35.000",
+      "NORMAL TO_NORMAL@100:20.000",
+      "HIGH TO_HIGH@120:35.000",
+      "NORMAL TO_NORMAL@110:20.000",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "i-4": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@50:35.000",
+      "NORMAL TO_NORMAL@100:20.000",
+      "HIGH TO_HIGH@120:35.000",
+      "NORMAL ESCALATE@110:20.000 TO_NORMAL@110:20.000",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "ii-1": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@50:35.000",
+      "NORMAL TO_NORMAL@100:20.000",
+      "HIGH TO_HIGH@120:35.000",
+      "NORMAL TO_NORMAL@110:20.000",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "ii-2": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@50:35.000",
+      "NORMAL TO_NORMAL@100:20.000",
+      "HIGH TO_HIGH@120:35.000",
+      "NORMAL TO_NORMAL@110:20.000",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "ii-3": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@50:35.000",
+      "NORMAL TO_NORMAL@100:20.000",
+      "HIGH TO_HIGH@120:35.000",
+      "NORMAL TO_NORMAL@110:20.000",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "ii-4": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "HIGH TO_HIGH@50:35.000",
+      "NORMAL TO_NORMAL@100:20.000",
+      "HIGH TO_HIGH@120:35.000",
+      "NORMAL TO_NORMAL@110:20.000",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "iii-1": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "HIGH TO_HIGH@120:35.000",
+      "HIGH",
+      "HIGH",
+      "NORMAL TO_NORMAL@120:20.000"
+     ]
+    },
+    "iii-2": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "HIGH TO_HIGH@120:35.000",
+      "HIGH",
+      "HIGH",
+      "NORMAL TO_NORMAL@120:20.000"
+     ]
+    },
+    "iii-3": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "HIGH TO_HIGH@120:35.000",
+      "HIGH",
+      "HIGH",
+      "NORMAL TO_NORMAL@120:20.000"
+     ]
+    },
+    "iii-4": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "HIGH TO_HIGH@120:35.000",
+      "HIGH",
+      "HIGH",
+      "NORMAL TO_NORMAL@120:20.000"
+     ]
+    }
+   }
+  },
+  {
+   "question": "expired-but-unobserved delay is cancelled by a normal sample (private)",
+   "rule": "A5a",
+   "id": "x019",
+   "expected": [
+    "cfg",
+    "NORMAL",
+    "NORMAL",
+    "NORMAL",
+    "NORMAL"
+   ],
+   "answers": {
+    "i-1": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH TO_HIGH@50:35.000",
+      "NORMAL TO_NORMAL@100:20.000"
+     ]
+    },
+    "i-2": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH TO_HIGH@50:35.000",
+      "NORMAL TO_NORMAL@100:20.000"
+     ]
+    },
+    "i-3": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH TO_HIGH@50:35.000",
+      "NORMAL TO_NORMAL@100:20.000"
+     ]
+    },
+    "i-4": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "ii-1": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "ii-2": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH TO_HIGH@50:35.000",
+      "NORMAL TO_NORMAL@100:20.000"
+     ]
+    },
+    "ii-3": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH TO_HIGH@50:35.000",
+      "NORMAL TO_NORMAL@100:20.000"
+     ]
+    },
+    "ii-4": {
+     "ok": false,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "HIGH TO_HIGH@50:35.000",
+      "NORMAL TO_NORMAL@100:20.000"
+     ]
+    },
+    "iii-1": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "iii-2": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "iii-3": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL"
+     ]
+    },
+    "iii-4": {
+     "ok": true,
+     "got": [
+      "cfg",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL",
+      "NORMAL"
+     ]
+    }
+   }
+  }
+ ]
+}

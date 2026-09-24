@@ -1,0 +1,256 @@
+# Regression vectors for the behaviour choices documented at the top of alarm.c.
+# Run: python3 run_vectors.py acceptance.vec design.vec
+### fault-immediate-clear-goes-normal-then-delay
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 10 35
+sf 20 35
+sf 30 35
+s 40 35
+s 70 35
+ack 80
+s 90 nan
+s 100 20
+---
+cfg
+NORMAL
+NORMAL
+FAULT TO_FAULT@20:35.000
+FAULT
+NORMAL TO_NORMAL@40:35.000
+HIGH TO_HIGH@70:35.000
+HIGH
+FAULT TO_FAULT@90:nan
+NORMAL TO_NORMAL@100:20.000
+### high-to-low-is-a-new-occurrence
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 0 35
+s 30 35
+ack 31
+s 40 5
+s 70 5
+tick 700
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000
+HIGH
+HIGH
+LOW TO_LOW@70:5.000
+LOW ESCALATE@700:5.000
+### late-call-uses-held-value
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 0 35
+s 100 20
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@100:35.000
+### late-call-replays-in-time-order
+cfg high=30 low=10 deadband=2 delay=30 escalate=100
+init 0
+s 0 35
+s 30 35
+s 110 20
+s 120 5
+sf 500 0
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000
+HIGH
+HIGH
+FAULT ESCALATE@500:5.000 TO_NORMAL@500:5.000 TO_LOW@500:5.000 TO_FAULT@500:0.000
+### maint-suppresses-then-resyncs
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+maint 5 on
+s 10 35
+s 40 35
+maint 50 off
+tick 649
+tick 650
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH
+HIGH TO_HIGH@50:35.000
+HIGH
+HIGH ESCALATE@650:35.000
+### maint-cleared-alarm-sends-to-normal-at-exit
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 0 35
+s 30 35
+maint 40 on
+s 50 20
+s 80 20
+maint 90 off
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000
+HIGH
+HIGH
+NORMAL
+NORMAL TO_NORMAL@90:20.000
+### maint-overdue-escalation-sent-at-exit
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 0 35
+s 30 35
+maint 100 on
+tick 700
+maint 800 off
+tick 900
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000
+HIGH
+HIGH
+HIGH ESCALATE@800:35.000
+HIGH
+### maint-ack-prevents-escalation
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+maint 0 on
+s 0 35
+s 30 35
+ack 40
+maint 50 off
+tick 5000
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH
+HIGH
+HIGH TO_HIGH@50:35.000
+HIGH
+### maint-transient-leaves-no-trace
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+maint 0 on
+s 0 35
+s 30 35
+s 40 20
+s 70 20
+maint 80 off
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH
+HIGH
+NORMAL
+NORMAL
+### strict-limits-and-deadband
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 0 30
+s 100 30
+s 101 30.01
+s 131 30.01
+s 140 28
+s 200 28
+s 201 27.99
+s 231 27.99
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@131:30.010
+HIGH
+HIGH
+HIGH
+NORMAL TO_NORMAL@231:27.990
+### delay0-escalate0-inf
+cfg high=30 low=10 deadband=2
+init 0
+s 0 inf
+s 1 -inf
+s 2 20
+tick 100000
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:inf
+LOW TO_LOW@1:-inf
+NORMAL TO_NORMAL@2:20.000
+NORMAL
+### fault-clear-with-delay0
+cfg high=30 low=10 deadband=2
+init 0
+sf 0 0
+s 1 35
+---
+cfg
+NORMAL
+FAULT TO_FAULT@0:0.000
+HIGH TO_NORMAL@1:35.000 TO_HIGH@1:35.000
+### swapped-limits-negative-deadband
+cfg high=10 low=30 deadband=-5 delay=0
+init 0
+s 0 20
+s 1 31
+s 2 29.9
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@1:31.000
+NORMAL TO_NORMAL@2:29.900
+### time-going-backwards-adds-no-time
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 100
+s 100 35
+s 50 35
+s 129 35
+s 130 35
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@130:35.000
+### fault-escalates-once
+cfg high=30 low=10 deadband=2 delay=30 escalate=60
+init 0
+sf 0 0
+tick 59
+tick 60
+tick 200
+ack 201
+---
+cfg
+NORMAL
+FAULT TO_FAULT@0:0.000
+FAULT
+FAULT ESCALATE@60:0.000
+FAULT
+FAULT
+### no-overflow-near-uint32-max
+cfg high=30 low=10 deadband=2 delay=4294967295 escalate=4294967295
+init 4294967000
+s 4294967000 35
+tick 4294967295
+---
+cfg
+NORMAL
+NORMAL
+NORMAL

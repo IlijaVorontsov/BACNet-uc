@@ -1,0 +1,205 @@
+# Regression vectors for the fixes in REVIEW.md (expected output per the alarm.c contract).
+### a4-direct-high-to-low
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 1 35
+s 2 5
+---
+cfg
+NORMAL
+HIGH TO_HIGH@1:35.000
+LOW TO_LOW@2:5.000
+### a3-strict-deadband-high
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 1 35
+s 2 28
+s 3 27.9
+---
+cfg
+NORMAL
+HIGH TO_HIGH@1:35.000
+HIGH
+NORMAL TO_NORMAL@3:27.900
+### a3-strict-deadband-low
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 1 5
+s 2 12
+s 3 12.1
+---
+cfg
+NORMAL
+LOW TO_LOW@1:5.000
+LOW
+NORMAL TO_NORMAL@3:12.100
+### a6a-recovery-evaluated-same-call
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+sf 1 20
+s 2 35
+---
+cfg
+NORMAL
+FAULT TO_FAULT@1:20.000
+HIGH TO_NORMAL@2:35.000 TO_HIGH@2:35.000
+### a6a-recovery-starts-timer
+cfg high=30 low=10 deadband=2 delay=10 escalate=0
+init 0
+s 1 nan
+s 2 35
+tick 12
+---
+cfg
+NORMAL
+FAULT TO_FAULT@1:nan
+NORMAL TO_NORMAL@2:35.000
+HIGH TO_HIGH@12:35.000
+### a9-escalate-on-recovery-sample
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 1 35
+sf 50 0
+s 101 20
+---
+cfg
+NORMAL
+HIGH TO_HIGH@1:35.000
+FAULT TO_FAULT@50:0.000
+NORMAL TO_NORMAL@101:20.000 ESCALATE@101:20.000
+### a12-tick-backwards-ignored
+cfg high=30 low=10 deadband=2 delay=10 escalate=0
+init 100
+s 100 35
+tick 50
+tick 105
+tick 110
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@110:35.000
+### a12-ack-backwards-ignored
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 100
+s 100 35
+ack 50
+tick 200
+---
+cfg
+NORMAL
+HIGH TO_HIGH@100:35.000
+HIGH
+HIGH ESCALATE@200:35.000
+### a12-maint-backwards-ignored
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 100
+maint 50 on
+s 100 35
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@100:35.000
+### a12-init-time-counts
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 100
+s 50 35
+tick 60
+maint 70 on
+ack 80
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+### a10-catchup-starts-episode
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+maint 1 on
+s 2 35
+maint 10 off
+tick 109
+tick 110
+---
+cfg
+NORMAL
+NORMAL
+HIGH
+HIGH TO_HIGH@10:35.000
+HIGH
+HIGH ESCALATE@110:35.000
+### a10-catchup-after-ack-needs-new-ack
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 1 35
+ack 2
+maint 3 on
+s 4 5
+maint 5 off
+tick 105
+---
+cfg
+NORMAL
+HIGH TO_HIGH@1:35.000
+HIGH
+HIGH
+LOW
+LOW TO_LOW@5:5.000
+LOW ESCALATE@105:5.000
+### a10-no-catchup-when-same-state
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+maint 1 on
+s 2 35
+s 3 20
+maint 4 off
+---
+cfg
+NORMAL
+NORMAL
+HIGH
+NORMAL
+NORMAL
+### a8-return-to-normal-still-escalates
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 1 35
+s 2 20
+tick 101
+---
+cfg
+NORMAL
+HIGH TO_HIGH@1:35.000
+NORMAL TO_NORMAL@2:20.000
+NORMAL ESCALATE@101:20.000
+### a4-low-to-high-still-direct
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 1 5
+s 2 35
+---
+cfg
+NORMAL
+LOW TO_LOW@1:5.000
+HIGH TO_HIGH@2:35.000
+### a4-high-to-low-with-delay
+cfg high=30 low=10 deadband=2 delay=10 escalate=0
+init 0
+s 0 35
+s 10 35
+s 11 5
+s 20 5
+s 21 5
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+HIGH
+LOW TO_LOW@21:5.000

@@ -1,0 +1,198 @@
+# Acceptance test: known-good encodings (ASHRAE 135 clause 20.2 examples) and round trips.
+### unsigned-72
+enc_unsigned 72
+---
+OK 2148
+### signed-72
+enc_signed 72
+---
+OK 3148
+### real-72
+enc_real 42900000
+---
+OK 4442900000
+### boolean-true
+enc_bool 1
+---
+OK 11
+### null
+enc_null
+---
+OK 00
+### octet-string
+enc_octets 1234ff
+---
+OK 631234ff
+### character-string
+enc_str 546869732069732061204241436e657420737472696e6721
+---
+OK 751900546869732069732061204241436e657420737472696e6721
+### bit-string
+enc_bits 10101
+---
+OK 8203a8
+### enumerated-0
+enc_enum 0
+---
+OK 9100
+### date
+enc_date 1991 1 24 4
+---
+OK a45b011804
+### time
+enc_time 17 35 45 17
+---
+OK b411232d11
+### object-id
+enc_oid 3 15
+---
+OK c400c0000f
+### context-unsigned
+enc_ctx_unsigned 0 256
+---
+OK 0a0100
+### opening-closing
+enc_open 1
+enc_close 1
+---
+OK 1e
+OK 1f
+### decode-unsigned
+dec_app 2148
+---
+OK n=2 u 72
+### decode-real
+dec_app 4442900000
+---
+OK n=5 r 42900000
+### decode-string
+dec_app 751900546869732069732061204241436e657420737472696e6721
+---
+OK n=27 str cs=0 546869732069732061204241436e657420737472696e6721
+### decode-object-id
+dec_app c400c0000f
+---
+OK n=5 oid 3 15
+### decode-context-header
+dec_tag 0a0100
+---
+OK hl=1 tag=0 ctx lvt=2
+### double-72
+enc_double 4052000000000000
+---
+OK 55084052000000000000
+### decode-double
+dec_app 55084052000000000000
+---
+OK n=10 d 4052000000000000
+### context-enumerated
+enc_ctx_enum 9 0
+---
+OK 9900
+### context-signed
+enc_ctx_signed 1 -1
+---
+OK 19ff
+### real-nan-rejected
+# CR-102 regression vectors (through capacity-errors): behavior that the
+# no-float refactor and the shared tag-header / minimal-length integer
+# writers must preserve.
+enc_real 7fc00000
+enc_real 7f800001
+enc_real ffc00000
+---
+ERR
+ERR
+ERR
+### real-inf-negzero
+enc_real 7f800000
+enc_real ff800000
+enc_real 80000000
+---
+OK 447f800000
+OK 44ff800000
+OK 4480000000
+### double-nan-rejected
+enc_double 7ff8000000000000
+enc_double 7ff0000000000001
+enc_double fff0000000000001
+enc_double 7ff0000100000000
+---
+ERR
+ERR
+ERR
+ERR
+### double-inf-negzero
+enc_double 7ff0000000000000
+enc_double fff0000000000000
+enc_double 8000000000000000
+---
+OK 55087ff0000000000000
+OK 5508fff0000000000000
+OK 55088000000000000000
+### boolean-false
+enc_bool 0
+---
+OK 10
+### context-boolean
+enc_ctx_bool 2 1
+enc_ctx_bool 20 0
+---
+OK 2901
+OK f91400
+### extended-tag-numbers
+enc_open 20
+enc_close 254
+enc_ctx_signed 15 -32769
+---
+OK fe14
+OK fffe
+OK fb0fff7fff
+### reserved-tag-255
+enc_open 255
+enc_close 255
+enc_ctx_unsigned 255 1
+enc_ctx_enum 255 1
+enc_ctx_signed 255 1
+enc_ctx_bool 255 1
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+### minimal-length-integers
+enc_signed -128
+enc_signed -129
+enc_signed 128
+enc_signed -2147483648
+enc_unsigned 4294967295
+---
+OK 3180
+OK 32ff7f
+OK 320080
+OK 3480000000
+OK 24ffffffff
+### extended-lengths
+enc_octets rep:ab:5
+enc_octets rep:ab:253
+enc_octets rep:ab:254
+enc_octets rep:ab:65535 @70000
+enc_octets rep:ab:65536 @70000
+---
+OK 6505ababababab
+OK 65fdabababababababababababababab..c456215935f4a136/255
+OK 65fe00feabababababababababababab..d51d44ebca21dc68/258
+OK 65feffffabababababababababababab..68b00b5ca1769915/65539
+OK 65ff00010000abababababababababab..07c1678433a731bc/65542
+### capacity-errors
+enc_null @0
+enc_unsigned 256 @2
+enc_unsigned 256 @3
+enc_double 4052000000000000 @9
+---
+ERR
+ERR
+OK 220100
+ERR

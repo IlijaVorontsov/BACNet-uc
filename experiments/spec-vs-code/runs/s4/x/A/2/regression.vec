@@ -1,0 +1,123 @@
+# Regression vectors for the fixes listed in REVIEW.md.
+### high-to-low-direct
+cfg high=30 low=10 deadband=2 delay=10 escalate=0
+init 0
+s 0 35
+s 10 35
+s 20 5
+s 30 5
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+LOW TO_LOW@30:5.000
+### deadband-boundary-symmetric
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 0 35
+s 1 28
+s 2 27.9
+s 3 5
+s 4 12
+s 5 12.1
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+HIGH
+NORMAL TO_NORMAL@2:27.900
+LOW TO_LOW@3:5.000
+LOW
+NORMAL TO_NORMAL@5:12.100
+### stale-tick-no-transition
+cfg high=30 low=10 deadband=2 delay=60 escalate=600
+init 0
+s 100 35
+tick 50
+tick 160
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@160:35.000
+### stale-tick-no-escalation
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 0
+s 100 35
+tick 50
+tick 699
+tick 700
+---
+cfg
+NORMAL
+HIGH TO_HIGH@100:35.000
+HIGH
+HIGH
+HIGH ESCALATE@700:35.000
+### stale-ack-still-acknowledges
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 0
+s 100 35
+ack 40
+tick 800
+---
+cfg
+NORMAL
+HIGH TO_HIGH@100:35.000
+HIGH
+HIGH
+### alarm-raised-in-maintenance-escalates
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+maint 0 on
+s 10 35
+maint 20 off
+tick 119
+tick 120
+---
+cfg
+NORMAL
+NORMAL
+HIGH
+HIGH TO_HIGH@20:35.000
+HIGH
+HIGH ESCALATE@120:35.000
+### fault-recovery-sample-evaluated
+cfg high=30 low=10 deadband=2 delay=30 escalate=0
+init 0
+sf 0 0
+s 10 35
+tick 40
+---
+cfg
+NORMAL
+FAULT TO_FAULT@0:0.000
+NORMAL TO_NORMAL@10:35.000
+HIGH TO_HIGH@40:35.000
+### fault-recovery-escalation-checked
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 0 35
+sf 10 0
+s 100 20
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+FAULT TO_FAULT@10:0.000
+NORMAL TO_NORMAL@100:20.000 ESCALATE@100:20.000
+### ack-does-not-ack-alarm-raised-in-same-call
+cfg high=30 low=10 deadband=2 delay=30 escalate=100
+init 0
+s 0 35
+ack 30
+tick 130
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000
+HIGH ESCALATE@130:35.000

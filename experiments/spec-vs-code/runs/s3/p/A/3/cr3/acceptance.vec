@@ -1,0 +1,331 @@
+# Acceptance test: known-good encodings (ASHRAE 135 clause 20.2 examples) and round trips.
+### unsigned-72
+enc_unsigned 72
+---
+OK 2148
+### signed-72
+enc_signed 72
+---
+OK 3148
+### real-72
+enc_real 42900000
+---
+OK 4442900000
+### boolean-true
+enc_bool 1
+---
+OK 11
+### null
+enc_null
+---
+OK 00
+### octet-string
+enc_octets 1234ff
+---
+OK 631234ff
+### character-string
+enc_str 546869732069732061204241436e657420737472696e6721
+---
+OK 751900546869732069732061204241436e657420737472696e6721
+### bit-string
+enc_bits 10101
+---
+OK 8203a8
+### enumerated-0
+enc_enum 0
+---
+OK 9100
+### date
+enc_date 1991 1 24 4
+---
+OK a45b011804
+### time
+enc_time 17 35 45 17
+---
+OK b411232d11
+### object-id
+enc_oid 3 15
+---
+OK c400c0000f
+### context-unsigned
+enc_ctx_unsigned 0 256
+---
+OK 0a0100
+### opening-closing
+enc_open 1
+enc_close 1
+---
+OK 1e
+OK 1f
+### decode-unsigned
+dec_app 2148
+---
+OK n=2 u 72
+### decode-real
+dec_app 4442900000
+---
+OK n=5 r 42900000
+### decode-string
+dec_app 751900546869732069732061204241436e657420737472696e6721
+---
+OK n=27 str cs=0 546869732069732061204241436e657420737472696e6721
+### decode-object-id
+dec_app c400c0000f
+---
+OK n=5 oid 3 15
+### decode-context-header
+dec_tag 0a0100
+---
+OK hl=1 tag=0 ctx lvt=2
+### double-72
+enc_double 4052000000000000
+---
+OK 55084052000000000000
+### decode-double
+dec_app 55084052000000000000
+---
+OK n=10 d 4052000000000000
+### context-enumerated
+enc_ctx_enum 9 0
+enc_ctx_enum 1 256
+---
+OK 9900
+OK 1a0100
+### context-signed
+enc_ctx_signed 1 -1
+enc_ctx_signed 0 128
+---
+OK 19ff
+OK 0a0080
+### real-nan-boundaries
+# IEEE-754 bit patterns are encoded unchanged, no FP ops: Inf/-0/max finite, and (since CR-103) quiet/signalling NaN of either sign with payload
+enc_real 7f800000
+enc_real ff800000
+enc_real 80000000
+enc_real 7f7fffff
+enc_real 7f800001
+enc_real ffc00000
+enc_real 7fbfffff
+enc_real 7fc00000
+enc_real 7fffffff
+---
+OK 447f800000
+OK 44ff800000
+OK 4480000000
+OK 447f7fffff
+OK 447f800001
+OK 44ffc00000
+OK 447fbfffff
+OK 447fc00000
+OK 447fffffff
+### double-nan-boundaries
+# since CR-103, NaN (fraction bit only in the low word, or only in the high word, either sign) is encoded unchanged
+enc_double 7ff0000000000000
+enc_double fff0000000000000
+enc_double 8000000000000000
+enc_double 7ff0000000000001
+enc_double 7ff8000000000000
+enc_double fff0000100000000
+enc_double 7fffffffffffffff
+---
+OK 55087ff0000000000000
+OK 5508fff0000000000000
+OK 55088000000000000000
+OK 55087ff0000000000001
+OK 55087ff8000000000000
+OK 5508fff0000100000000
+OK 55087fffffffffffffff
+### signed-minimal-length
+# two's complement minimal length boundaries (20.2.5)
+enc_signed 127
+enc_signed 128
+enc_signed -128
+enc_signed -129
+enc_signed 8388607
+enc_signed 8388608
+enc_signed -8388609
+enc_signed -2147483648
+---
+OK 317f
+OK 320080
+OK 3180
+OK 32ff7f
+OK 337fffff
+OK 3400800000
+OK 34ff7fffff
+OK 3480000000
+### unsigned-minimal-length
+# minimal length boundaries (20.2.4)
+enc_unsigned 255
+enc_unsigned 65536
+enc_unsigned 16777216
+enc_unsigned 4294967295
+---
+OK 21ff
+OK 23010000
+OK 2401000000
+OK 24ffffffff
+### header-extended-tag-and-length
+# extended tag number, extended length 253/254 boundary, reserved tag 255 (20.2.1)
+enc_ctx_unsigned 15 1
+enc_ctx_signed 254 -1
+enc_ctx_unsigned 255 1
+enc_ctx_bool 3 1
+enc_ctx_bool 20 0
+enc_open 15
+enc_close 254
+enc_open 255
+enc_octets rep:00:253
+enc_octets rep:00:254
+---
+OK f90f01
+OK f9feff
+ERR
+OK 3901
+OK f91400
+OK fe0f
+OK fffe
+ERR
+OK 65fd0000000000000000000000000000..2811e668855c2e97/255
+OK 65fe00fe000000000000000000000000..60d83eb8c196dc46/258
+### buffer-too-small
+# nothing is written when the value does not fit
+enc_null @0
+enc_real 42900000 @4
+enc_double 4052000000000000 @9
+enc_real 7fc00000 @4
+enc_double 7ff8000000000000 @9
+enc_str 41 @2
+enc_ctx_unsigned 20 256 @3
+enc_open 20 @1
+enc_date 1991 1 24 4 @4
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+### nan-round-trip
+# CR-103: NaN decodes back to the same bit pattern (payload and sign kept)
+dec_app 447fc00001
+dec_app 44ff800001
+dec_app 55087ff8000000000001
+dec_app 5508fff0000000000001
+---
+OK n=5 r 7fc00001
+OK n=5 r ff800001
+OK n=10 d 7ff8000000000001
+OK n=10 d fff0000000000001
+### utf8-well-formed
+# CR-103: well-formed UTF-8 (RFC 3629) is accepted: empty, U+0000, and the boundaries of each sequence length
+enc_str -
+enc_str 00
+enc_str 7f
+enc_str c280
+enc_str dfbf
+enc_str e0a080
+enc_str ed9fbf
+enc_str ee8080
+enc_str efbfbf
+enc_str f0908080
+enc_str f48fbfbf
+enc_str 48c3a9e282acf09f9880
+---
+OK 7100
+OK 720000
+OK 72007f
+OK 7300c280
+OK 7300dfbf
+OK 7400e0a080
+OK 7400ed9fbf
+OK 7400ee8080
+OK 7400efbfbf
+OK 750500f0908080
+OK 750500f48fbfbf
+OK 750b0048c3a9e282acf09f9880
+### utf8-ill-formed
+# CR-103: ill-formed UTF-8 is rejected and nothing is written
+# stray continuation octets and invalid lead octets
+enc_str 80
+enc_str 41bf
+enc_str fe
+enc_str ff
+# truncated sequences (at the end, and interrupted by another character)
+enc_str c2
+enc_str e0a0
+enc_str f09080
+enc_str 41e282
+enc_str c241
+enc_str e28241
+enc_str f0908041
+enc_str e2e282ac
+# overlong encodings
+enc_str c080
+enc_str c1bf
+enc_str e08080
+enc_str e09fbf
+enc_str f0808080
+enc_str f08fbfbf
+# surrogates U+D800..U+DFFF
+enc_str eda080
+enc_str edbfbf
+enc_str eda0bdedb880
+# above U+10FFFF
+enc_str f4908080
+enc_str f5808080
+enc_str f7bfbfbf
+enc_str f888808080
+# ill-formed octet after a long valid prefix, small buffer
+enc_str rep:41:300+ff
+enc_str 80 @1
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+### unsigned-enumerated-zero
+# the value 0 keeps one content octet (20.2.4, 20.2.11: "at least one contents octet"); CR-103 item 3 was refused
+enc_unsigned 0
+enc_enum 0
+enc_ctx_unsigned 3 0
+enc_ctx_enum 3 0
+dec_app 2100
+dec_app 9100
+dec_app 20
+dec_app 90
+---
+OK 2100
+OK 9100
+OK 3900
+OK 3900
+OK n=2 u 0
+OK n=2 enum 0
+ERR
+ERR

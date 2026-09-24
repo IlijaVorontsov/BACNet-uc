@@ -1,0 +1,493 @@
+# Acceptance test: known-good encodings (ASHRAE 135 clause 20.2 examples) and round trips.
+### unsigned-72
+enc_unsigned 72
+---
+OK 2148
+### signed-72
+enc_signed 72
+---
+OK 3148
+### real-72
+enc_real 42900000
+---
+OK 4442900000
+### boolean-true
+enc_bool 1
+---
+OK 11
+### null
+enc_null
+---
+OK 00
+### octet-string
+enc_octets 1234ff
+---
+OK 631234ff
+### character-string
+enc_str 546869732069732061204241436e657420737472696e6721
+---
+OK 751900546869732069732061204241436e657420737472696e6721
+### bit-string
+enc_bits 10101
+---
+OK 8203a8
+### enumerated-0
+enc_enum 0
+---
+OK 9100
+### date
+enc_date 1991 1 24 4
+---
+OK a45b011804
+### time
+enc_time 17 35 45 17
+---
+OK b411232d11
+### object-id
+enc_oid 3 15
+---
+OK c400c0000f
+### context-unsigned
+enc_ctx_unsigned 0 256
+---
+OK 0a0100
+### opening-closing
+enc_open 1
+enc_close 1
+---
+OK 1e
+OK 1f
+### decode-unsigned
+dec_app 2148
+---
+OK n=2 u 72
+### decode-real
+dec_app 4442900000
+---
+OK n=5 r 42900000
+### decode-string
+dec_app 751900546869732069732061204241436e657420737472696e6721
+---
+OK n=27 str cs=0 546869732069732061204241436e657420737472696e6721
+### decode-object-id
+dec_app c400c0000f
+---
+OK n=5 oid 3 15
+### decode-context-header
+dec_tag 0a0100
+---
+OK hl=1 tag=0 ctx lvt=2
+### double-72
+# CR-101: Double (application tag 5), context Enumerated / Signed.
+# ASHRAE 135 clause 20.2.7 example: Double 72.0.
+enc_double 4052000000000000
+---
+OK 55084052000000000000
+### double-negative-zero
+enc_double 8000000000000000
+---
+OK 55088000000000000000
+### double-nan-refused
+# E5a [POL] applies to Double as well: NaN is never sent.
+enc_double 7ff8000000000000
+---
+ERR
+### double-no-partial-write
+enc_double 4052000000000000 @9
+---
+ERR
+### decode-double
+dec_app 55084052000000000000
+---
+OK n=10 d 4052000000000000
+### decode-double-bad-length
+dec_app 5504405200000000
+---
+ERR
+### context-enumerated
+enc_ctx_enum 1 256
+---
+OK 1a0100
+### context-signed
+enc_ctx_signed 5 -72
+enc_ctx_signed 1 -129
+---
+OK 59b8
+OK 1aff7f
+### context-tag-255-refused
+enc_ctx_enum 255 1
+enc_ctx_signed 255 1
+---
+ERR
+ERR
+
+### cr102-real-nan-bit-patterns
+# CR-102 regression blocks: pure refactoring, expected results recorded from the pre-CR-102 build.
+# E5a NaN test is now a bit-pattern test (no isnan()).
+# quiet, signalling, negative, all-ones NaN refused; +/-Inf, -0.0, max finite, denormal encoded.
+enc_real 7fc00000
+enc_real 7f800001
+enc_real ffc00000
+enc_real ffffffff
+enc_real 7f800000
+enc_real ff800000
+enc_real 80000000
+enc_real 7f7fffff
+enc_real 00000001
+---
+ERR
+ERR
+ERR
+ERR
+OK 447f800000
+OK 44ff800000
+OK 4480000000
+OK 447f7fffff
+OK 4400000001
+### cr102-double-nan-bit-patterns
+# NaN whose fraction bits are only in the low word / only in the high word.
+enc_double 7ff0000000000001
+enc_double 7ff0000100000000
+enc_double fff8000000000000
+enc_double 7ff7ffffffffffff
+enc_double 7ff0000000000000
+enc_double fff0000000000000
+enc_double 7fefffffffffffff
+enc_double 0000000000000001
+---
+ERR
+ERR
+ERR
+ERR
+OK 55087ff0000000000000
+OK 5508fff0000000000000
+OK 55087fefffffffffffff
+OK 55080000000000000001
+### cr102-unsigned-length-boundaries
+# E3 via the shared minimal-length integer writer put_int().
+enc_unsigned 0
+enc_unsigned 255
+enc_unsigned 256
+enc_unsigned 65535
+enc_unsigned 65536
+enc_unsigned 16777215
+enc_unsigned 16777216
+enc_unsigned 4294967295
+enc_enum 4294967295
+---
+OK 2100
+OK 21ff
+OK 220100
+OK 22ffff
+OK 23010000
+OK 23ffffff
+OK 2401000000
+OK 24ffffffff
+OK 94ffffffff
+### cr102-signed-length-boundaries
+# E4 via put_int().
+enc_signed 127
+enc_signed 128
+enc_signed -128
+enc_signed -129
+enc_signed 32767
+enc_signed 32768
+enc_signed -32768
+enc_signed -32769
+enc_signed 8388607
+enc_signed 8388608
+enc_signed -8388608
+enc_signed -8388609
+enc_signed 2147483647
+enc_signed -2147483648
+---
+OK 317f
+OK 320080
+OK 3180
+OK 32ff7f
+OK 327fff
+OK 33008000
+OK 328000
+OK 33ff7fff
+OK 337fffff
+OK 3400800000
+OK 33800000
+OK 34ff7fffff
+OK 347fffffff
+OK 3480000000
+### cr102-context-extended-tags
+# G3 extended tag octet through the shared header writer put_hdr().
+enc_ctx_unsigned 14 1
+enc_ctx_unsigned 15 1
+enc_ctx_enum 254 65536
+enc_ctx_signed 16 -2147483648
+enc_ctx_bool 15 1
+enc_ctx_bool 255 0
+enc_ctx_unsigned 255 0
+---
+OK e901
+OK f90f01
+OK fbfe010000
+OK fc1080000000
+OK f90f01
+ERR
+ERR
+### cr102-open-close-extended
+# G5 opening/closing tags (LVT 6/7) through put_hdr().
+enc_open 0
+enc_close 14
+enc_open 15
+enc_close 15
+enc_open 254
+enc_open 255
+enc_close 255
+---
+OK 0e
+OK ef
+OK fe0f
+OK ff0f
+OK fefe
+ERR
+ERR
+### cr102-extended-length-forms
+# G4 shortest extended length: 1, 2 or 4 octets (never 3).
+enc_octets rep:ab:4
+enc_octets rep:ab:5
+enc_octets rep:ab:253
+enc_octets rep:ab:254
+enc_octets rep:ab:65535 @80000
+enc_octets rep:ab:65536 @80000
+enc_str rep:41:252
+enc_str rep:41:253
+enc_bits rep:1:2024
+enc_bits rep:1:2025
+---
+OK 64abababab
+OK 6505ababababab
+OK 65fdabababababababababababababab..c456215935f4a136/255
+OK 65fe00feabababababababababababab..d51d44ebca21dc68/258
+OK 65feffffabababababababababababab..68b00b5ca1769915/65539
+OK 65ff00010000abababababababababab..07c1678433a731bc/65542
+OK 75fd0041414141414141414141414141..0383bba108e5c183/255
+OK 75fe00fe004141414141414141414141..276e7407f803f035/258
+OK 85fe00fe00ffffffffffffffffffffff..599b54ed31a535fb/258
+OK 85fe00ff07ffffffffffffffffffffff..a76c2d3010dce799/259
+### cr102-fixed-length-contents
+# Real/Date/Time/Object Id keep their fixed 4-octet content (not minimal-length).
+enc_real 00000000
+enc_oid 0 0
+enc_date 1900 1 1 1
+enc_time 0 0 0 0
+enc_bool 0 @1
+enc_bool 1 @1
+enc_null @1
+---
+OK 4400000000
+OK c400000000
+OK a400010101
+OK b400000000
+OK 10
+OK 11
+OK 00
+### cr102-no-partial-write-refactored
+# G1: one byte short -> ERR with the buffer untouched (header and content paths); the last-but-two octet string fits exactly.
+enc_null @0
+enc_bool 1 @0
+enc_unsigned 256 @2
+enc_signed -129 @2
+enc_real 3f800000 @4
+enc_date 1991 1 24 4 @4
+enc_time 1 2 3 4 @4
+enc_oid 3 15 @4
+enc_ctx_unsigned 15 256 @3
+enc_ctx_bool 15 1 @2
+enc_open 15 @1
+enc_octets rep:ab:254 @257
+enc_octets rep:ab:65536 @65541
+enc_octets rep:ab:65536 @65542
+enc_str rep:41:253 @256
+enc_bits rep:1:2025 @257
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+OK 65ff00010000abababababababababab..07c1678433a731bc/65542
+ERR
+ERR
+
+### cr103-utf8-well-formed
+# CR-103 item 1: E7a [POL] changed - character-string text must be well-formed UTF-8 (RFC 3629).
+# Accepted: empty, U+0000, U+007F, 2/3/4-octet boundaries, the code points either side of the
+# surrogate range, BOM, noncharacter U+FFFF, U+10FFFF, and a mixed string.
+enc_str -
+enc_str 00
+enc_str 7f
+enc_str c280
+enc_str dfbf
+enc_str e0a080
+enc_str ed9fbf
+enc_str ee8080
+enc_str efbbbf
+enc_str efbfbf
+enc_str f0908080
+enc_str f48fbfbf
+enc_str 41c3a9e282acf09f9880
+---
+OK 7100
+OK 720000
+OK 72007f
+OK 7300c280
+OK 7300dfbf
+OK 7400e0a080
+OK 7400ed9fbf
+OK 7400ee8080
+OK 7400efbbbf
+OK 7400efbfbf
+OK 750500f0908080
+OK 750500f48fbfbf
+OK 750b0041c3a9e282acf09f9880
+### cr103-utf8-truncated-invalid
+# Truncated sequences (also at the end of a longer string), stray continuation octets,
+# bad continuation octets, and lead octets that never occur in UTF-8 (C0, C1, F5..FF).
+enc_str c3
+enc_str e282
+enc_str f09f98
+enc_str 41c3
+enc_str 414243e2
+enc_str 80
+enc_str bf
+enc_str 41bf42
+enc_str c341
+enc_str e228a1
+enc_str e282c0
+enc_str f0902880
+enc_str f09f98c0
+enc_str c0
+enc_str c1
+enc_str f5808080
+enc_str fe
+enc_str ff
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+### cr103-utf8-overlong-surrogate-range
+# Overlong forms (2-, 3- and 4-octet, including overlong U+0000 `c0 80` and overlong '/'),
+# surrogates U+D800..U+DFFF (single and as a CESU-8 pair), code points above U+10FFFF,
+# and the obsolete 5/6-octet forms.
+enc_str c080
+enc_str c0af
+enc_str c1bf
+enc_str e080af
+enc_str e09fbf
+enc_str f08080af
+enc_str f08fbfbf
+enc_str eda080
+enc_str edbfbf
+enc_str eda0bdedb880
+enc_str f4908080
+enc_str f7bfbfbf
+enc_str f888808080
+enc_str fc8480808080
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+### cr103-utf8-no-partial-write
+# G1: a malformed string is refused with the buffer untouched even when it would fit; the check
+# covers the whole string (a bad last octet after 69999 good ones); valid strings are still
+# refused one byte short and accepted when they fit exactly.
+enc_str 41ff @1024
+enc_str rep:41:69999+ff @80000
+enc_str rep:41:69999+c3 @80000
+enc_str rep:41:70000 @80000
+enc_str c3a9 @3
+enc_str c3a9 @4
+---
+ERR
+ERR
+ERR
+OK 75ff0001117100414141414141414141..338d7b842b730076/70007
+ERR
+OK 7300c3a9
+### cr103-decoder-unchanged
+# E7a restricts only what we send: the decoder still accepts any character-string bytes (D7).
+dec_app 7300c0af
+dec_app 7400eda080
+---
+OK n=4 str cs=0 c0af
+OK n=5 str cs=0 eda080
+### cr103-nan-still-refused
+# CR-103 item 2 (encode NaN as "no sample") declined: conflicts with E5a [POL] (decision D-7).
+# Behaviour unchanged: NaN refused for Real and Double, decoders accept NaN (D5, D5d).
+enc_real 7fc00000
+enc_real ffc00000
+enc_double 7ff8000000000000
+enc_double fff8000000000000
+dec_app 447fc00000
+dec_app 55087ff8000000000000
+---
+ERR
+ERR
+ERR
+ERR
+OK n=5 r 7fc00000
+OK n=10 d 7ff8000000000000
+### cr103-zero-has-one-content-octet
+# CR-103 item 3 (encode 0 as `20` / `90`) declined: conflicts with ASHRAE 135 (E3 [STD]).
+# 0 has one content octet in every Unsigned/Enumerated form; zero-length content is not decoded (D4).
+enc_unsigned 0
+enc_enum 0
+enc_ctx_unsigned 0 0
+enc_ctx_enum 3 0
+enc_ctx_unsigned 15 0
+dec_app 2100
+dec_app 9100
+dec_app 20
+dec_app 90
+---
+OK 2100
+OK 9100
+OK 0900
+OK 3900
+OK f90f00
+OK n=2 u 0
+OK n=2 enum 0
+ERR
+ERR

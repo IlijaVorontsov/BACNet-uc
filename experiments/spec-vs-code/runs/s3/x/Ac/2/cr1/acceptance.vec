@@ -1,0 +1,162 @@
+# Acceptance test: the alarm scenarios we care about.
+### high-alarm-ack-and-return
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 10 25
+s 20 35
+s 30 35
+s 40 35
+s 50 35
+ack 60
+s 70 27
+s 80 27
+s 90 27
+s 100 27
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@50:35.000
+HIGH
+HIGH
+HIGH
+HIGH
+NORMAL TO_NORMAL@100:27.000
+### low-alarm-unacknowledged-escalates
+cfg high=30 low=10 deadband=2 delay=20 escalate=300
+init 0
+s 0 5
+s 10 5
+s 20 5
+tick 200
+tick 320
+tick 400
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+LOW TO_LOW@20:5.000
+LOW
+LOW ESCALATE@320:5.000
+LOW
+### short-spikes-do-not-alarm
+cfg high=30 low=10 deadband=2 delay=60 escalate=600
+init 0
+s 10 20
+s 20 40
+s 30 20
+s 40 40
+s 50 20
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+### cr201-return-to-normal-uses-delay-normal
+# CR-201: separate return-to-normal delay (BACnet Time_Delay_Normal).
+cfg high=30 low=10 deadband=2 delay=30 escalate=0 delay_normal=60
+init 0
+s 0 35
+s 30 35
+s 40 25
+tick 70
+tick 99
+tick 100
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000
+HIGH
+HIGH
+HIGH
+NORMAL TO_NORMAL@100:25.000
+### cr201-shorter-delay-normal
+cfg high=30 low=10 deadband=2 delay=60 escalate=0 delay_normal=10
+init 0
+s 0 35
+s 60 35
+s 70 27
+s 80 27
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@60:35.000
+HIGH
+NORMAL TO_NORMAL@80:27.000
+### cr201-high-low-and-offnormal-keep-time-delay
+cfg high=30 low=10 deadband=2 delay=30 escalate=0 delay_normal=100
+init 0
+s 0 35
+s 30 35
+s 40 5
+tick 70
+s 80 20
+tick 110
+tick 179
+tick 180
+s 190 5
+tick 220
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000
+HIGH
+LOW TO_LOW@70:5.000
+LOW
+LOW
+LOW
+NORMAL TO_NORMAL@180:20.000
+NORMAL
+LOW TO_LOW@220:5.000
+### cr201-delay-normal-zero-returns-on-sample
+cfg high=30 low=10 deadband=2 delay=20 escalate=0 delay_normal=0
+init 0
+s 0 5
+s 20 5
+s 25 13
+s 30 35
+s 50 35
+---
+cfg
+NORMAL
+NORMAL
+LOW TO_LOW@20:5.000
+NORMAL TO_NORMAL@25:13.000
+NORMAL
+HIGH TO_HIGH@50:35.000
+### cr201-sentinel-means-same-as-time-delay
+cfg high=30 low=10 deadband=2 delay=30 escalate=0 delay_normal=4294967295
+init 0
+s 0 35
+s 30 35
+s 40 25
+tick 69
+tick 70
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000
+HIGH
+HIGH
+NORMAL TO_NORMAL@70:25.000
+### cr201-fault-recovery-not-delayed
+cfg high=30 low=10 deadband=2 delay=30 escalate=0 delay_normal=100
+init 0
+sf 10 20
+s 20 20
+---
+cfg
+NORMAL
+FAULT TO_FAULT@10:20.000
+NORMAL TO_NORMAL@20:20.000

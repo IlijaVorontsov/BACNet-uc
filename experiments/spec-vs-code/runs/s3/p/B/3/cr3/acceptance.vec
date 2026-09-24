@@ -1,0 +1,393 @@
+# Acceptance test: known-good encodings (ASHRAE 135 clause 20.2 examples) and round trips.
+### unsigned-72
+enc_unsigned 72
+---
+OK 2148
+### signed-72
+enc_signed 72
+---
+OK 3148
+### real-72
+enc_real 42900000
+---
+OK 4442900000
+### boolean-true
+enc_bool 1
+---
+OK 11
+### null
+enc_null
+---
+OK 00
+### octet-string
+enc_octets 1234ff
+---
+OK 631234ff
+### character-string
+enc_str 546869732069732061204241436e657420737472696e6721
+---
+OK 751900546869732069732061204241436e657420737472696e6721
+### bit-string
+enc_bits 10101
+---
+OK 8203a8
+### enumerated-0
+enc_enum 0
+---
+OK 9100
+### date
+enc_date 1991 1 24 4
+---
+OK a45b011804
+### time
+enc_time 17 35 45 17
+---
+OK b411232d11
+### object-id
+enc_oid 3 15
+---
+OK c400c0000f
+### context-unsigned
+enc_ctx_unsigned 0 256
+---
+OK 0a0100
+### opening-closing
+enc_open 1
+enc_close 1
+---
+OK 1e
+OK 1f
+### decode-unsigned
+dec_app 2148
+---
+OK n=2 u 72
+### decode-real
+dec_app 4442900000
+---
+OK n=5 r 42900000
+### decode-string
+dec_app 751900546869732069732061204241436e657420737472696e6721
+---
+OK n=27 str cs=0 546869732069732061204241436e657420737472696e6721
+### decode-object-id
+dec_app c400c0000f
+---
+OK n=5 oid 3 15
+### decode-context-header
+dec_tag 0a0100
+---
+OK hl=1 tag=0 ctx lvt=2
+### double-72
+# CR-101: Double (application tag 5) and context-tagged Enumerated / Signed.
+enc_double 4052000000000000
+---
+OK 55084052000000000000
+### double-negative-zero
+enc_double 8000000000000000
+---
+OK 55088000000000000000
+### double-infinity
+enc_double 7ff0000000000000
+---
+OK 55087ff0000000000000
+### double-nan-refused
+enc_double 7ff8000000000000
+enc_double fff0000000000001
+---
+ERR
+ERR
+### double-no-partial-write
+enc_double 4052000000000000 @9
+enc_double 4052000000000000 @10
+---
+ERR
+OK 55084052000000000000
+### decode-double
+dec_app 55084052000000000000
+---
+OK n=10 d 4052000000000000
+### decode-double-nan
+dec_app 55087ff8000000000001
+---
+OK n=10 d 7ff8000000000001
+### decode-double-bad-length
+dec_app 5504405200
+dec_app 550740520000000000
+dec_app 550840520000000000
+---
+ERR
+ERR
+ERR
+### context-enumerated
+enc_ctx_enum 9 256
+enc_ctx_enum 0 0
+enc_ctx_enum 15 1
+enc_ctx_enum 255 1
+---
+OK 9a0100
+OK 0900
+OK f90f01
+ERR
+### context-signed
+enc_ctx_signed 5 -72
+enc_ctx_signed 0 128
+enc_ctx_signed 1 -129
+enc_ctx_signed 20 -1
+enc_ctx_signed 255 1
+---
+OK 59b8
+OK 0a0080
+OK 1aff7f
+OK f914ff
+ERR
+### context-no-partial-write
+enc_ctx_enum 1 256 @2
+enc_ctx_signed 1 128 @2
+---
+ERR
+ERR
+### real-nan-refused
+# CR-102: regression vectors for the refactoring (no floating-point code, shared
+# tag-header and integer writers). Expected outputs are those of the v1.1 code.
+# NaN is detected from the bit pattern: quiet, signalling, negative, largest payload.
+enc_real 7fc00000
+enc_real ffc00000
+enc_real 7f800001
+enc_real ff800001
+enc_real 7fffffff
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+### real-special-values
+enc_real 7f800000
+enc_real ff800000
+enc_real 80000000
+enc_real 7f7fffff
+enc_real 00000001
+enc_real 42900000 @4
+enc_real 42900000 @5
+---
+OK 447f800000
+OK 44ff800000
+OK 4480000000
+OK 447f7fffff
+OK 4400000001
+ERR
+OK 4442900000
+### double-nan-boundaries
+enc_double 7ff0000000000001
+enc_double 7ff0000100000000
+enc_double fff8000000000000
+enc_double 7fffffffffffffff
+enc_double fff0000000000000
+enc_double 7fefffffffffffff
+enc_double 0000000000000001
+---
+ERR
+ERR
+ERR
+ERR
+OK 5508fff0000000000000
+OK 55087fefffffffffffff
+OK 55080000000000000001
+### null-boolean-capacity
+enc_null @0
+enc_null @1
+enc_bool 0
+enc_bool 1 @0
+enc_bool 1 @1
+---
+ERR
+OK 00
+OK 10
+ERR
+OK 11
+### unsigned-minimal-length
+enc_unsigned 0
+enc_unsigned 255
+enc_unsigned 256
+enc_unsigned 65535
+enc_unsigned 65536
+enc_unsigned 16777215
+enc_unsigned 16777216
+enc_unsigned 4294967295
+enc_enum 4294967295
+---
+OK 2100
+OK 21ff
+OK 220100
+OK 22ffff
+OK 23010000
+OK 23ffffff
+OK 2401000000
+OK 24ffffffff
+OK 94ffffffff
+### signed-minimal-length
+enc_signed 0
+enc_signed -1
+enc_signed 127
+enc_signed -128
+enc_signed 128
+enc_signed -129
+enc_signed 32767
+enc_signed -32768
+enc_signed 32768
+enc_signed -32769
+enc_signed 8388607
+enc_signed -8388608
+enc_signed 8388608
+enc_signed -8388609
+enc_signed 2147483647
+enc_signed -2147483648
+---
+OK 3100
+OK 31ff
+OK 317f
+OK 3180
+OK 320080
+OK 32ff7f
+OK 327fff
+OK 328000
+OK 33008000
+OK 33ff7fff
+OK 337fffff
+OK 33800000
+OK 3400800000
+OK 34ff7fffff
+OK 347fffffff
+OK 3480000000
+### integer-no-partial-write
+enc_unsigned 65536 @3
+enc_unsigned 65536 @4
+enc_signed -2147483648 @4
+enc_signed -2147483648 @5
+enc_ctx_unsigned 15 16777216 @5
+enc_ctx_unsigned 15 16777216 @6
+---
+ERR
+OK 23010000
+ERR
+OK 3480000000
+ERR
+OK fc0f01000000
+### context-tags-extended
+enc_ctx_unsigned 14 1
+enc_ctx_unsigned 15 1
+enc_ctx_unsigned 254 1
+enc_ctx_unsigned 255 1
+enc_ctx_bool 3 1
+enc_ctx_bool 20 0
+enc_ctx_bool 20 0 @2
+enc_ctx_bool 255 0
+enc_open 15
+enc_close 14
+enc_close 254
+enc_open 15 @1
+enc_open 255
+enc_close 255
+---
+OK e901
+OK f90f01
+OK f9fe01
+ERR
+OK 3901
+OK f91400
+ERR
+ERR
+OK fe0f
+OK ef
+OK fffe
+ERR
+ERR
+ERR
+### extended-lengths
+enc_octets rep:41:4
+enc_octets rep:41:5
+enc_octets rep:41:253
+enc_octets rep:41:253 @254
+enc_octets rep:41:253 @255
+enc_octets rep:41:254
+enc_octets rep:41:254 @257
+enc_octets rep:41:65535 @65538
+enc_octets rep:41:65535 @65539
+enc_octets rep:41:65536 @65541
+enc_octets rep:41:65536 @65542
+enc_str rep:41:252
+enc_str rep:41:253
+---
+OK 6441414141
+OK 65054141414141
+OK 65fd4141414141414141414141414141..c8a730c15bed2538/255
+ERR
+OK 65fd4141414141414141414141414141..c8a730c15bed2538/255
+OK 65fe00fe414141414141414141414141..162a682a22f45a40/258
+ERR
+ERR
+OK 65feffff414141414141414141414141..b7d4ce08520699ff/65539
+ERR
+OK 65ff0001000041414141414141414141..d42437703cb731bc/65542
+OK 75fd0041414141414141414141414141..0383bba108e5c183/255
+OK 75fe00fe004141414141414141414141..276e7407f803f035/258
+### bit-string-lengths
+enc_bits -
+enc_bits 1
+enc_bits rep:1:32
+enc_bits rep:1:33 @7
+enc_bits rep:1:33 @8
+enc_bits 102
+---
+OK 8100
+OK 820780
+OK 850500ffffffff
+ERR
+OK 850607ffffffff80
+ERR
+### date-time-oid-capacity
+enc_date 2024 1 1 1 @4
+enc_date 2024 1 1 1 @5
+enc_time 255 255 255 255
+enc_time 1 2 3 4 @4
+enc_oid 1023 4194303
+enc_oid 1023 4194303 @4
+---
+ERR
+OK a47c010101
+OK b4ffffffff
+ERR
+OK c4ffffffff
+ERR
+### cr103-char-string-not-validated
+# CR-103: none of the three items was implemented (conflicts, see NOTES.md). These
+# vectors pin the documented behaviour that the requests asked to change.
+# Item 1 / E7a [POL]: the character-string encoder does not validate UTF-8; the bytes
+# are sent as given (overlong, surrogate, above U+10FFFF, truncated). Flip these to ERR
+# only if the product owner changes E7a. (NaN refusal, item 2 / E5a, is already covered
+# by real-nan-refused, double-nan-refused and double-nan-boundaries.)
+enc_str c0af
+enc_str eda080
+enc_str f4908080
+enc_str e282
+---
+OK 7300c0af
+OK 7400eda080
+OK 750500f4908080
+OK 7300e282
+### cr103-zero-integers
+# Item 3 / E3, E12 [STD]: 0 has one content octet (ASHRAE 135 20.2.4 / 20.2.11);
+# a zero-length Unsigned / Enumerated is rejected by the decoder (D4).
+enc_unsigned 0
+enc_enum 0
+enc_ctx_unsigned 3 0
+enc_ctx_enum 3 0
+dec_app 20
+dec_app 90
+---
+OK 2100
+OK 9100
+OK 3900
+OK 3900
+ERR
+ERR

@@ -1,0 +1,315 @@
+# Additional vectors derived from SPEC.md (one block per rule or edge case).
+### A2-strict-limits-at-limit
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 1 30
+s 2 10
+s 3 30.5
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@3:30.500
+### A3-deadband-strict
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 1 31
+s 2 28
+s 3 27.9
+s 4 9
+s 5 12
+s 6 12.1
+---
+cfg
+NORMAL
+HIGH TO_HIGH@1:31.000
+HIGH
+NORMAL TO_NORMAL@3:27.900
+LOW TO_LOW@4:9.000
+LOW
+NORMAL TO_NORMAL@6:12.100
+### A4-direct-high-low
+cfg high=30 low=10 deadband=2 delay=10 escalate=0
+init 0
+s 0 40
+s 10 40
+s 11 5
+s 20 5
+s 21 5
+s 25 50
+s 35 50
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@10:40.000
+HIGH
+HIGH
+LOW TO_LOW@21:5.000
+LOW
+HIGH TO_HIGH@35:50.000
+### A5a-target-change-restarts-timer
+cfg high=30 low=10 deadband=2 delay=10 escalate=0
+init 0
+s 0 40
+s 5 5
+s 14 5
+s 15 5
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+LOW TO_LOW@15:5.000
+### A5a-expired-but-unobserved-is-cancelled
+cfg high=30 low=10 deadband=2 delay=30 escalate=0
+init 0
+s 10 35
+s 50 20
+tick 100
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+### A5a-tick-fires-pending
+cfg high=30 low=10 deadband=2 delay=30 escalate=0
+init 0
+s 10 35
+tick 39
+tick 45
+tick 46
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@45:35.000
+HIGH
+### A6-fault-and-recovery
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 1 35
+sf 2 20
+s 3 nan
+tick 4
+s 5 40
+---
+cfg
+NORMAL
+HIGH TO_HIGH@1:35.000
+FAULT TO_FAULT@2:20.000
+FAULT
+FAULT
+HIGH TO_NORMAL@5:40.000 TO_HIGH@5:40.000
+### A6-nan-fault-value-and-inf-valid
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 1 nan
+s 2 inf
+s 3 -inf
+---
+cfg
+NORMAL
+FAULT TO_FAULT@1:nan
+HIGH TO_NORMAL@2:inf TO_HIGH@2:inf
+LOW TO_LOW@3:-inf
+### A6-fault-cancels-pending
+cfg high=30 low=10 deadband=2 delay=10 escalate=0
+init 0
+s 0 40
+sf 5 40
+s 6 40
+tick 15
+tick 16
+---
+cfg
+NORMAL
+NORMAL
+FAULT TO_FAULT@5:40.000
+NORMAL TO_NORMAL@6:40.000
+NORMAL
+HIGH TO_HIGH@16:40.000
+### A8-return-does-not-clear-unack-and-escalates
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 35
+s 20 20
+tick 109
+tick 110
+tick 500
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+NORMAL TO_NORMAL@20:20.000
+NORMAL
+NORMAL ESCALATE@110:20.000
+NORMAL
+### A9-late-ack-does-not-escalate
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 35
+ack 200
+tick 300
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+HIGH
+### A9-escalate-zero-disables
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 10 35
+tick 100000
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+### A9-new-episode-rearms-escalation
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 0 35
+tick 100
+s 150 5
+tick 249
+tick 250
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+HIGH ESCALATE@100:35.000
+LOW TO_LOW@150:5.000
+LOW
+LOW ESCALATE@250:5.000
+### A6a-fault-keeps-ack-state
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 0 35
+sf 10 7
+sf 50 8
+tick 100
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+FAULT TO_FAULT@10:7.000
+FAULT
+FAULT ESCALATE@100:8.000
+### A10-maintenance-catch-up
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+maint 1 on
+s 2 35
+tick 500
+maint 600 off
+tick 699
+tick 700
+---
+cfg
+NORMAL
+NORMAL
+HIGH
+HIGH
+HIGH TO_HIGH@600:35.000
+HIGH
+HIGH ESCALATE@700:35.000
+### A10-no-catch-up-when-state-unchanged
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 1 35
+maint 2 on
+s 3 20
+s 4 35
+maint 5 off
+---
+cfg
+NORMAL
+HIGH TO_HIGH@1:35.000
+HIGH
+NORMAL
+HIGH
+HIGH
+### A10-escalation-deferred-until-maintenance-off
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 0 35
+maint 50 on
+tick 200
+maint 300 off
+maint 301 off
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+HIGH
+HIGH
+HIGH ESCALATE@300:35.000
+HIGH
+### A10-timer-fires-before-maintenance-on
+cfg high=30 low=10 deadband=2 delay=10 escalate=0
+init 0
+s 0 35
+maint 10 on
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@10:35.000
+### A10-timer-silent-before-maintenance-off
+cfg high=30 low=10 deadband=2 delay=10 escalate=0
+init 0
+maint 0 on
+s 0 35
+maint 10 off
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@10:35.000
+### A10-catch-up-fault
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+maint 1 on
+sf 2 0
+maint 3 off
+---
+cfg
+NORMAL
+NORMAL
+FAULT
+FAULT TO_FAULT@3:0.000
+### A12-time-backwards-ignored
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 100
+s 50 35
+s 100 35
+s 99 20
+tick 99
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@100:35.000
+HIGH
+HIGH
+### A13-no-transition-before-first-sample
+cfg high=30 low=10 deadband=2 delay=0 escalate=10
+init 0
+tick 100
+ack 200
+maint 300 on
+maint 400 off
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL

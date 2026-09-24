@@ -1,0 +1,820 @@
+### x001 A2
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 0 30
+s 10 30
+s 40 30
+s 100 30
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+### x002 A2
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 0 10
+s 40 10
+s 100 10
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+### x005 A2
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 0 9.75
+s 29 9.75
+s 30 9.75
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+LOW TO_LOW@30:9.750
+### x006 A3
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 0
+s 0 35
+s 10 28
+s 20 28.25
+s 30 27.75
+s 40 35
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+HIGH
+HIGH
+NORMAL TO_NORMAL@30:27.750
+HIGH TO_HIGH@40:35.000
+### x008 A3
+cfg high=30 low=10 deadband=0 delay=0 escalate=0
+init 0
+s 0 31
+s 1 30
+s 2 29.75
+s 3 10
+s 4 9.75
+s 5 10
+s 6 10.25
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:31.000
+HIGH
+NORMAL TO_NORMAL@2:29.750
+NORMAL
+LOW TO_LOW@4:9.750
+LOW
+NORMAL TO_NORMAL@6:10.250
+### x009 A3 A5
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 0 35
+s 30 35
+s 40 27
+s 60 27
+s 70 27
+s 80 29
+s 90 27
+s 120 27
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000
+HIGH
+HIGH
+NORMAL TO_NORMAL@70:27.000
+NORMAL
+NORMAL
+NORMAL
+### x011 A4
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 0
+s 0 35
+s 10 5
+s 20 35
+s 30 20
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+LOW TO_LOW@10:5.000
+HIGH TO_HIGH@20:35.000
+NORMAL TO_NORMAL@30:20.000
+### x012 A4 A5
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 0 35
+s 30 35
+s 40 5
+s 50 5
+s 70 5
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000
+HIGH
+HIGH
+LOW TO_LOW@70:5.000
+### x013 A4 A5a
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 0 35
+s 30 35
+s 40 25
+s 50 5
+s 70 5
+s 80 5
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000
+HIGH
+HIGH
+HIGH
+LOW TO_LOW@80:5.000
+### x015 A5
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 10 35
+s 20 35
+s 30 25
+s 40 35
+s 50 35
+s 60 35
+s 70 35
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@70:35.000
+### x019 A5a
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 10 35
+s 50 20
+tick 100
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+### x020 A5a
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 10 35
+tick 30
+s 45 20
+tick 100
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+### x021 A5a A8 CR-203
+cfg high=30 low=10 deadband=2 delay=30 escalate=50
+init 0
+s 10 35
+ack 40
+tick 100
+tick 200
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@40:35.000 ACKED@40:35.000
+HIGH
+HIGH
+### x023 A5a A10
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 10 35
+maint 20 on
+tick 40
+maint 50 off
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH
+HIGH TO_HIGH@50:35.000
+### x024 A5a A5
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 0
+s 10 35
+s 20 35
+s 30 5
+s 40 20
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+LOW TO_LOW@30:5.000
+NORMAL TO_NORMAL@40:20.000
+### x025 A6
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+sf 20 25
+s 30 nan
+sf 40 50
+tick 100
+---
+cfg
+NORMAL
+FAULT TO_FAULT@20:25.000
+FAULT
+FAULT
+FAULT
+### x028 A6
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 0
+s 0 inf
+s 10 -inf
+s 20 20
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:inf
+LOW TO_LOW@10:-inf
+NORMAL TO_NORMAL@20:20.000
+### x029 A6
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 0 35
+s 20 nan
+s 40 35
+s 60 35
+s 70 35
+---
+cfg
+NORMAL
+NORMAL
+FAULT TO_FAULT@20:nan
+NORMAL TO_NORMAL@40:35.000
+NORMAL
+HIGH TO_HIGH@70:35.000
+### x030 A6 A6a
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 0
+sf 5 0
+s 10 35
+s 20 20
+---
+cfg
+NORMAL
+FAULT TO_FAULT@5:0.000
+HIGH TO_NORMAL@10:35.000 TO_HIGH@10:35.000
+NORMAL TO_NORMAL@20:20.000
+### x032 A6 A6a A9
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 0 35
+sf 50 35
+tick 99
+tick 100
+s 120 20
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+FAULT TO_FAULT@50:35.000
+FAULT
+FAULT ESCALATE@100:35.000
+NORMAL TO_NORMAL@120:20.000
+### x033 A6 A6a A8 CR-203
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 0 35
+sf 10 0
+ack 20
+s 30 35
+tick 200
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+FAULT TO_FAULT@10:0.000
+FAULT ACKED@20:0.000
+HIGH TO_NORMAL@30:35.000 TO_HIGH@30:35.000
+HIGH ESCALATE@200:35.000
+### x034 A7
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 10 35
+s 20 36
+tick 40
+s 50 37
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@40:36.000
+HIGH
+### x036 A8 CR-203
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 0
+ack 5
+s 10 35
+ack 20
+ack 30
+s 40 20
+ack 50
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH ACKED@20:35.000
+HIGH
+NORMAL TO_NORMAL@40:20.000
+NORMAL
+### x038 A8 A9
+cfg high=30 low=10 deadband=2 delay=10 escalate=100
+init 0
+s 0 5
+s 10 5
+s 20 20
+s 30 20
+s 110 20
+s 120 20
+---
+cfg
+NORMAL
+NORMAL
+LOW TO_LOW@10:5.000
+LOW
+NORMAL TO_NORMAL@30:20.000
+NORMAL ESCALATE@110:20.000
+NORMAL
+### x039 A8 A9 CR-203
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 0 35
+ack 10
+s 20 20
+s 30 35
+tick 129
+tick 130
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+HIGH ACKED@10:35.000
+NORMAL TO_NORMAL@20:20.000
+HIGH TO_HIGH@30:35.000
+HIGH
+HIGH ESCALATE@130:35.000
+### x041 A8 A9 CR-203
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 0 35
+s 10 20
+ack 50
+tick 200
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+NORMAL TO_NORMAL@10:20.000
+NORMAL ACKED@50:20.000
+NORMAL
+### x042 A9
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 0 35
+tick 1000
+tick 100000
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+HIGH
+HIGH
+### x043 A9 CR-203
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 0 35
+ack 500
+tick 600
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+HIGH ACKED@500:35.000
+HIGH
+### x046 A9 A11
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 0 35
+s 10 20
+s 150 35
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+NORMAL TO_NORMAL@10:20.000
+HIGH TO_HIGH@150:35.000
+### x047 A9 A11
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 0 35
+s 5 5
+tick 104
+tick 105
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+LOW TO_LOW@5:5.000
+LOW
+LOW ESCALATE@105:5.000
+### x048 A10
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 0
+maint 0 on
+s 10 35
+s 20 20
+maint 30 off
+s 40 35
+---
+cfg
+NORMAL
+NORMAL
+HIGH
+NORMAL
+NORMAL
+HIGH TO_HIGH@40:35.000
+### x051 A10
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 0
+s 0 35
+maint 10 on
+s 20 20
+maint 30 off
+s 40 35
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+HIGH
+NORMAL
+NORMAL TO_NORMAL@30:20.000
+HIGH TO_HIGH@40:35.000
+### x052 A10 A9
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 0 35
+maint 10 on
+tick 150
+maint 160 off
+tick 170
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+HIGH
+HIGH
+HIGH ESCALATE@160:35.000
+HIGH
+### x054 A10
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 0
+maint 0 off
+s 10 35
+maint 20 off
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+### x055 A10 A6
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 0
+maint 0 on
+sf 10 1
+maint 20 off
+s 30 20
+---
+cfg
+NORMAL
+NORMAL
+FAULT
+FAULT TO_FAULT@20:1.000
+NORMAL TO_NORMAL@30:20.000
+### x056 A10 A8
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 0
+s 0 35
+maint 10 on
+ack 20
+maint 30 off
+tick 700
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+HIGH
+HIGH
+HIGH
+HIGH
+### x057 A10 A5a
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+maint 0 on
+s 10 35
+maint 30 off
+tick 40
+tick 50
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@40:35.000
+HIGH
+### x059 A12
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 100
+s 50 35
+s 100 20
+s 120 35
+s 110 20
+tick 110
+s 120 20
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@120:35.000
+HIGH
+HIGH
+NORMAL TO_NORMAL@120:20.000
+### x060 A12 CR-203
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 10 35
+s 20 35
+s 15 35
+s 40 35
+ack 30
+ack 40
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@40:35.000
+HIGH
+HIGH ACKED@40:35.000
+### x062 A13
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 0
+tick 10
+ack 20
+maint 30 on
+maint 40 off
+tick 50
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+### x063 A5a A8 A9 A10 CR-203
+cfg high=25 low=5 deadband=1 delay=20 escalate=120
+init 0
+s 0 20
+s 10 26
+s 20 26
+s 30 26
+tick 40
+ack 60
+s 70 23.5
+s 80 23.5
+s 100 23.5
+s 110 3
+tick 130
+maint 140 on
+s 150 20
+tick 200
+maint 210 off
+tick 400
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:26.000
+HIGH
+HIGH ACKED@60:26.000
+HIGH
+HIGH
+NORMAL TO_NORMAL@100:23.500
+NORMAL
+LOW TO_LOW@130:3.000
+LOW
+LOW
+NORMAL
+NORMAL TO_NORMAL@210:20.000
+NORMAL ESCALATE@400:20.000
+### x042 A5 CR-201
+cfg high=30 low=10 deadband=2 delay=10 delay_normal=60 escalate=0
+init 0
+s 0 35
+s 10 35
+s 20 20
+s 70 20
+s 80 20
+s 85 5
+s 95 5
+s 100 20
+tick 159
+tick 160
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+HIGH
+NORMAL TO_NORMAL@80:20.000
+NORMAL
+LOW TO_LOW@95:5.000
+LOW
+LOW
+NORMAL TO_NORMAL@160:20.000
+### x043 A4 A5 CR-201
+cfg high=30 low=10 deadband=2 delay=60 delay_normal=0 escalate=0
+init 0
+s 0 35
+s 60 35
+s 70 5
+s 100 5
+s 130 5
+s 140 20
+s 150 35
+s 210 35
+s 220 29
+s 230 27
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@60:35.000
+HIGH
+HIGH
+LOW TO_LOW@130:5.000
+NORMAL TO_NORMAL@140:20.000
+NORMAL
+HIGH TO_HIGH@210:35.000
+HIGH
+NORMAL TO_NORMAL@230:27.000
+### x044 A5 CR-201
+cfg high=30 low=10 deadband=2 delay=30 delay_normal=4294967295 escalate=0
+init 0
+s 0 35
+s 30 35
+s 40 20
+s 69 20
+s 70 20
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000
+HIGH
+HIGH
+NORMAL TO_NORMAL@70:20.000
+### x045 A4 A5a CR-201
+cfg high=30 low=10 deadband=2 delay=20 delay_normal=100 escalate=0
+init 0
+s 0 35
+s 20 35
+s 30 20
+s 120 5
+s 139 5
+s 140 5
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@20:35.000
+HIGH
+HIGH
+HIGH
+LOW TO_LOW@140:5.000
+### x046 A6a CR-201
+cfg high=30 low=10 deadband=2 delay=0 delay_normal=100 escalate=0
+init 0
+s 0 35
+sf 10 20
+s 20 20
+s 30 35
+s 40 20
+tick 139
+tick 140
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+FAULT TO_FAULT@10:20.000
+NORMAL TO_NORMAL@20:20.000
+HIGH TO_HIGH@30:35.000
+HIGH
+HIGH
+NORMAL TO_NORMAL@140:20.000
+### x064 A8 A10 CR-203
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 0 35
+maint 10 on
+s 20 20
+ack 30
+maint 40 off
+tick 200
+ack 210
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+HIGH
+NORMAL
+NORMAL
+NORMAL TO_NORMAL@40:20.000
+NORMAL
+NORMAL
+### x065 A6 A7 A8 CR-203
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 0 35
+s 10 nan
+ack 20
+ack 30
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+FAULT TO_FAULT@10:nan
+FAULT ACKED@20:nan
+FAULT
+### x066 A8 A9 A11 CR-203
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 0 35
+ack 100
+s 110 5
+tick 210
+ack 220
+tick 500
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+HIGH ACKED@100:35.000
+LOW TO_LOW@110:5.000
+LOW ESCALATE@210:5.000
+LOW ACKED@220:5.000
+LOW
+### x067 A5a A8 A11 CR-203
+cfg high=30 low=10 deadband=2 delay=30 escalate=0
+init 0
+s 0 35
+s 30 35
+s 40 5
+ack 70
+ack 80
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000
+HIGH
+LOW TO_LOW@70:5.000 ACKED@70:5.000
+LOW

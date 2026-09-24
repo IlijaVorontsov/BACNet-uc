@@ -1,0 +1,255 @@
+# Review regression vectors (derived from SPEC.md), added during bug review.
+### a3-high-return-strict
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 1 31
+s 2 28
+s 3 27.9
+---
+cfg
+NORMAL
+HIGH TO_HIGH@1:31.000
+HIGH
+NORMAL TO_NORMAL@3:27.900
+### a3-low-return-strict
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 1 9
+s 2 12
+s 3 12.1
+---
+cfg
+NORMAL
+LOW TO_LOW@1:9.000
+LOW
+NORMAL TO_NORMAL@3:12.100
+### a2-at-limit-not-offnormal
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 1 30
+s 2 10
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+### a4-high-to-low-direct
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 1 31
+s 2 5
+s 3 35
+---
+cfg
+NORMAL
+HIGH TO_HIGH@1:31.000
+LOW TO_LOW@2:5.000
+HIGH TO_HIGH@3:35.000
+### a4-high-to-low-direct-delayed
+cfg high=30 low=10 deadband=2 delay=10 escalate=0
+init 0
+s 0 31
+s 10 31
+s 20 5
+s 25 5
+s 30 5
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@10:31.000
+HIGH
+HIGH
+LOW TO_LOW@30:5.000
+### a6a-recovery-evaluated-in-normal
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+sf 1 20
+s 2 35
+---
+cfg
+NORMAL
+FAULT TO_FAULT@1:20.000
+HIGH TO_NORMAL@2:35.000 TO_HIGH@2:35.000
+### a6a-recovery-starts-pending
+cfg high=30 low=10 deadband=2 delay=10 escalate=0
+init 0
+s 1 nan
+s 2 35
+tick 12
+---
+cfg
+NORMAL
+FAULT TO_FAULT@1:nan
+NORMAL TO_NORMAL@2:35.000
+HIGH TO_HIGH@12:35.000
+### a9-recovery-sample-escalates
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 1 35
+sf 2 35
+s 150 20
+---
+cfg
+NORMAL
+HIGH TO_HIGH@1:35.000
+FAULT TO_FAULT@2:35.000
+NORMAL TO_NORMAL@150:20.000 ESCALATE@150:20.000
+### a12-tick-backwards-ignored
+cfg high=30 low=10 deadband=2 delay=100 escalate=0
+init 0
+s 50 35
+tick 40
+tick 60
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+### a12-backwards-before-init-time
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 100
+tick 50
+s 60 35
+s 100 35
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@100:35.000
+### a12-ack-backwards-ignored
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 200 35
+ack 150
+tick 300
+---
+cfg
+NORMAL
+HIGH TO_HIGH@200:35.000
+HIGH
+HIGH ESCALATE@300:35.000
+### a12-maint-backwards-ignored
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 200 35
+maint 150 on
+s 210 20
+---
+cfg
+NORMAL
+HIGH TO_HIGH@200:35.000
+HIGH
+NORMAL TO_NORMAL@210:20.000
+### a10-catchup-starts-episode
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+maint 0 on
+s 10 35
+maint 20 off
+tick 110
+tick 120
+---
+cfg
+NORMAL
+NORMAL
+HIGH
+HIGH TO_HIGH@20:35.000
+HIGH
+HIGH ESCALATE@120:35.000
+### a10-catchup-after-acked-episode
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 5
+ack 20
+maint 30 on
+s 40 35
+maint 50 off
+tick 150
+---
+cfg
+NORMAL
+LOW TO_LOW@10:5.000
+LOW
+LOW
+HIGH
+HIGH TO_HIGH@50:35.000
+HIGH ESCALATE@150:35.000
+### a10-no-catchup-same-state
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 35
+ack 20
+maint 30 on
+s 40 20
+s 50 35
+maint 60 off
+tick 500
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+HIGH
+NORMAL
+HIGH
+HIGH
+HIGH
+### a8-return-keeps-unacked
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 35
+s 20 20
+tick 110
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+NORMAL TO_NORMAL@20:20.000
+NORMAL ESCALATE@110:20.000
+### a9-late-ack-no-escalate
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 35
+ack 200
+tick 300
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+HIGH
+### a5a-expired-but-unobserved
+cfg high=30 low=10 deadband=2 delay=30 escalate=0
+init 0
+s 10 35
+s 50 20
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+### a6-fault-in-maint-then-catchup
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+maint 1 on
+sf 2 20
+maint 3 off
+---
+cfg
+NORMAL
+NORMAL
+FAULT
+FAULT TO_FAULT@3:20.000
+### a6-inf-is-valid
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 1 inf
+s 2 -inf
+---
+cfg
+NORMAL
+HIGH TO_HIGH@1:inf
+LOW TO_LOW@2:-inf

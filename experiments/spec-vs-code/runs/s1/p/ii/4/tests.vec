@@ -1,0 +1,883 @@
+# Unit tests for bacapp.c (run: make && python3 run_vectors.py tests.vec)
+#
+# Expected encodings are derived by hand from ASHRAE 135 clause 20.2, not
+# captured from the implementation.  Long outputs (> 64 bytes) use the
+# driver's "<first 16 bytes>..<fnv1a64>/<len>" form; those expected lines were
+# computed with an independent Python model of the byte string.
+#
+# Every "ERR" below also asserts that the encoder left the buffer untouched
+# (the driver would print "ERR DIRTY" otherwise) and every "OK" asserts that
+# nothing was written past the capacity (the driver would append "OVERRUN").
+#
+# Design decisions pinned here (see header comment in bacapp.c):
+#   * encoders reject out-of-domain arguments (-1, buffer untouched)
+#   * decoders accept only canonical encodings (minimal lengths/integers)
+#   * dec_tag decodes the header only; it does not require the content octets
+
+# ---- NULL / BOOLEAN
+### null-enc enc
+enc_null
+---
+OK 00
+
+### bool-enc enc
+enc_bool 0
+enc_bool 1
+---
+OK 10
+OK 11
+
+### null-bool-dec dec
+dec_app 00
+dec_app 10
+dec_app 11
+---
+OK n=1 null
+OK n=1 bool 0
+OK n=1 bool 1
+
+### bool-dec-invalid-lvt dec invalid
+dec_app 12
+dec_app 14
+dec_app 150501
+---
+ERR
+ERR
+ERR
+
+### null-dec-with-content dec invalid
+dec_app 0100
+---
+ERR
+
+### unsigned-enc-boundaries enc
+# ---- UNSIGNED / ENUMERATED - minimal number of octets (20.2.4)
+enc_unsigned 0
+enc_unsigned 255
+enc_unsigned 256
+enc_unsigned 65535
+enc_unsigned 65536
+enc_unsigned 16777215
+enc_unsigned 16777216
+enc_unsigned 4294967295
+---
+OK 2100
+OK 21ff
+OK 220100
+OK 22ffff
+OK 23010000
+OK 23ffffff
+OK 2401000000
+OK 24ffffffff
+
+### enum-enc-boundaries enc
+enc_enum 1
+enc_enum 255
+enc_enum 256
+enc_enum 4294967295
+---
+OK 9101
+OK 91ff
+OK 920100
+OK 94ffffffff
+
+### unsigned-dec dec
+dec_app 2100
+dec_app 21ff
+dec_app 220100
+dec_app 23010000
+dec_app 24ffffffff
+---
+OK n=2 u 0
+OK n=2 u 255
+OK n=3 u 256
+OK n=4 u 65536
+OK n=5 u 4294967295
+
+### enum-dec dec
+dec_app 9100
+dec_app 920100
+dec_app 94ffffffff
+---
+OK n=2 enum 0
+OK n=3 enum 256
+OK n=5 enum 4294967295
+
+### unsigned-dec-non-minimal dec invalid
+dec_app 220048
+dec_app 2400000048
+dec_app 920001
+---
+ERR
+ERR
+ERR
+
+### unsigned-dec-bad-length dec invalid
+dec_app 20
+dec_app 250501020304ff
+dec_app 90
+---
+ERR
+ERR
+ERR
+
+### unsigned-dec-trailing-bytes-ignored dec
+dec_app 2148ffff
+---
+OK n=2 u 72
+
+### signed-enc-boundaries enc
+# ---- SIGNED - minimal two's complement (20.2.5)
+enc_signed 0
+enc_signed -1
+enc_signed 127
+enc_signed 128
+enc_signed -128
+enc_signed -129
+enc_signed 32767
+enc_signed 32768
+enc_signed -32768
+enc_signed -32769
+enc_signed 8388607
+enc_signed 8388608
+enc_signed -8388608
+enc_signed -8388609
+enc_signed 2147483647
+enc_signed -2147483648
+---
+OK 3100
+OK 31ff
+OK 317f
+OK 320080
+OK 3180
+OK 32ff7f
+OK 327fff
+OK 33008000
+OK 328000
+OK 33ff7fff
+OK 337fffff
+OK 3400800000
+OK 33800000
+OK 34ff7fffff
+OK 347fffffff
+OK 3480000000
+
+### signed-dec dec
+dec_app 3100
+dec_app 31ff
+dec_app 3180
+dec_app 320080
+dec_app 32ff7f
+dec_app 33ff7fff
+dec_app 33800000
+dec_app 347fffffff
+dec_app 3480000000
+dec_app 34ff7fffff
+---
+OK n=2 i 0
+OK n=2 i -1
+OK n=2 i -128
+OK n=3 i 128
+OK n=3 i -129
+OK n=4 i -32769
+OK n=4 i -8388608
+OK n=5 i 2147483647
+OK n=5 i -2147483648
+OK n=5 i -8388609
+
+### signed-dec-non-minimal dec invalid
+dec_app 32007f
+dec_app 32ff80
+dec_app 3400000001
+dec_app 34ffffffff
+---
+ERR
+ERR
+ERR
+ERR
+
+### signed-dec-bad-length dec invalid
+dec_app 30
+dec_app 35050000000001
+---
+ERR
+ERR
+
+### real-enc enc
+# ---- REAL - IEEE-754 single, big-endian (20.2.6)
+enc_real 00000000
+enc_real 80000000
+enc_real 3f800000
+enc_real 7f800000
+enc_real 7fc00001
+---
+OK 4400000000
+OK 4480000000
+OK 443f800000
+OK 447f800000
+OK 447fc00001
+
+### real-dec dec
+dec_app 443f800000
+dec_app 44c0490fdb
+dec_app 447fc00001
+---
+OK n=5 r 3f800000
+OK n=5 r c0490fdb
+OK n=5 r 7fc00001
+
+### real-dec-bad-length dec invalid
+dec_app 43000000
+dec_app 443f8000
+dec_app 450500000000ff
+---
+ERR
+ERR
+ERR
+
+### double-and-reserved-dec dec invalid
+# ---- DOUBLE and reserved application tags: no representation -> ERR
+dec_app 55083ff0000000000000
+dec_app d0
+dec_app e0
+dec_app f00f00
+---
+ERR
+ERR
+ERR
+ERR
+
+### octets-enc-short enc
+# ---- OCTET STRING - length forms (20.2.1.3.1, 20.2.8)
+enc_octets -
+enc_octets 01
+enc_octets 01020304
+enc_octets 0102030405
+---
+OK 60
+OK 6101
+OK 6401020304
+OK 65050102030405
+
+### octets-enc-length-boundaries enc long
+enc_octets rep:ab:253
+enc_octets rep:ab:254
+enc_octets rep:ab:65535 @80000
+enc_octets rep:ab:65536 @80000
+---
+OK 65fdabababababababababababababab..c456215935f4a136/255
+OK 65fe00feabababababababababababab..d51d44ebca21dc68/258
+OK 65feffffabababababababababababab..68b00b5ca1769915/65539
+OK 65ff00010000abababababababababab..07c1678433a731bc/65542
+
+### octets-dec dec
+dec_app 60
+dec_app 6401020304
+dec_app 65050102030405
+dec_app 65fe00fe+rep:ab:254
+---
+OK n=1 oct -
+OK n=5 oct 01020304
+OK n=7 oct 0102030405
+OK n=258 oct abababababababababababababababab..a32d8a4740aaf495/254
+
+### octets-dec-truncated dec invalid
+dec_app 64010203
+dec_app 6505010203
+dec_app 65fe00fe+rep:ab:253
+---
+ERR
+ERR
+ERR
+
+### str-enc enc
+# ---- CHARACTER STRING (20.2.9) - encoder always uses charset 0 (UTF-8)
+enc_str -
+enc_str 41
+enc_str 414243
+enc_str 41424344
+enc_str 410042
+---
+OK 7100
+OK 720041
+OK 7400414243
+OK 75050041424344
+OK 7400410042
+
+### str-enc-utf8-multibyte enc
+enc_str c3a9
+enc_str e282ac
+enc_str f09f9880
+enc_str f48fbfbf
+---
+OK 7300c3a9
+OK 7400e282ac
+OK 750500f09f9880
+OK 750500f48fbfbf
+
+### str-enc-invalid-utf8 enc invalid
+enc_str ff
+enc_str 80
+enc_str c3
+enc_str 41c3
+enc_str c0af
+enc_str e08080
+enc_str eda080
+enc_str f4908080
+enc_str e282
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### str-enc-length-boundaries enc long
+enc_str rep:41:252
+enc_str rep:41:253
+enc_str rep:41:65535 @80000
+---
+OK 75fd0041414141414141414141414141..0383bba108e5c183/255
+OK 75fe00fe004141414141414141414141..276e7407f803f035/258
+OK 75ff0001000000414141414141414141..b50fbb111ee6766d/65542
+
+### str-dec dec
+dec_app 7100
+dec_app 720041
+dec_app 7300c3a9
+dec_app 7400410042
+dec_app 75ff0001000000+rep:41:65535
+---
+OK n=2 str cs=0 -
+OK n=3 str cs=0 41
+OK n=4 str cs=0 c3a9
+OK n=5 str cs=0 410042
+OK n=65542 str cs=0 41414141414141414141414141414141..e45b61deb77ceeb0/65535
+
+### str-dec-other-charsets dec
+dec_app 720541
+dec_app 7305e9e9
+dec_app 73040041
+dec_app 750503000000e9
+dec_app 720141
+---
+OK n=3 str cs=5 41
+OK n=4 str cs=5 e9e9
+OK n=4 str cs=4 0041
+OK n=7 str cs=3 000000e9
+OK n=3 str cs=1 41
+
+### str-dec-invalid dec invalid
+dec_app 70
+dec_app 7200ff
+dec_app 7300c0af
+dec_app 7400eda080
+dec_app 720441
+dec_app 73030041
+dec_app 7300
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### bits-enc enc
+# ---- BIT STRING (20.2.10) - initial octet = number of unused bits
+enc_bits -
+enc_bits 0
+enc_bits 1
+enc_bits 11111111
+enc_bits 111111111
+enc_bits 1000000000000001
+enc_bits 10000000000000001
+enc_bits 11111111111111111111111111111111
+---
+OK 8100
+OK 820700
+OK 820780
+OK 8200ff
+OK 8307ff80
+OK 83008001
+OK 8407800080
+OK 850500ffffffff
+
+### bits-enc-long enc long
+enc_bits rep:1:257
+enc_bits rep:1:2000
+enc_bits rep:1:2017
+---
+OK 852207ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff80
+OK 85fb00ffffffffffffffffffffffffff..7ed524a2e6b789f7/253
+OK 85fe00fe07ffffffffffffffffffffff..b669e037578c7355/258
+
+### bits-enc-value-not-a-bit enc invalid
+enc_bits 2
+enc_bits 0102
+enc_bits rep:1:100+9
+---
+ERR
+ERR
+ERR
+
+### bits-dec dec
+dec_app 8100
+dec_app 820780
+dec_app 8203a8
+dec_app 8307ff80
+dec_app 8407800080
+---
+OK n=2 bits -
+OK n=3 bits 1
+OK n=3 bits 10101
+OK n=4 bits 111111111
+OK n=5 bits 10000000000000001
+
+### bits-dec-padding-ignored dec
+dec_app 8203af
+---
+OK n=3 bits 10101
+
+### bits-dec-long dec long
+dec_app 852207+rep:aa:32+80
+dec_app 85fe00fe07+rep:ff:252+80
+dec_app 85fe00fe07+rep:ff:252+ff
+---
+OK n=36 bits 257bits..f63d75a9c1073e82
+OK n=258 bits 2017bits..c6c7a84964a75836
+OK n=258 bits 2017bits..c6c7a84964a75836
+
+### bits-dec-invalid dec invalid
+dec_app 80
+dec_app 8101
+dec_app 8107
+dec_app 820800
+dec_app 8307ff
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### date-enc enc
+# ---- DATE (20.2.12) - year-1900, month, day, day-of-week; 255 = unspecified
+enc_date 1900 1 1 1
+enc_date 2154 12 31 7
+enc_date 65535 255 255 255
+enc_date 2024 13 32 255
+enc_date 2024 14 33 1
+enc_date 2024 2 34 3
+---
+OK a400010101
+OK a4fe0c1f07
+OK a4ffffffff
+OK a47c0d20ff
+OK a47c0e2101
+OK a47c022203
+
+### date-enc-out-of-range enc invalid
+enc_date 1899 1 1 1
+enc_date 2155 1 1 1
+enc_date 0 1 1 1
+enc_date 65534 1 1 1
+enc_date 2024 0 1 1
+enc_date 2024 15 1 1
+enc_date 2024 1 0 1
+enc_date 2024 1 35 1
+enc_date 2024 1 1 0
+enc_date 2024 1 1 8
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### date-dec dec
+dec_app a45b011804
+dec_app a400010101
+dec_app a4fe0c1f07
+dec_app a4ffffffff
+dec_app a47c0e2201
+---
+OK n=5 date 1991 1 24 4
+OK n=5 date 1900 1 1 1
+OK n=5 date 2154 12 31 7
+OK n=5 date 65535 255 255 255
+OK n=5 date 2024 14 34 1
+
+### date-dec-invalid dec invalid
+dec_app a45b000101
+dec_app a45b0f0101
+dec_app a45b010001
+dec_app a45b012301
+dec_app a45b010100
+dec_app a45b010108
+dec_app a35b0118
+dec_app a45b0118
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### time-enc enc
+# ---- TIME (20.2.13) - hour, minute, second, hundredths; 255 = unspecified
+enc_time 0 0 0 0
+enc_time 23 59 59 99
+enc_time 255 255 255 255
+enc_time 12 255 0 255
+---
+OK b400000000
+OK b4173b3b63
+OK b4ffffffff
+OK b40cff00ff
+
+### time-enc-out-of-range enc invalid
+enc_time 24 0 0 0
+enc_time 0 60 0 0
+enc_time 0 0 60 0
+enc_time 0 0 0 100
+enc_time 254 0 0 0
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### time-dec dec
+dec_app b411232d11
+dec_app b4173b3b63
+dec_app b4ffffffff
+---
+OK n=5 time 17 35 45 17
+OK n=5 time 23 59 59 99
+OK n=5 time 255 255 255 255
+
+### time-dec-invalid dec invalid
+dec_app b418000000
+dec_app b4003c0000
+dec_app b400003c00
+dec_app b400000064
+dec_app b5050000000000
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### oid-enc enc
+# ---- OBJECT IDENTIFIER (20.2.14) - 10-bit type, 22-bit instance
+enc_oid 0 0
+enc_oid 8 4194303
+enc_oid 1023 4194303
+enc_oid 8 1234
+---
+OK c400000000
+OK c4023fffff
+OK c4ffffffff
+OK c4020004d2
+
+### oid-enc-out-of-range enc invalid
+enc_oid 1024 0
+enc_oid 0 4194304
+enc_oid 65535 4294967295
+---
+ERR
+ERR
+ERR
+
+### oid-dec dec
+dec_app c400000000
+dec_app c4020004d2
+dec_app c4ffffffff
+---
+OK n=5 oid 0 0
+OK n=5 oid 8 1234
+OK n=5 oid 1023 4194303
+
+### oid-dec-bad-length dec invalid
+dec_app c3000000
+dec_app c4000000
+---
+ERR
+ERR
+
+### ctx-unsigned-enc enc
+# ---- Context-tagged helpers (20.2.1.1, 20.2.1.2)
+enc_ctx_unsigned 0 0
+enc_ctx_unsigned 1 72
+enc_ctx_unsigned 14 65536
+enc_ctx_unsigned 15 1
+enc_ctx_unsigned 254 4294967295
+---
+OK 0900
+OK 1948
+OK eb010000
+OK f90f01
+OK fcfeffffffff
+
+### ctx-bool-enc enc
+enc_ctx_bool 0 0
+enc_ctx_bool 0 1
+enc_ctx_bool 3 1
+enc_ctx_bool 15 1
+enc_ctx_bool 254 0
+---
+OK 0900
+OK 0901
+OK 3901
+OK f90f01
+OK f9fe00
+
+### open-close-enc enc
+enc_open 0
+enc_close 0
+enc_open 14
+enc_close 14
+enc_open 15
+enc_close 15
+enc_open 254
+enc_close 254
+---
+OK 0e
+OK 0f
+OK ee
+OK ef
+OK fe0f
+OK ff0f
+OK fefe
+OK fffe
+
+### ctx-reserved-tag-255 enc invalid
+enc_ctx_unsigned 255 0
+enc_ctx_bool 255 1
+enc_open 255
+enc_close 255
+---
+ERR
+ERR
+ERR
+ERR
+
+### dec-tag-basic dec
+# ---- bac_dec_tag
+dec_tag 21
+dec_tag 11
+dec_tag 0e
+dec_tag 1f
+dec_tag 3901
+dec_tag 1e00
+---
+OK hl=1 tag=2 app lvt=1
+OK hl=1 tag=1 app lvt=1
+OK hl=1 tag=0 ctx open
+OK hl=1 tag=1 ctx close
+OK hl=1 tag=3 ctx lvt=1
+OK hl=1 tag=1 ctx open
+
+### dec-tag-extended-tag-number dec
+dec_tag fe0f
+dec_tag fffe
+dec_tag f90f01
+dec_tag fdfe05
+---
+OK hl=2 tag=15 ctx open
+OK hl=2 tag=254 ctx close
+OK hl=2 tag=15 ctx lvt=1
+OK hl=3 tag=254 ctx lvt=5
+
+### dec-tag-extended-length dec
+dec_tag 6505
+dec_tag 65fd
+dec_tag 65fe00fe
+dec_tag 65feffff
+dec_tag 65ff00010000
+dec_tag 65ffffffffff
+dec_tag 2548
+---
+OK hl=2 tag=6 app lvt=5
+OK hl=2 tag=6 app lvt=253
+OK hl=4 tag=6 app lvt=254
+OK hl=4 tag=6 app lvt=65535
+OK hl=6 tag=6 app lvt=65536
+OK hl=6 tag=6 app lvt=4294967295
+OK hl=2 tag=2 app lvt=72
+
+### dec-tag-truncated dec invalid
+dec_tag -
+dec_tag f8
+dec_tag 65
+dec_tag 65fe00
+dec_tag 65ff000100
+dec_tag fd
+dec_tag fdfe
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### dec-tag-reserved-and-non-minimal dec invalid
+dec_tag f8ff
+dec_tag feff
+dec_tag f80e
+dec_tag 6504
+dec_tag 6500
+dec_tag 65fe00fd
+dec_tag 65ff0000ffff
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### dec-tag-app-class-open-close dec invalid
+dec_tag 06
+dec_tag 27
+---
+ERR
+ERR
+
+### dec-app-rejects-context-class dec invalid
+dec_app 0900
+dec_app 0e
+dec_app 0f
+dec_app 1948
+---
+ERR
+ERR
+ERR
+ERR
+
+### cap-fixed-size enc capacity
+# ---- Capacity: exact fit succeeds, one byte short fails without touching buf
+enc_null @0
+enc_bool 1 @0
+enc_bool 1 @1
+enc_unsigned 256 @2
+enc_unsigned 256 @3
+enc_signed -129 @2
+enc_signed -129 @3
+enc_real 3f800000 @4
+enc_real 3f800000 @5
+enc_date 2024 1 1 1 @4
+enc_date 2024 1 1 1 @5
+enc_time 1 2 3 4 @4
+enc_time 1 2 3 4 @5
+enc_oid 8 1 @4
+enc_oid 8 1 @5
+---
+ERR
+ERR
+OK 11
+ERR
+OK 220100
+ERR
+OK 32ff7f
+ERR
+OK 443f800000
+ERR
+OK a47c010101
+ERR
+OK b401020304
+ERR
+OK c402000001
+
+### cap-strings enc capacity
+enc_octets - @0
+enc_octets - @1
+enc_octets 0102030405 @6
+enc_octets 0102030405 @7
+enc_str - @1
+enc_str - @2
+enc_str 41 @2
+enc_str 41 @3
+enc_bits 111111111 @3
+enc_bits 111111111 @4
+enc_bits - @1
+enc_bits - @2
+---
+ERR
+OK 60
+ERR
+OK 65050102030405
+ERR
+OK 7100
+ERR
+OK 720041
+ERR
+OK 8307ff80
+ERR
+OK 8100
+
+### cap-long-strings enc capacity long
+enc_octets rep:ab:254 @257
+enc_octets rep:ab:254 @258
+enc_octets rep:ab:65536 @65541
+enc_octets rep:ab:65536 @65542
+---
+ERR
+OK 65fe00feabababababababababababab..d51d44ebca21dc68/258
+ERR
+OK 65ff00010000abababababababababab..07c1678433a731bc/65542
+
+### cap-context enc capacity
+enc_ctx_unsigned 15 1 @2
+enc_ctx_unsigned 15 1 @3
+enc_ctx_bool 0 1 @1
+enc_ctx_bool 0 1 @2
+enc_open 15 @1
+enc_open 15 @2
+enc_close 3 @0
+enc_close 3 @1
+---
+ERR
+OK f90f01
+ERR
+OK 0901
+ERR
+OK fe0f
+ERR
+OK 3f
+
+### cap-invalid-arg-checked-before-capacity enc capacity invalid
+enc_oid 1024 0 @1
+enc_str ff @1
+---
+ERR
+ERR
+
+### round-trip-sequence dec
+# ---- Round trips: sequences of values decode back to what was encoded
+dec_app 2148+3148+4442900000
+dec_app 3148+4442900000
+dec_app 4442900000
+---
+OK n=2 u 72
+OK n=2 i 72
+OK n=5 r 42900000

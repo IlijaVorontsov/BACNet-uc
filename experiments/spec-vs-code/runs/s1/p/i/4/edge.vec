@@ -1,0 +1,417 @@
+# Edge-case vectors derived by hand from ASHRAE 135 clause 20.2 (developer tests).
+### uns-bounds
+enc_unsigned 0
+enc_unsigned 255
+enc_unsigned 256
+enc_unsigned 65535
+enc_unsigned 65536
+enc_unsigned 16777215
+enc_unsigned 16777216
+enc_unsigned 4294967295
+enc_enum 4294967295
+---
+OK 2100
+OK 21ff
+OK 220100
+OK 22ffff
+OK 23010000
+OK 23ffffff
+OK 2401000000
+OK 24ffffffff
+OK 94ffffffff
+### signed-bounds
+enc_signed 0
+enc_signed -1
+enc_signed 127
+enc_signed 128
+enc_signed -128
+enc_signed -129
+enc_signed 32767
+enc_signed 32768
+enc_signed -32768
+enc_signed -32769
+enc_signed 8388607
+enc_signed 8388608
+enc_signed -8388608
+enc_signed -8388609
+enc_signed 2147483647
+enc_signed -2147483648
+---
+OK 3100
+OK 31ff
+OK 317f
+OK 320080
+OK 3180
+OK 32ff7f
+OK 327fff
+OK 33008000
+OK 328000
+OK 33ff7fff
+OK 337fffff
+OK 3400800000
+OK 33800000
+OK 34ff7fffff
+OK 347fffffff
+OK 3480000000
+### real-bits
+enc_real 00000000
+enc_real 80000000
+enc_real 7fc00001
+enc_real ff800000
+---
+OK 4400000000
+OK 4480000000
+OK 447fc00001
+OK 44ff800000
+### bool-null
+enc_bool 0
+enc_bool 1
+enc_null
+---
+OK 10
+OK 11
+OK 00
+### octets-lengths
+enc_octets -
+enc_octets 01020304
+enc_octets 0102030405
+enc_octets rep:ab:253
+enc_octets rep:ab:254
+enc_octets rep:ab:65535 @70000
+enc_octets rep:ab:65536 @70000
+---
+OK 60
+OK 6401020304
+OK 65050102030405
+OK 65fdabababababababababababababab..c456215935f4a136/255
+OK 65fe00feabababababababababababab..d51d44ebca21dc68/258
+OK 65feffffabababababababababababab..68b00b5ca1769915/65539
+OK 65ff00010000abababababababababab..07c1678433a731bc/65542
+### str-lengths
+enc_str -
+enc_str 616263
+enc_str 61626364
+enc_str 00
+enc_str c3a9
+enc_str f09f9880
+---
+OK 7100
+OK 7400616263
+OK 75050061626364
+OK 720000
+OK 7300c3a9
+OK 750500f09f9880
+### str-bad-utf8
+enc_str ff
+enc_str c0af
+enc_str eda080
+enc_str f4908080
+enc_str e282
+enc_str 80
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+### bits
+enc_bits -
+enc_bits 1
+enc_bits 11111111
+enc_bits 111111111
+enc_bits 0000000
+enc_bits 2010
+---
+OK 8100
+OK 820780
+OK 8200ff
+OK 8307ff80
+OK 820100
+OK 8204a0
+### date
+enc_date 65535 255 255 255
+enc_date 1900 1 1 1
+enc_date 2154 12 31 7
+enc_date 2155 1 1 1
+enc_date 1899 1 1 1
+enc_date 2024 0 1 1
+enc_date 2024 13 33 255
+enc_date 2024 14 34 1
+enc_date 2024 15 1 1
+enc_date 2024 1 0 1
+enc_date 2024 1 35 1
+enc_date 2024 1 32 0
+enc_date 2024 1 32 8
+---
+OK a4ffffffff
+OK a400010101
+OK a4fe0c1f07
+ERR
+ERR
+ERR
+OK a47c0d21ff
+OK a47c0e2201
+ERR
+ERR
+ERR
+ERR
+ERR
+### time
+enc_time 0 0 0 0
+enc_time 23 59 59 99
+enc_time 255 255 255 255
+enc_time 24 0 0 0
+enc_time 0 60 0 0
+enc_time 0 0 60 0
+enc_time 0 0 0 100
+---
+OK b400000000
+OK b4173b3b63
+OK b4ffffffff
+ERR
+ERR
+ERR
+ERR
+### oid
+enc_oid 0 0
+enc_oid 1023 4194303
+enc_oid 1024 0
+enc_oid 0 4194304
+---
+OK c400000000
+OK c4ffffffff
+ERR
+ERR
+### context
+enc_ctx_unsigned 1 0
+enc_ctx_unsigned 14 5
+enc_ctx_unsigned 15 5
+enc_ctx_unsigned 254 70000
+enc_ctx_unsigned 255 5
+enc_ctx_bool 0 1
+enc_ctx_bool 2 0
+enc_ctx_bool 20 1
+enc_ctx_bool 255 1
+---
+OK 1900
+OK e905
+OK f90f05
+OK fbfe011170
+ERR
+OK 0901
+OK 2900
+OK f91401
+ERR
+### open-close
+enc_open 0
+enc_close 0
+enc_open 14
+enc_close 14
+enc_open 15
+enc_close 15
+enc_open 254
+enc_close 254
+enc_open 255
+enc_close 255
+---
+OK 0e
+OK 0f
+OK ee
+OK ef
+OK fe0f
+OK ff0f
+OK fefe
+OK fffe
+ERR
+ERR
+### capacity
+enc_null @0
+enc_null @1
+enc_unsigned 256 @2
+enc_unsigned 256 @3
+enc_octets rep:00:5 @6
+enc_octets rep:00:5 @7
+enc_open 15 @1
+enc_open 15 @2
+enc_str 616263 @4
+enc_str 616263 @5
+enc_bits 111111111 @3
+enc_bits 111111111 @4
+enc_octets rep:00:254 @257
+enc_octets rep:00:254 @258
+enc_ctx_bool 15 1 @2
+enc_ctx_bool 15 1 @3
+---
+ERR
+OK 00
+ERR
+OK 220100
+ERR
+OK 65050000000000
+ERR
+OK fe0f
+ERR
+OK 7400616263
+ERR
+OK 8307ff80
+ERR
+OK 65fe00fe000000000000000000000000..60d83eb8c196dc46/258
+ERR
+OK f90f01
+### dec-app-ok
+dec_app 00
+dec_app 10
+dec_app 11
+dec_app 2100
+dec_app 24ffffffff
+dec_app 31ff
+dec_app 3180
+dec_app 3480000000
+dec_app 32ff7f
+dec_app 4400000000
+dec_app 60
+dec_app 7100
+dec_app 7204ff
+dec_app 8100
+dec_app 8203a8
+dec_app 8203af
+dec_app 8307ff80
+dec_app 9100
+dec_app a4ffffffff
+dec_app a45b011804
+dec_app b4173b3b63
+dec_app c4ffffffff
+dec_app 2148ff
+---
+OK n=1 null
+OK n=1 bool 0
+OK n=1 bool 1
+OK n=2 u 0
+OK n=5 u 4294967295
+OK n=2 i -1
+OK n=2 i -128
+OK n=5 i -2147483648
+OK n=3 i -129
+OK n=5 r 00000000
+OK n=1 oct -
+OK n=2 str cs=0 -
+OK n=3 str cs=4 ff
+OK n=2 bits -
+OK n=3 bits 10101
+OK n=3 bits 10101
+OK n=4 bits 111111111
+OK n=2 enum 0
+OK n=5 date 65535 255 255 255
+OK n=5 date 1991 1 24 4
+OK n=5 time 23 59 59 99
+OK n=5 oid 1023 4194303
+OK n=2 u 72
+### dec-app-lenient
+dec_app 25050000000001
+dec_app 3505ffffffff80
+dec_app 4504+3f800000
+dec_app f10201
+---
+OK n=7 u 1
+OK n=7 i -128
+OK n=6 r 3f800000
+OK n=3 u 1
+### dec-app-err
+dec_app -
+dec_app 12
+dec_app 01
+dec_app 20
+dec_app 25
+dec_app 25050100000000
+dec_app 30
+dec_app 35050080000000
+dec_app 3505ff7fffffff
+dec_app 43000000
+dec_app 4500
+dec_app 5508+rep:00:8
+dec_app 70
+dec_app 80
+dec_app 8108
+dec_app 8201
+dec_app 8208ff
+dec_app 9500
+dec_app a3000000
+dec_app b400
+dec_app c5
+dec_app d100
+dec_app e100
+dec_app f00d00
+dec_app 0e
+dec_app 0900
+dec_app 2201
+dec_app 65fe01
+dec_app 6505+01020304
+dec_app 26
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+### dec-tag
+dec_tag 0e
+dec_tag 0f
+dec_tag fe0f
+dec_tag ff14
+dec_tag feff
+dec_tag f9
+dec_tag 65fe0100
+dec_tag 65ff00010000
+dec_tag 65ff0001
+dec_tag 26
+dec_tag 11
+dec_tag 12
+dec_tag 19
+dec_tag 1d05
+dec_tag f90f05
+dec_tag -
+dec_tag 6512
+---
+OK hl=1 tag=0 ctx open
+OK hl=1 tag=0 ctx close
+OK hl=2 tag=15 ctx open
+OK hl=2 tag=20 ctx close
+ERR
+ERR
+OK hl=4 tag=6 app lvt=256
+OK hl=6 tag=6 app lvt=65536
+ERR
+ERR
+OK hl=1 tag=1 app lvt=1
+ERR
+OK hl=1 tag=1 ctx lvt=1
+OK hl=2 tag=1 ctx lvt=5
+OK hl=2 tag=15 ctx lvt=1
+ERR
+OK hl=2 tag=6 app lvt=18

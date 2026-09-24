@@ -1,0 +1,322 @@
+### high-alarm-ack-and-return 
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 10 25
+s 20 35
+s 30 35
+s 40 35
+s 50 35
+ack 60
+s 70 27
+s 80 27
+s 90 27
+s 100 27
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@50:35.000
+HIGH ACKED@60:35.000
+HIGH
+HIGH
+HIGH
+NORMAL TO_NORMAL@100:27.000
+### low-alarm-unacknowledged-escalates 
+cfg high=30 low=10 deadband=2 delay=20 escalate=300
+init 0
+s 0 5
+s 10 5
+s 20 5
+tick 200
+tick 320
+tick 400
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+LOW TO_LOW@20:5.000
+LOW
+LOW ESCALATE@320:5.000
+LOW
+### short-spikes-do-not-alarm 
+cfg high=30 low=10 deadband=2 delay=60 escalate=600
+init 0
+s 10 20
+s 20 40
+s 30 20
+s 40 40
+s 50 20
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+### cr201-high-return-uses-delay-normal 
+cfg high=30 low=10 deadband=2 delay=30 delay_normal=10 escalate=0
+init 0
+s 10 35
+s 40 35
+s 50 27
+s 59 27
+s 60 27
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@40:35.000
+HIGH
+HIGH
+NORMAL TO_NORMAL@60:27.000
+### cr201-low-return-delay-normal-zero-is-immediate 
+cfg high=30 low=10 deadband=2 delay=20 delay_normal=0 escalate=0
+init 0
+s 0 5
+s 20 5
+s 25 11
+s 30 13
+---
+cfg
+NORMAL
+NORMAL
+LOW TO_LOW@20:5.000
+LOW
+NORMAL TO_NORMAL@30:13.000
+### cr201-long-delay-normal-offnormal-keeps-time-delay 
+cfg high=30 low=10 deadband=2 delay=10 delay_normal=60 escalate=0
+init 0
+s 0 35
+s 10 35
+s 20 25
+tick 70
+tick 80
+s 90 5
+s 100 5
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+HIGH
+NORMAL TO_NORMAL@80:25.000
+NORMAL
+LOW TO_LOW@100:5.000
+### cr201-high-to-low-direct-uses-time-delay 
+cfg high=30 low=10 deadband=2 delay=30 delay_normal=5 escalate=0
+init 0
+s 0 35
+s 30 35
+s 40 5
+s 45 5
+s 69 5
+s 70 5
+s 75 20
+s 80 20
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000
+HIGH
+HIGH
+HIGH
+LOW TO_LOW@70:5.000
+LOW
+NORMAL TO_NORMAL@80:20.000
+### cr201-pending-normal-replaced-by-low-restarts-with-time-delay 
+cfg high=30 low=10 deadband=2 delay=30 delay_normal=10 escalate=0
+init 0
+s 0 35
+s 30 35
+s 40 20
+s 45 5
+s 55 5
+s 74 5
+s 75 5
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000
+HIGH
+HIGH
+HIGH
+HIGH
+LOW TO_LOW@75:5.000
+### cr201-delay-normal-all-ones-means-same-as-time-delay 
+cfg high=30 low=10 deadband=2 delay=30 delay_normal=4294967295 escalate=0
+init 0
+s 0 35
+s 30 35
+s 40 25
+tick 69
+tick 70
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000
+HIGH
+HIGH
+NORMAL TO_NORMAL@70:25.000
+### cr201-fault-recovery-not-delayed-by-delay-normal 
+cfg high=30 low=10 deadband=2 delay=5 delay_normal=100 escalate=0
+init 0
+s 0 35
+s 5 35
+sf 10 35
+s 20 20
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@5:35.000
+FAULT TO_FAULT@10:35.000
+NORMAL TO_NORMAL@20:20.000
+### cr203-ack-only-when-unacknowledged 
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+ack 5
+s 10 35
+ack 20
+ack 30
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH ACKED@20:35.000
+HIGH
+### cr203-ack-after-return-to-normal 
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 0 5
+s 10 20
+ack 50
+tick 200
+---
+cfg
+NORMAL
+LOW TO_LOW@0:5.000
+NORMAL TO_NORMAL@10:20.000
+NORMAL ACKED@50:20.000
+NORMAL
+### cr203-transition-then-acked-in-same-call 
+cfg high=30 low=10 deadband=2 delay=30 escalate=100
+init 0
+s 0 35
+ack 30
+tick 200
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000 ACKED@30:35.000
+HIGH
+### cr203-ack-at-escalation-time-does-not-escalate 
+cfg high=30 low=10 deadband=2 delay=0 escalate=60
+init 0
+s 0 35
+ack 60
+tick 200
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+HIGH ACKED@60:35.000
+HIGH
+### cr203-late-ack-after-escalation 
+cfg high=30 low=10 deadband=2 delay=0 escalate=60
+init 0
+s 0 35
+tick 60
+s 70 36
+ack 80
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+HIGH ESCALATE@60:35.000
+HIGH
+HIGH ACKED@80:36.000
+### cr203-ack-in-maintenance-is-silent 
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 0 35
+maint 10 on
+ack 20
+maint 30 off
+ack 40
+tick 200
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+HIGH
+HIGH
+HIGH
+HIGH
+HIGH
+### cr203-ack-in-fault-reports-nan 
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 0 35
+sf 10 nan
+ack 20
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+FAULT TO_FAULT@10:nan
+FAULT ACKED@20:nan
+### cr203-ack-with-time-going-backwards-is-ignored 
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 50 35
+ack 40
+ack 50
+---
+cfg
+NORMAL
+HIGH TO_HIGH@50:35.000
+HIGH
+HIGH ACKED@50:35.000
+### cr203-value-at-limit-is-not-offnormal 
+# CR-203 item 3 was not implemented (conflicts with A2 [STD]): limits stay strict.
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 0 30
+s 10 10
+s 20 31
+s 30 28
+s 40 27
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@20:31.000
+HIGH
+NORMAL TO_NORMAL@40:27.000
+### cr203-return-to-normal-keeps-unacked-and-escalates 
+# CR-203 item 2 was not implemented (conflicts with A8 [POL], SP-3).
+cfg high=30 low=10 deadband=2 delay=0 escalate=900
+init 0
+s 0 35
+s 60 25
+tick 900
+ack 960
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+NORMAL TO_NORMAL@60:25.000
+NORMAL ESCALATE@900:25.000
+NORMAL ACKED@960:25.000

@@ -1,0 +1,1067 @@
+# Black-box tests for alarm.c, derived from SPEC.md v1.0 only.
+# Header tags name the rule ids each block targets.
+# Comments are only placed in the input part of a block (run_vectors.py
+# would treat a '#' line in the expected part as an expected output line).
+# All values are exactly representable in binary floating point.
+# Deliberately NOT tested (SPEC.md ambiguous): escalation while in FAULT,
+# maint off when no transition notification was ever emitted and the state is NORMAL,
+# value of a fault sample received while already in FAULT, redundant maint off at a
+# time when a timer/escalation is due, re-init at an earlier time, maintenance across re-init.
+
+### t001 A1 A13 A8 A9
+# after init: NORMAL, nothing pending, nothing unacknowledged (ack ignored, no escalation)
+cfg high=30 low=10 deadband=2 delay=0 escalate=10
+init 5
+ack 5
+tick 100
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+
+### t002 A1
+# re-init resets state and acknowledgement status
+cfg high=30 low=10 deadband=2 delay=0 escalate=50
+init 0
+s 10 35
+init 20
+tick 200
+s 210 20
+tick 300
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+
+### t003 A2 A3 A4
+# values exactly at a limit are not offnormal; just beyond is
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 10 30
+s 20 10
+s 30 30.5
+s 40 20
+s 50 9.5
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:30.500
+NORMAL TO_NORMAL@40:20.000
+LOW TO_LOW@50:9.500
+
+### t004 A6 A2 A4
+# +inf / -inf are valid values (not faults); direct HIGH<->LOW
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 10 inf
+s 20 -inf
+s 30 inf
+s 40 20
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:inf
+LOW TO_LOW@20:-inf
+HIGH TO_HIGH@30:inf
+NORMAL TO_NORMAL@40:20.000
+
+### t005 A3
+# strict deadband on return from HIGH (<28) and from LOW (>12)
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 10 31
+s 20 30
+s 30 28
+s 40 27.75
+s 45 29
+s 50 9
+s 60 10
+s 70 12
+s 80 12.25
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:31.000
+HIGH
+HIGH
+NORMAL TO_NORMAL@40:27.750
+NORMAL
+LOW TO_LOW@50:9.000
+LOW
+LOW
+NORMAL TO_NORMAL@80:12.250
+
+### t006 A3 A2
+# deadband 0: a value exactly at the limit does not return
+cfg high=30 low=10 deadband=0 delay=0 escalate=0
+init 0
+s 10 31
+s 20 30
+s 30 29.5
+s 40 9
+s 50 10
+s 60 10.5
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:31.000
+HIGH
+NORMAL TO_NORMAL@30:29.500
+LOW TO_LOW@40:9.000
+LOW
+NORMAL TO_NORMAL@60:10.500
+
+### t007 A3 A2
+# negative limits, fractional deadband: return from HIGH needs < -16.5, from LOW > -28.5
+cfg high=-15 low=-30 deadband=1.5 delay=0 escalate=0
+init 0
+s 10 -14.5
+s 20 -16.5
+s 30 -16.75
+s 40 -31
+s 50 -28.5
+s 60 -28.25
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:-14.500
+HIGH
+NORMAL TO_NORMAL@30:-16.750
+LOW TO_LOW@40:-31.000
+LOW
+NORMAL TO_NORMAL@60:-28.250
+
+### t008 A13 A1
+# before the first sample tick/ack/maint cannot cause transitions (0 would be > high here)
+cfg high=-15 low=-30 deadband=1 delay=0 escalate=0
+init 0
+tick 10
+ack 20
+maint 30 on
+tick 40
+s 50 -20
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+
+### t009 A4 A5 A5a
+# from HIGH the low condition beats return; a changed target restarts the delay
+cfg high=30 low=10 deadband=2 delay=30 escalate=0
+init 0
+s 0 35
+s 30 35
+s 40 20
+s 50 5
+s 70 5
+s 79 5
+s 80 5
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000
+HIGH
+HIGH
+HIGH
+HIGH
+LOW TO_LOW@80:5.000
+
+### t010 A4 A3
+# deadband wider than the range: direct transition wins over return
+cfg high=30 low=10 deadband=25 delay=0 escalate=0
+init 0
+s 10 31
+s 20 20
+s 30 7
+s 40 20
+s 50 32
+s 60 4
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:31.000
+HIGH
+LOW TO_LOW@30:7.000
+LOW
+HIGH TO_HIGH@50:32.000
+LOW TO_LOW@60:4.000
+
+### t011 A5 A5a
+# delay boundary: 29 s not enough, 30 s is
+cfg high=30 low=10 deadband=2 delay=30 escalate=0
+init 0
+s 10 35
+s 39 35
+s 40 35
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@40:35.000
+
+### t012 A5a A7
+# same target keeps its start time although the value changes; value = most recent sample
+cfg high=30 low=10 deadband=2 delay=30 escalate=0
+init 0
+s 10 35
+s 20 50
+tick 30
+s 35 31
+tick 40
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@40:31.000
+
+### t013 A5a
+# SPEC example: pending HIGH since 10, delay 30, normal sample at 50 -> no alarm
+cfg high=30 low=10 deadband=2 delay=30 escalate=0
+init 0
+s 10 35
+s 50 20
+tick 100
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+
+### t014 A5a A7 A8 A9
+# a tick observing an expired delay transitions at the tick time; escalation counts from it
+cfg high=30 low=10 deadband=2 delay=30 escalate=100
+init 0
+s 10 35
+tick 39
+tick 57
+tick 156
+tick 157
+tick 300
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@57:35.000
+HIGH
+HIGH ESCALATE@157:35.000
+HIGH
+
+### t015 A5a A2
+# a sample with no target (exactly at limit) cancels; the next one restarts the delay
+cfg high=30 low=10 deadband=2 delay=30 escalate=0
+init 0
+s 10 35
+s 20 30
+s 25 35
+tick 40
+tick 54
+tick 55
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@55:35.000
+
+### t016 A5a
+# in NORMAL, target change HIGH -> LOW restarts the delay
+cfg high=30 low=10 deadband=2 delay=30 escalate=0
+init 0
+s 10 35
+s 20 5
+s 40 5
+s 49 5
+s 50 5
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+LOW TO_LOW@50:5.000
+
+### t017 A5a A3
+# in HIGH, a sample inside the deadband cancels the pending return
+cfg high=30 low=10 deadband=2 delay=30 escalate=0
+init 0
+s 0 35
+s 30 35
+s 100 25
+s 110 29
+s 120 25
+s 149 25
+s 150 25
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000
+HIGH
+HIGH
+HIGH
+HIGH
+NORMAL TO_NORMAL@150:25.000
+
+### t018 A5a A3
+# in LOW, samples below the limit or inside the deadband cancel the pending return
+cfg high=30 low=10 deadband=2 delay=20 escalate=0
+init 0
+s 0 5
+s 20 5
+s 30 15
+s 40 5
+s 50 15
+s 60 11
+s 65 15
+s 70 15
+tick 84
+tick 85
+---
+cfg
+NORMAL
+NORMAL
+LOW TO_LOW@20:5.000
+LOW
+LOW
+LOW
+LOW
+LOW
+LOW
+LOW
+NORMAL TO_NORMAL@85:15.000
+
+### t019 A5a A8 A9
+# ack evaluates the timer first: the transition happens, then the new episode is acknowledged
+cfg high=30 low=10 deadband=2 delay=30 escalate=100
+init 0
+s 10 35
+ack 40
+tick 200
+s 210 20
+ack 240
+tick 1000
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@40:35.000
+HIGH
+HIGH
+NORMAL TO_NORMAL@240:20.000
+NORMAL
+
+### t020 A5a A10 A9
+# maint on evaluates the timer first (notification still emitted); escalation waits until off
+cfg high=30 low=10 deadband=2 delay=30 escalate=100
+init 0
+s 10 35
+maint 40 on
+tick 200
+maint 210 off
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@40:35.000
+HIGH
+HIGH ESCALATE@210:35.000
+
+### t021 A6 A6a
+# sf -> FAULT immediately; further fault samples (sf or NaN) do nothing; recovery
+cfg high=30 low=10 deadband=2 delay=30 escalate=0
+init 0
+sf 10 20
+sf 20 20
+s 30 nan
+tick 40
+s 50 20
+---
+cfg
+NORMAL
+FAULT TO_FAULT@10:20.000
+FAULT
+FAULT
+FAULT
+NORMAL TO_NORMAL@50:20.000
+
+### t022 A6 A7
+# NaN on a plain sample is a fault; TO_FAULT carries the NaN value
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 10 35
+s 20 nan
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+FAULT TO_FAULT@20:nan
+
+### t023 A6
+# sensor_fault with an out-of-range value is a fault, from LOW
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 10 5
+sf 20 35
+---
+cfg
+NORMAL
+LOW TO_LOW@10:5.000
+FAULT TO_FAULT@20:35.000
+
+### t024 A6 A6a A5a
+# fault ignores the delay and cancels pending; no timers in FAULT; recovery restarts the delay
+cfg high=30 low=10 deadband=2 delay=30 escalate=0
+init 0
+s 10 35
+sf 20 35
+tick 100
+s 110 35
+tick 139
+tick 140
+---
+cfg
+NORMAL
+NORMAL
+FAULT TO_FAULT@20:35.000
+FAULT
+NORMAL TO_NORMAL@110:35.000
+NORMAL
+HIGH TO_HIGH@140:35.000
+
+### t025 A6a A11 A6
+# recovery with delay 0: TO_NORMAL then limit transition in one call; always to NORMAL first
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+sf 10 0
+s 20 35
+sf 30 0
+s 40 -inf
+sf 50 0
+s 60 11
+---
+cfg
+NORMAL
+FAULT TO_FAULT@10:0.000
+HIGH TO_NORMAL@20:35.000 TO_HIGH@20:35.000
+FAULT TO_FAULT@30:0.000
+LOW TO_NORMAL@40:-inf TO_LOW@40:-inf
+FAULT TO_FAULT@50:0.000
+NORMAL TO_NORMAL@60:11.000
+
+### t026 A6a A8 A9
+# TO_FAULT and recovery TO_NORMAL do not start an alarm episode
+cfg high=30 low=10 deadband=2 delay=0 escalate=50
+init 0
+sf 10 0
+s 20 20
+tick 200
+---
+cfg
+NORMAL
+FAULT TO_FAULT@10:0.000
+NORMAL TO_NORMAL@20:20.000
+NORMAL
+
+### t027 A6a A8 A9 A11
+# TO_FAULT does not clear unacknowledged; old episode escalates on the recovery call
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 35
+sf 20 25
+s 110 20
+tick 300
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+FAULT TO_FAULT@20:25.000
+NORMAL TO_NORMAL@110:20.000 ESCALATE@110:20.000
+NORMAL
+
+### t028 A6a A8 A9
+# ack while in FAULT acknowledges the episode
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 5
+sf 20 5
+ack 30
+s 40 20
+tick 500
+---
+cfg
+NORMAL
+LOW TO_LOW@10:5.000
+FAULT TO_FAULT@20:5.000
+FAULT
+NORMAL TO_NORMAL@40:20.000
+NORMAL
+
+### t029 A8 A9
+# ack with nothing unacknowledged ignored; ack emits nothing; late ack does not escalate
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+ack 5
+s 10 35
+ack 500
+ack 510
+tick 1000
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+HIGH
+HIGH
+
+### t030 A8 A9 A7
+# return to NORMAL keeps the episode unacknowledged; escalation value = most recent sample
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 35
+s 20 20
+tick 109
+tick 110
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+NORMAL TO_NORMAL@20:20.000
+NORMAL
+NORMAL ESCALATE@110:20.000
+
+### t031 A8 A9 A4
+# a new episode (direct TO_LOW) moves the alarm time
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 35
+s 50 5
+tick 110
+tick 149
+tick 150
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+LOW TO_LOW@50:5.000
+LOW
+LOW
+LOW ESCALATE@150:5.000
+
+### t032 A8 A9
+# escalated + acknowledged episode; a later episode escalates again
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 35
+tick 110
+ack 120
+s 130 20
+s 140 5
+tick 239
+tick 240
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH ESCALATE@110:35.000
+HIGH
+NORMAL TO_NORMAL@130:20.000
+LOW TO_LOW@140:5.000
+LOW
+LOW ESCALATE@240:5.000
+
+### t033 A8 A9
+# escalated but unacknowledged; a new TO_HIGH re-arms escalation
+cfg high=30 low=10 deadband=2 delay=0 escalate=50
+init 0
+s 10 35
+tick 60
+s 70 20
+s 80 40
+tick 129
+tick 130
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH ESCALATE@60:35.000
+NORMAL TO_NORMAL@70:20.000
+HIGH TO_HIGH@80:40.000
+HIGH
+HIGH ESCALATE@130:40.000
+
+### t034 A9 A11
+# escalation at the end of a sample call, after the transition
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 35
+s 110 20
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+NORMAL TO_NORMAL@110:20.000 ESCALATE@110:20.000
+
+### t035 A9 A8 A4
+# a TO_LOW at the escalation deadline re-arms the episode before the check
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 35
+s 110 5
+tick 209
+tick 210
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+LOW TO_LOW@110:5.000
+LOW
+LOW ESCALATE@210:5.000
+
+### t036 A9
+# escalate_after_s = 0 disables escalation
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 10 35
+tick 100000
+s 100010 5
+tick 4000000000
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+LOW TO_LOW@100010:5.000
+LOW
+
+### t037 A9 A12 A2
+# escalate=1 boundary; repeated equal timestamps are fine
+cfg high=30 low=10 deadband=2 delay=0 escalate=1
+init 0
+s 10 35
+s 10 36
+tick 11
+tick 12
+s 12 20
+s 12 5
+s 12 35
+tick 12
+tick 13
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+HIGH ESCALATE@11:36.000
+HIGH
+NORMAL TO_NORMAL@12:20.000
+LOW TO_LOW@12:5.000
+HIGH TO_HIGH@12:35.000
+HIGH
+HIGH ESCALATE@13:35.000
+
+### t038 A9
+# large escalate_after_s: now - alarm time is 4294967285 < 4294967290 (no wrap-around)
+cfg high=30 low=10 deadband=2 delay=0 escalate=4294967290
+init 0
+s 10 35
+tick 4294967295
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+
+### t039 A9
+# large escalate_after_s: exactly reached at the maximum time
+cfg high=30 low=10 deadband=2 delay=0 escalate=4294967285
+init 0
+s 10 35
+tick 4294967294
+tick 4294967295
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+HIGH ESCALATE@4294967295:35.000
+
+### t040 A5 A5a
+# large time_delay_s: now - start is 4294967285 < 4294967290 (no wrap-around)
+cfg high=30 low=10 deadband=2 delay=4294967290 escalate=0
+init 0
+s 10 35
+tick 4294967295
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+
+### t041 A5 A5a
+# maximum time_delay_s: exactly reached at the maximum time
+cfg high=30 low=10 deadband=2 delay=4294967295 escalate=0
+init 0
+s 0 35
+tick 4294967294
+tick 4294967295
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@4294967295:35.000
+
+### t042 A10 A7
+# maintenance: silent real transitions; catch-up (most recent value) on off; catch-up counts as last emitted
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 10 35
+maint 20 on
+s 30 20
+s 40 5
+s 45 7
+maint 50 off
+maint 60 on
+s 70 35
+s 80 5
+maint 90 off
+s 100 20
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+NORMAL
+LOW
+LOW
+LOW TO_LOW@50:7.000
+LOW
+HIGH
+LOW
+LOW
+NORMAL TO_NORMAL@100:20.000
+
+### t043 A10 A9 A11 A8
+# no escalation during maintenance; on off: catch-up TO_NORMAL then ESCALATE of the old episode
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 35
+maint 20 on
+s 30 20
+tick 150
+maint 200 off
+tick 300
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+NORMAL
+NORMAL
+NORMAL TO_NORMAL@200:20.000 ESCALATE@200:20.000
+NORMAL
+
+### t044 A10 A8 A9
+# transitions in maintenance do not start an episode (alarm time stays 10); no catch-up if state unchanged
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 35
+maint 20 on
+s 30 20
+s 40 35
+maint 60 off
+tick 109
+tick 110
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+NORMAL
+HIGH
+HIGH
+HIGH
+HIGH ESCALATE@110:35.000
+
+### t045 A10 A8
+# transitions in maintenance do not make an acknowledged point unacknowledged
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 35
+ack 15
+maint 20 on
+s 30 20
+s 40 5
+s 50 35
+maint 60 off
+tick 1000
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+HIGH
+NORMAL
+LOW
+HIGH
+HIGH
+HIGH
+
+### t046 A10 A8 A9
+# a catch-up TO_HIGH starts a new episode at the time of maint off
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 35
+s 20 20
+ack 25
+maint 30 on
+s 40 35
+maint 50 off
+tick 149
+tick 150
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+NORMAL TO_NORMAL@20:20.000
+NORMAL
+NORMAL
+HIGH
+HIGH TO_HIGH@50:35.000
+HIGH
+HIGH ESCALATE@150:35.000
+
+### t047 A10 A6 A7
+# TO_FAULT is suppressed in maintenance; catch-up TO_FAULT carries the NaN sample
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 10 35
+s 15 20
+maint 20 on
+s 30 nan
+maint 40 off
+s 50 20
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+NORMAL TO_NORMAL@15:20.000
+NORMAL
+FAULT
+FAULT TO_FAULT@40:nan
+NORMAL TO_NORMAL@50:20.000
+
+### t048 A10 A6a
+# recovery during maintenance (silent TO_NORMAL + TO_HIGH); catch-up TO_HIGH on off
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+sf 10 20
+maint 20 on
+s 30 35
+maint 40 off
+---
+cfg
+NORMAL
+FAULT TO_FAULT@10:20.000
+FAULT
+HIGH
+HIGH TO_HIGH@40:35.000
+
+### t049 A10 A5a
+# delay timers keep running in maintenance
+cfg high=30 low=10 deadband=2 delay=30 escalate=0
+init 0
+s 0 35
+s 30 35
+s 40 20
+maint 45 on
+tick 69
+tick 70
+maint 80 off
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000
+HIGH
+HIGH
+HIGH
+NORMAL
+NORMAL TO_NORMAL@80:20.000
+
+### t050 A10
+# maint on when already on / off when already off changes nothing
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 10 35
+maint 20 on
+s 30 20
+maint 40 on
+maint 50 off
+maint 60 off
+s 70 35
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+NORMAL
+NORMAL
+NORMAL TO_NORMAL@50:20.000
+NORMAL
+HIGH TO_HIGH@70:35.000
+
+### t051 A10 A9 A5a
+# maint on at the escalation deadline suppresses it (check runs at end of call); off fires it
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 35
+maint 110 on
+maint 120 off
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+HIGH ESCALATE@120:35.000
+
+### t052 A10 A8 A9
+# ack during maintenance: nothing to escalate after off
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 35
+maint 20 on
+tick 200
+ack 210
+maint 220 off
+tick 500
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+HIGH
+HIGH
+HIGH
+HIGH
+
+### t053 A12 A6a
+# calls earlier than init time are ignored; equal times are fine; backwards recovery ignored
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 100
+s 50 35
+sf 60 0
+tick 99
+s 100 20
+s 100 35
+sf 110 0
+s 105 20
+s 110 20
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@100:35.000
+FAULT TO_FAULT@110:0.000
+FAULT
+NORMAL TO_NORMAL@110:20.000
+
+### t054 A12 A5a
+# a backwards sample neither cancels the pending transition nor replaces the value
+cfg high=30 low=10 deadband=2 delay=30 escalate=0
+init 0
+s 10 35
+tick 20
+s 15 20
+tick 40
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@40:35.000
+
+### t055 A12 A8 A9
+# backwards ack is ignored; a backwards call must not escalate (no unsigned underflow)
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 50 35
+tick 60
+ack 40
+s 30 35
+tick 149
+tick 150
+---
+cfg
+NORMAL
+HIGH TO_HIGH@50:35.000
+HIGH
+HIGH
+HIGH
+HIGH
+HIGH ESCALATE@150:35.000
+
+### t056 A12 A10 A9
+# backwards maint on/off are ignored (maintenance status unchanged)
+cfg high=30 low=10 deadband=2 delay=0 escalate=50
+init 0
+s 100 20
+maint 50 on
+s 110 35
+maint 120 on
+tick 200
+maint 190 off
+s 210 20
+maint 220 off
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@110:35.000
+HIGH
+HIGH
+HIGH
+NORMAL
+NORMAL TO_NORMAL@220:20.000 ESCALATE@220:20.000
+
+### t057 A5a A4 A2
+# inverted limits (low > high): at most one limit transition per evaluation
+cfg high=10 low=30 deadband=0 delay=0 escalate=0
+init 0
+s 10 20
+s 20 20
+s 30 20
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:20.000
+LOW TO_LOW@20:20.000
+HIGH TO_HIGH@30:20.000

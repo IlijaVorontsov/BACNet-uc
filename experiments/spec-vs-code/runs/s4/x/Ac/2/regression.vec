@@ -1,0 +1,85 @@
+# Regression vectors for the fixes listed in REVIEW.md.
+### a4-direct-high-to-low
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 1 35
+s 2 5
+---
+cfg
+NORMAL
+HIGH TO_HIGH@1:35.000
+LOW TO_LOW@2:5.000
+### a3-deadband-return-is-strict
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 1 35
+s 2 28
+s 3 27.9
+---
+cfg
+NORMAL
+HIGH TO_HIGH@1:35.000
+HIGH
+NORMAL TO_NORMAL@3:27.900
+### a6a-recovery-sample-is-evaluated
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 1 20
+sf 2 0
+s 3 35
+---
+cfg
+NORMAL
+NORMAL
+FAULT TO_FAULT@2:0.000
+HIGH TO_NORMAL@3:35.000 TO_HIGH@3:35.000
+### a12-tick-back-in-time-ignored
+cfg high=30 low=10 deadband=2 delay=30 escalate=0
+init 100
+s 100 35
+tick 50
+s 110 35
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+### a12-ack-back-in-time-ignored
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 50 35
+ack 10
+tick 150
+---
+cfg
+NORMAL
+HIGH TO_HIGH@50:35.000
+HIGH
+HIGH ESCALATE@150:35.000
+### a12-maint-back-in-time-ignored
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 50 35
+maint 10 on
+tick 150
+---
+cfg
+NORMAL
+HIGH TO_HIGH@50:35.000
+HIGH
+HIGH ESCALATE@150:35.000
+### a10-catchup-starts-episode
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+maint 0 on
+s 10 35
+maint 20 off
+tick 200
+---
+cfg
+NORMAL
+NORMAL
+HIGH
+HIGH TO_HIGH@20:35.000
+HIGH ESCALATE@200:35.000

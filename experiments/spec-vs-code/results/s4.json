@@ -1,0 +1,734 @@
+{
+ "p/A/1": {
+  "domain": "p",
+  "arm": "A",
+  "rep": 1,
+  "build": "ws-header",
+  "fixed": {
+   "PB1_signed_minimal[STD]": true,
+   "PB2_extlen_253[STD]": true,
+   "PB3_ctx_boolean[STD]": true,
+   "PB4_partial_write[POL]": true,
+   "PB5_bits_validation[POL]": false
+  },
+  "partial": {
+   "PB1_signed_minimal[STD]": 1.0,
+   "PB2_extlen_253[STD]": 1.0,
+   "PB3_ctx_boolean[STD]": 1.0,
+   "PB4_partial_write[POL]": 1.0,
+   "PB5_bits_validation[POL]": 0.0
+  },
+  "n_regress": 0,
+  "regress_by_rule": {},
+  "regress_by_cat": {
+   "STD": 0,
+   "POL": 0,
+   "MIX": 0
+  },
+  "passed": 746,
+  "total": 751,
+  "review": "# bacapp.c review\n\n## Changes made\n\n- `sint_len`: `v > -128` changed to `v >= -128`. -128 fits in one octet, but it was encoded as 2 octets (`32ff80` instead of `3180`). Clause 20.2.5 requires the minimum number of octets, and the other bounds in the function are already inclusive.\n- `hdr_len` / `put_hdr`: the single-octet extended-length cutoff changed from `len < 253` to `len <= 253`. Clause 20.2.1.3.1 encodes lengths 5..253 in one octet, and this module's own decoder reads `e < 254` as a direct length. A 253-byte value was getting the non-canonical 3-octet form `FE 00 FD`.\n- `bac_enc_octet_string`: all capacity checks now run before `put_hdr`. When the buffer held the header but not the data, the header was written and then -1 was returned, leaving the caller's buffer modified (the driver reported \"ERR DIRTY\"). Every other encoder leaves the buffer untouched on error.\n- `bac_enc_ctx_boolean`: now writes a length-1 context tag followed by one content octet (0x00 or 0x01), for example `0901` and `0900`. Before, the value went into the LVT field (`09` / `08`), which is the application-tag form. Clause 20.2.3 says a context-tagged Boolean has one content octet. The capacity check and return value now include that octet.\n- `bac_enc_octet_string`, `bac_enc_char_string`, `bac_enc_bit_string`: added a guard that returns -1 when the total length would be more than INT_MAX. On 64-bit builds, lengths up to 0xFFFFFFFF were accepted, so `(int)(h + len)` could overflow the return value. This has no effect on any realistic size.\n- `bac_enc_bit_string`: `(nbits + 7) / 8` changed to `nbits / 8 + (nbits % 8 != 0)`, so a very large `nbits` can no longer wrap the byte count. The result is the same for every non-overflowing input.\n- `bac_dec_app`: added a matching guard that rejects a content length that would overflow the `int` return value (`h + L > INT_MAX`). This is only reachable with buffers larger than 2 GiB.\n- Added `#include <limits.h>` for INT_MAX.\n\n## Left unchanged on purpose\n\n- `bac_enc_real` returns -1 for NaN, but the decoder accepts NaN. The check is explicit and separate, so it reads as a deliberate policy of never sending NaN. I kept it; the author should confirm it is intended.\n- The decoders accept non-minimal encodings: a sign-extended or zero-padded integer (`32ff80`, `220048`), an extended length used for small values (`65fe00fd`, or an extended octet below 5), and an extended tag number below 15. Being lenient on input is normal robustness practice, and rejecting these could break interoperability.\n- `bac_dec_app` rejects DOUBLE (tag 5) and tags 13-15. The API has no double type, and those tags are reserved.\n- `bac_enc_date` accepts month 13/14 (odd/even months) and day 32/33/34 (last/odd/even days). These are valid special values in ASHRAE 135.\n- Tag 255 is rejected in the context, opening and closing encoders and in `bac_dec_tag`. 255 is reserved for extended tag numbers.\n- The decoders do not range-check date/time fields, the character-set byte, or the unused trailing bits of a bit string. Only the encoders validate, and the lenient decode passes the raw values to the caller.\n- `bac_dec_tag` fills `*out` partially before some error returns. Callers must not use `*out` when -1 is returned, and the header documents no guarantee either way.\n- `bac_enc_boolean` (application tag) keeps the value in the LVT field (`10` / `11`). This is correct for application-tagged Booleans. Only the context-tagged form needed a content octet.\n"
+ },
+ "p/A/2": {
+  "domain": "p",
+  "arm": "A",
+  "rep": 2,
+  "build": "ws-header",
+  "fixed": {
+   "PB1_signed_minimal[STD]": true,
+   "PB2_extlen_253[STD]": true,
+   "PB3_ctx_boolean[STD]": true,
+   "PB4_partial_write[POL]": true,
+   "PB5_bits_validation[POL]": false
+  },
+  "partial": {
+   "PB1_signed_minimal[STD]": 1.0,
+   "PB2_extlen_253[STD]": 1.0,
+   "PB3_ctx_boolean[STD]": 1.0,
+   "PB4_partial_write[POL]": 1.0,
+   "PB5_bits_validation[POL]": 0.0
+  },
+  "n_regress": 0,
+  "regress_by_rule": {},
+  "regress_by_cat": {
+   "STD": 0,
+   "POL": 0,
+   "MIX": 0
+  },
+  "passed": 746,
+  "total": 751,
+  "review": "# bacapp.c review\n\n## Changes made\n\n- `hdr_len`/`put_hdr`: extended-length boundary changed from `len < 253` to `len <= 253`. Clause 20.2.1.3.1 encodes lengths 5..253 in one octet. A length of exactly 253 was sent as `FE 00 FD`, which is not the canonical form. The decoder already treated 253 as a one-octet length.\n- `sint_len`: changed `v > -128` to `v >= -128`. -128 fits in one octet (`31 80`), but the code used two octets (`32 FF 80`), so it was not the minimum-length encoding the standard requires.\n- `bac_enc_octet_string`: moved the `cap - h < len` capacity check ahead of `put_hdr`. Before, a buffer that was too small got its header written anyway and the function then returned -1 (a dirty buffer on error). Every other encoder leaves the buffer untouched on error.\n- `bac_enc_ctx_boolean`: now encodes the value as L/V/T=1 plus one content octet (0x00/0x01), as clause 20.2.3 requires for context-tagged BOOLEAN. It used to put the value in L/V/T with no content octet, which is the application-tag form, so peers could not read it (e.g. `[0] TRUE` came out as `09` instead of `09 01`).\n- `bac_enc_octet_string` / `bac_enc_char_string` / `bac_enc_bit_string`: added a hardening check that returns -1 when the total length would not fit in the `int` return value, and a check that `nbits + 7` does not wrap. Before, a very large `cap` or length could produce a truncated or negative return count after writing the data. No normal-size input behaves differently.\n- Added `#include <limits.h>` for `INT_MAX`.\n\n## Deliberately left unchanged\n\n- `bac_enc_real` returns -1 for NaN. This is an explicit check, so I treated it as policy rather than a mistake. The decoder still accepts NaN bit patterns, so decoding stays lenient.\n- DOUBLE (tag 5) is rejected by the decoder, and there is no double encoder. `bac_value_t` has no double member, so this is a scope limit.\n- The decoder accepts non-minimal encodings (extended-length form for lengths below 5, leading zero octets in Unsigned/Enumerated, extended tag numbers below 15). Being lenient on receive is normal practice and harmless.\n- The decoder does not range-check date/time fields, the character-set octet, or the object type. It reports the raw values, and checking them is the caller's job.\n- The decoder rejects zero-length Unsigned/Signed/Enumerated and any Real/Date/Time/ObjectId whose length is not 4. This matches the standard's encodings.\n- The encoders accept month 13/14 (odd/even months) and day 32..34 (last/odd/even days). These values are defined by the standard.\n- Tag number 255 is rejected by the context/opening/closing encoders and by `bac_dec_tag`, and application-class L/V/T 6/7 is rejected by `bac_dec_tag`. Both are reserved or invalid in the standard.\n- `bac_dec_tag` may write partial fields to `*out` before it returns -1. The API does not promise otherwise, and callers must ignore `*out` on error.\n"
+ },
+ "p/A/3": {
+  "domain": "p",
+  "arm": "A",
+  "rep": 3,
+  "build": "ws-header",
+  "fixed": {
+   "PB1_signed_minimal[STD]": true,
+   "PB2_extlen_253[STD]": true,
+   "PB3_ctx_boolean[STD]": true,
+   "PB4_partial_write[POL]": true,
+   "PB5_bits_validation[POL]": false
+  },
+  "partial": {
+   "PB1_signed_minimal[STD]": 1.0,
+   "PB2_extlen_253[STD]": 1.0,
+   "PB3_ctx_boolean[STD]": 1.0,
+   "PB4_partial_write[POL]": 1.0,
+   "PB5_bits_validation[POL]": 0.0
+  },
+  "n_regress": 0,
+  "regress_by_rule": {},
+  "regress_by_cat": {
+   "STD": 0,
+   "POL": 0,
+   "MIX": 0
+  },
+  "passed": 746,
+  "total": 751,
+  "review": "# bacapp.c review\n\n## Changes made (bacapp.c)\n\n- `sint_len`: changed `v > -128` to `v >= -128`. Before, -128 was encoded in two octets (`32ff80`) when one is enough (`3180`); clause 20.2.5 requires the minimum number of octets.\n- `hdr_len` / `put_hdr`: changed `len < 253` to `len <= 253`. Before, a length of exactly 253 was written as `FE 00 FD`; clause 20.2.1.3.1 says lengths 5..253 use one extension octet, and the decoder already reads it that way. Both functions changed together so they still agree.\n- `bac_enc_octet_string`: now checks that the whole value fits before writing the header. Before, a buffer big enough for the header but too small for the data returned -1 after the header was already written (the driver reports this as `ERR DIRTY`). Every other encoder already leaves the buffer untouched on error.\n- `bac_enc_ctx_boolean`: now encodes the value as a context tag with length 1 plus one content octet of 0x00 or 0x01 (clause 20.2.3). Before, it put the value in the L/V/T field and wrote no content octet, which is the application-tag BOOLEAN form. So `[0] TRUE` came out as `09` instead of `0901` and `[0] FALSE` as `08` instead of `0900`. The capacity check now includes the content octet.\n\n- Added `regression.vec`, which covers the four fixes. `acceptance.vec` and `regression.vec` both pass (23/23). Randomized round-trip checks (signed and unsigned values, context unsigned, octet, character and bit strings up to 70 000 bytes) and decoder fuzzing under ASan and UBSan found no other problems. `driver.c`, `run_vectors.py` and the Makefile are unchanged.\n\n## Suspicious behavior deliberately left unchanged\n\n- `bac_enc_real` rejects NaN. BACnet can carry a NaN REAL, but this is an explicit check and looks like a deliberate product decision. The decoder still accepts NaN.\n- DOUBLE (tag 5) is not supported: there is no encoder, `bac_value_t` has no member for it, and `bac_dec_app` rejects it. This looks deliberate.\n- The decoders accept encodings that are valid but not in minimal form: leading zero or sign-extension octets in UNSIGNED, SIGNED and ENUMERATED values, extended-length form for short lengths, and extended tag-number form for tags below 15. They also accept nonzero unused bits in a BIT STRING. Real devices send these, so being lenient here is reasonable.\n- `bac_dec_app` does not range-check DATE and TIME fields, character-set codes or object types. Checking them is left to the caller, and it matches how the other fields are passed through as raw values.\n- Encoders and `bac_dec_app` return `int`. A value longer than INT_MAX bytes would overflow the return value. This can't happen with real buffer sizes, so it was not changed.\n- `bac_enc_date` accepts day values 32, 33 and 34 and month values 13 and 14. These are the special values the standard defines (last day of month, odd/even days, odd/even months), so this is intended.\n"
+ },
+ "p/Ac/1": {
+  "domain": "p",
+  "arm": "Ac",
+  "rep": 1,
+  "build": "ws-header",
+  "fixed": {
+   "PB1_signed_minimal[STD]": true,
+   "PB2_extlen_253[STD]": true,
+   "PB3_ctx_boolean[STD]": true,
+   "PB4_partial_write[POL]": true,
+   "PB5_bits_validation[POL]": true
+  },
+  "partial": {
+   "PB1_signed_minimal[STD]": 1.0,
+   "PB2_extlen_253[STD]": 1.0,
+   "PB3_ctx_boolean[STD]": 1.0,
+   "PB4_partial_write[POL]": 1.0,
+   "PB5_bits_validation[POL]": 1.0
+  },
+  "n_regress": 0,
+  "regress_by_rule": {},
+  "regress_by_cat": {
+   "STD": 0,
+   "POL": 0,
+   "MIX": 0
+  },
+  "passed": 751,
+  "total": 751,
+  "review": "# bacapp.c review\n\nThe spec is the rule comments in `bacapp.c` (SPEC.md summary, G/E/D rule ids) plus ASHRAE 135 clause 20.2. `driver.c`, `run_vectors.py` and `acceptance.vec` were not changed. `regression.vec` is new: it holds one vector block per fix and fails on the original code. `make && python3 run_vectors.py acceptance.vec regression.vec` gives 27/27.\n\n## Changes made\n\n1. `sint_len()`: changed `v > -128` to `v >= -128`. Reason: -128 fits in one two's-complement octet, but it was encoded in two octets (`32 ff 80` instead of `31 80`). This broke the minimal-encoding rules E4 and E3/E4.\n2. `hdr_len()` and `put_hdr()`: changed the one-octet extended-length bound from `len < 253` to `len <= 253`, in both functions so they still agree. Reason: G4 puts lengths 5..253 in one octet, but length 253 was written as `fe 00 fd` (3 octets). That is not the shortest form, and the comments in both functions say 5..253.\n3. `bac_enc_octet_string()`: moved the `cap - h < len` check ahead of `put_hdr()`. Reason: when the header fit but the data did not, the function wrote the header and then returned -1, a partial write that breaks G1 (\"no partial writes\").\n4. `bac_enc_bit_string()`: added the E8a check that rejects any `bits[i]` other than 0 or 1 before the first write. Reason: the comment documents this [POL] rule, but the code did not check it. Masks such as `2` were encoded silently as a set bit.\n5. `bac_enc_bit_string()`: changed the byte count from `(nbits + 7) / 8` to `nbits / 8 + (nbits % 8 != 0)`. Reason: `nbits + 7` can wrap for a huge `nbits`, which would give a tiny `nbytes` and then writes far past `cap`. Results for every valid input are unchanged.\n6. `bac_enc_ctx_boolean()`: now writes context length 1 plus one content octet `00`/`01`. The capacity check now includes that octet. Reason: E13 requires this, but the code put the value in LVT with no content (`09` instead of `09 01`), which is the application-Boolean form (E2) and not valid BACnet.\n\n## Suspicious-looking behavior deliberately left unchanged\n\n- Decoder accepts non-canonical headers: extended tag number below 15, and extended lengths that fit a shorter form. This is D1b [POL], interop issue #12.\n- Decoder accepts non-minimal Unsigned, Enumerated and Signed contents (for example `32 ff 80` decodes to -128). This is D4 [POL].\n- Decoder accepts NaN reals, while the encoder refuses them. This is D5 / E5a [POL]. The encoder does accept +/-Infinity, which E5a says explicitly.\n- Character-string bytes are not UTF-8 validated (E7a [POL]). The decoder reports any charset octet as is (D7).\n- Date, Time and Object Identifier fields are not validated on decode (D9 [POL]). Date encoding checks field ranges but not calendar consistency (E9a).\n- The decoder does not check that the unused trailing bits of a Bit String are zero. D8 does not require it.\n- Double (tag 5) and tags 13, 14 and 15+ are rejected by `bac_dec_app`, and there is no Double encoder. This is D2 [POL]: not supported in v1.0.\n- The NaN check in `bac_enc_real` runs before the NULL-buffer check. Both paths return -1 with nothing written, so the order does not matter.\n- Encoders and `bac_dec_app` return `int`. For a buffer larger than INT_MAX the byte count would not fit. This cannot happen on the target (MS/TP frames), so I left it rather than add a new limit to the API.\n- The `len > 0xFFFFFFFFu` and `nbytes >= 0xFFFFFFFFu` guards are always false when `size_t` is 32-bit. They are harmless and correct on 64-bit hosts.\n- `bac_dec_app` ignores bytes after the value, and pointer fields in `*out` point into `buf`. Both are documented in the API.\n"
+ },
+ "p/Ac/2": {
+  "domain": "p",
+  "arm": "Ac",
+  "rep": 2,
+  "build": "ws-header",
+  "fixed": {
+   "PB1_signed_minimal[STD]": true,
+   "PB2_extlen_253[STD]": true,
+   "PB3_ctx_boolean[STD]": true,
+   "PB4_partial_write[POL]": true,
+   "PB5_bits_validation[POL]": true
+  },
+  "partial": {
+   "PB1_signed_minimal[STD]": 1.0,
+   "PB2_extlen_253[STD]": 1.0,
+   "PB3_ctx_boolean[STD]": 1.0,
+   "PB4_partial_write[POL]": 1.0,
+   "PB5_bits_validation[POL]": 1.0
+  },
+  "n_regress": 0,
+  "regress_by_rule": {},
+  "regress_by_cat": {
+   "STD": 0,
+   "POL": 0,
+   "MIX": 0
+  },
+  "passed": 751,
+  "total": 751,
+  "review": "# bacapp.c review\n\n## Changes made (all in bacapp.c)\n\n1. `hdr_len()` / `put_hdr()`: `len < 253` -> `len <= 253`. G4 requires the shortest form: length 253 fits the one-octet extended length (`65 fd`), but was encoded as `fe 00 fd` (octet/character/bit strings with a content length of exactly 253). Both functions changed together so they still agree.\n2. `sint_len()`: `v > -128` -> `v >= -128`. E4 requires the minimum number of octets: -128 fits in one octet (`31 80`) but was encoded as `32 ff 80`.\n3. `bac_enc_octet_string()`: moved the `cap - h < len` check ahead of `put_hdr()`. G1 violation: when the header fit but the data did not, the tag header was written into buf and then -1 was returned (partial write into the MS/TP transmit buffer).\n4. `bac_enc_bit_string()`: added the E8a check (every `bits[i]` must be 0 or 1, otherwise -1, before any write). The comment described the rule, but no code enforced it, so values like 2 were silently encoded as 1.\n5. `bac_enc_ctx_boolean()`: now writes a context header with length 1 plus a content octet `00`/`01` (E13). It used to put the value in LVT with no content octet, like the application Boolean (E2). That produced a wrong encoding (e.g. `39` instead of `39 01`, and `38` instead of `39 00`).\n\n## Suspicious-looking behaviour deliberately left unchanged\n\n- Encoders return `(int)(h + len)`. Octet, character and bit strings accept content up to 0xFFFFFFFF octets (the G4 maximum), so an encoding over INT_MAX bytes would give an unrepresentable return value. This needs a buffer of more than 2 GB, which cannot happen on the target, and rejecting it would narrow the documented accepted range. Flagged for the spec owner instead of changed.\n- `bac_dec_tag()` accepts non-canonical headers (extended tag < 15, extended lengths that would fit a shorter form). This is intended by D1b [POL] (interop issue #12).\n- LVT 5 is always read as an extended length, so `15 01` is rejected as a Boolean. This is intended by D1 and D3.\n- The decoder does not validate Date, Time or Object Identifier fields (D9), the charset octet (D7) or NaN reals (D5). The encoder accepts \u00b1Infinity (E5a) and does not validate UTF-8 (E7a). All of these are documented [POL] decisions.\n- Application tag 5 (Double) is rejected by the decoder, as intended by D2 (not supported in v1.0).\n- `bac_dec_tag()` fills `*out` before rejecting an application-class LVT 6/7, and `bac_dec_app()` may leave `*out` partly written on -1. The decoders make no promise to leave `*out` unchanged; G1 applies to encoders only.\n- `bac_dec_app()` computes bit-string `nbits` as `(size_t)(L - 1) * 8 - unused`. This could only overflow with a 32-bit size_t and a buffer of more than 512 MB, which cannot happen on the target.\n- `len > 0xFFFFFFFFu` in `bac_enc_octet_string()` is always false when size_t is 32 bits. This may cause a -Wtype-limits warning on the target but is harmless.\n"
+ },
+ "p/Ac/3": {
+  "domain": "p",
+  "arm": "Ac",
+  "rep": 3,
+  "build": "ws-header",
+  "fixed": {
+   "PB1_signed_minimal[STD]": true,
+   "PB2_extlen_253[STD]": true,
+   "PB3_ctx_boolean[STD]": true,
+   "PB4_partial_write[POL]": true,
+   "PB5_bits_validation[POL]": true
+  },
+  "partial": {
+   "PB1_signed_minimal[STD]": 1.0,
+   "PB2_extlen_253[STD]": 1.0,
+   "PB3_ctx_boolean[STD]": 1.0,
+   "PB4_partial_write[POL]": 1.0,
+   "PB5_bits_validation[POL]": 1.0
+  },
+  "n_regress": 0,
+  "regress_by_rule": {},
+  "regress_by_cat": {
+   "STD": 0,
+   "POL": 0,
+   "MIX": 0
+  },
+  "passed": 751,
+  "total": 751,
+  "review": "# bacapp.c review\n\n## Changes made\n\n1. `hdr_len()` / `put_hdr()`: length 253 now uses the 1-octet extended-length form (`len <= 253`, was `< 253`). G4 [STD] / ASHRAE 135 20.2.1.3.1 say 5..253 takes one length octet. Before, 253 was sent as `FE 00 FD`, which is not the shortest form. Both functions changed together so they stay in agreement.\n2. `sint_len()`: -128 now encodes in one octet (`v >= -128`, was `v > -128`). E4 [STD] asks for the minimum number of octets. Before, -128 came out as `32 ff 80` instead of `31 80`.\n3. `bac_enc_octet_string()`: the `cap - h < len` capacity check now runs before `put_hdr()`. Before, the header was written and then -1 was returned, which broke G1 [POL] (no partial writes). The driver showed this as `ERR DIRTY`.\n4. `bac_enc_bit_string()`: added the E8a [POL] check that every `bits[i]` is 0 or 1, run before any write. The comment documented it, but the code was missing, so values such as 2 were silently encoded as 1.\n5. `bac_enc_bit_string()`: `nbytes` is now computed as `nbits / 8 + (nbits % 8 != 0)` instead of `(nbits + 7) / 8`. The old form wraps when `nbits` is near SIZE_MAX, which would under-size the capacity check. Output is unchanged for every other input.\n6. `bac_enc_ctx_boolean()`: now emits length 1 plus a content octet `00`/`01`, as E13 [STD] requires (tag 3 true gives `39 01`). Before, it put the value in LVT with no content octet, which is the application-Boolean form (E2) and wrong for context tags.\n\n## Suspicious-looking behaviour left unchanged (intentional)\n\n- The decoder accepts non-canonical tags and lengths, such as an extended tag number below 15 or a long-form length that fits a shorter form. This is D1b [POL], a documented interop decision.\n- Double (application tag 5) is rejected by `bac_dec_app`, and there is no Double encoder. This is D2 [POL]: Double is not supported in v1.0.\n- NaN is refused by `bac_enc_real` but accepted by the decoder. These are E5a / D5 [POL], which restrict only what we send.\n- Character-string bytes are not UTF-8 validated, and the decoder accepts any charset octet. These are E7a / D7 [POL].\n- Date, time and object-identifier fields are not validated on decode. This is D9 [POL]. The encoder range checks (E9a / E10a / E11a) are intentional policy on top of ASHRAE.\n- `bac_dec_app` decodes Null and Boolean from the raw LVT bits, so `15 01` is rejected. This is D3 [POL].\n- Year 2155 is rejected by the encoder. Octet 255 means \"unspecified\", so 1900..2154 is the full encodable range (E9a).\n- Return values are computed as `(int)(h + len)` in the string encoders and `bac_dec_app`. They would overflow only for buffers larger than INT_MAX (above 2 GiB), which cannot happen on the target, and the API returns `int`, so I made no change.\n- The comparison `len > 0xFFFFFFFFu` in `bac_enc_octet_string` is always false when `size_t` is 32 bits. It is harmless there, because the length then always fits the 4-octet form. Left as is.\n"
+ },
+ "p/B/1": {
+  "domain": "p",
+  "arm": "B",
+  "rep": 1,
+  "build": "ws-header",
+  "fixed": {
+   "PB1_signed_minimal[STD]": true,
+   "PB2_extlen_253[STD]": true,
+   "PB3_ctx_boolean[STD]": true,
+   "PB4_partial_write[POL]": true,
+   "PB5_bits_validation[POL]": true
+  },
+  "partial": {
+   "PB1_signed_minimal[STD]": 1.0,
+   "PB2_extlen_253[STD]": 1.0,
+   "PB3_ctx_boolean[STD]": 1.0,
+   "PB4_partial_write[POL]": 1.0,
+   "PB5_bits_validation[POL]": 1.0
+  },
+  "n_regress": 0,
+  "regress_by_rule": {},
+  "regress_by_cat": {
+   "STD": 0,
+   "POL": 0,
+   "MIX": 0
+  },
+  "passed": 751,
+  "total": 751,
+  "review": "# bacapp.c review\n\n## Changes made (all in bacapp.c)\n\n1. `hdr_len`/`put_hdr`: one-octet extended length now covers 5..**253** (`len <= 253`, was `< 253`). Reason: G4 requires the shortest form; a 253-byte content was encoded as `FE 00 FD`, not `FD`.\n2. `sint_len`: `v >= -128` (was `v > -128`). Reason: E4 minimum octets; -128 was encoded as `32 ff 80` instead of `31 80`.\n3. `bac_enc_octet_string`: checks the full size (header + content) before writing anything. Reason: G1; when the header fit but the content did not, it wrote the header and then returned -1 (dirty transmit buffer).\n4. `bac_enc_ctx_boolean`: encodes length 1 plus content octet `00`/`01` (e.g. `39 01`), with capacity check for h+1. Reason: E13; it wrote the value into LVT with no content, like the application Boolean.\n5. `bac_enc_bit_string`: every `bits[i]` is checked to be 0 or 1 before any byte is written; otherwise -1. Reason: E8a; any non-zero value was silently accepted as 1.\n6. `bac_enc_bit_string`: byte count computed as `nbits/8 + (nbits%8 != 0)` instead of `(nbits+7)/8`. Reason: `nbits+7` wraps for huge `nbits`, which gave `nbytes = 0` and then an out-of-bounds write loop.\n7. `bac_enc_real`: NaN is detected from the IEEE bit pattern (exponent all ones, mantissa non-zero) instead of `isnan()`; `<math.h>` replaced by `<limits.h>`. Reason: hardening of E5a. Behaviour is the same with the current flags, but `isnan()` is silently optimised away under `-ffast-math`/`-ffinite-math-only`, which is common in firmware builds. That would put NaN on the wire.\n8. Octet/character/bit-string encoders: return -1 if the total length would exceed `INT_MAX`. Reason: G1; otherwise `(int)(h+len)` could come out negative after the buffer was already written. This needs caps above 2 GB, so it cannot happen in practice.\n\nAdded `regression.vec` (vectors for items 1-5 and 7); `acceptance.vec` + `regression.vec` all pass. A capacity sweep (cap 0..309 on every encoder) shows no `DIRTY`/`OVERRUN`.\n\n## Suspicious-looking behaviour left unchanged (intentional)\n\n- Lenient header parsing: extended tag octet < 15 (`F9 03`) and non-minimal extended lengths (`65 03`, `65 fe 00 10`) are accepted. Required by D1b [POL]. As a result, `F2 02 00 05` decodes as Unsigned 5.\n- Non-minimal integer encodings accepted on decode (`22 00 05`, `32 ff ff`). Required by D4 [POL].\n- NaN refused by `bac_enc_real` but decoded normally by `bac_dec_app`. Required by E5a/D5 [POL].\n- Date/Time/Object-ID fields are validated on encode but not on decode. Required by D9 [POL].\n- Character strings are not UTF-8 validated, and any charset octet is accepted on decode. Required by E7a/D7 [POL].\n- Null/Boolean decoding uses raw LVT bits, so `15 01` is rejected even though `bac_dec_tag` reads it as an extended length. Required by D3 [POL].\n- Context Boolean (length 1 + content) differs from application Boolean (value in LVT). Required by E13/E2 [STD].\n- Year 2155 is rejected by `bac_enc_date` (octet 255 means unspecified). Required by E9a.\n- Bit-string decoder does not check that the unused trailing bits are zero. Not required by D8.\n- Decoders may partly fill `*out` before returning -1. G1 constrains only encoders.\n- `bac_dec_app` returns `(int)(h+L)` and computes `(L-1)*8` for bit strings, which could overflow for inputs above `INT_MAX` or above 512 MB with a 32-bit `size_t`. This cannot happen with the controller's buffer sizes, and the spec defines no error for it.\n"
+ },
+ "p/B/2": {
+  "domain": "p",
+  "arm": "B",
+  "rep": 2,
+  "build": "ws-header",
+  "fixed": {
+   "PB1_signed_minimal[STD]": true,
+   "PB2_extlen_253[STD]": true,
+   "PB3_ctx_boolean[STD]": true,
+   "PB4_partial_write[POL]": true,
+   "PB5_bits_validation[POL]": true
+  },
+  "partial": {
+   "PB1_signed_minimal[STD]": 1.0,
+   "PB2_extlen_253[STD]": 1.0,
+   "PB3_ctx_boolean[STD]": 1.0,
+   "PB4_partial_write[POL]": 1.0,
+   "PB5_bits_validation[POL]": 1.0
+  },
+  "n_regress": 0,
+  "regress_by_rule": {},
+  "regress_by_cat": {
+   "STD": 0,
+   "POL": 0,
+   "MIX": 0
+  },
+  "passed": 751,
+  "total": 751,
+  "review": "# bacapp.c review\n\n## Changes made (bacapp.c only)\n\n1. `hdr_len`/`put_hdr`: one-octet extended-length threshold changed from `len < 253` to `len <= 253`. G4 says lengths 5..253 use a single length octet. Before the fix, a 253-byte content was written in the longer `FE 00 FD` form, which is not the shortest encoding (e.g. `enc_octets` of 253 bytes gave `65 fe 00 fd ...` instead of `65 fd ...`).\n2. `sint_len`: `v > -128` changed to `v >= -128`. E4 requires the minimum number of octets, and -128 fits in one (`31 80`). Before the fix it was encoded as `32 ff 80`.\n3. `bac_enc_octet_string`: the capacity check now runs before `put_hdr`. G1 forbids partial writes, but the header used to be written into `buf` before the content-length check, so it returned -1 with a dirty buffer (the incident-2024-11 failure mode).\n4. `bac_enc_bit_string`: added the E8a check that each `bits[i]` is 0 or 1, with -1 otherwise. It runs before any byte is written, so G1 holds. Before the fix, values such as 2 were silently treated as 1.\n5. `bac_enc_bit_string`: the byte count is now `nbits/8 + (nbits%8 != 0)` instead of `(nbits+7)/8`. This stops `nbits + 7` from wrapping when `nbits` is close to `SIZE_MAX`. Hardening only; normal inputs give the same result.\n6. `bac_enc_ctx_boolean`: now writes context class, length 1 and a content octet `00`/`01`, as E13 requires (e.g. tag 3 true = `39 01`). Before the fix it wrote the application-Boolean form (value in the LVT, no content), e.g. `39`, which peers decode as a 1-byte value with the content missing.\n7. `bac_enc_real`: the NaN test now checks the IEEE-754 bit pattern (exponent all ones, fraction non-zero) instead of calling `isnan()`. The result is the same for every input (E5a: any sign or payload, quiet or signalling). The change keeps the D-7 NaN ban working when the firmware is built with `-ffast-math` or similar flags, where `isnan()` may be optimised to always return false. `<math.h>` is no longer needed; `<limits.h>` was added.\n8. Octet, character and bit string encoders, and `bac_dec_app`: added a `> INT_MAX` guard so that an encoded or consumed length that `int` cannot hold returns -1 instead of a wrapped or negative count. Hardening only; lengths that fit in `int` are unaffected.\n\n## Suspicious-looking behavior deliberately left unchanged\n\n- `bac_dec_tag` accepts non-canonical headers: an extended tag number octet below 15 (`F9 03`), and extended lengths that would fit a shorter form (`65 03`, `65 fe 00 10`). This is required by D1b [POL] (interop list #12). As a result, `bac_dec_app` also accepts forms like `F4 04 ...` as a Real.\n- `bac_dec_app` accepts non-minimal integers (`22 00 05`, `32 ff ff`). This is D4 [POL].\n- `bac_dec_app` decodes NaN Reals even though the encoder refuses NaN. D5 [POL] says E5a restricts only what we send.\n- Date, Time and Object Identifier fields are not validated when decoding. This is D9 [POL].\n- Null and Boolean decoding use the raw LVT bits, so `15 01` is rejected even though `bac_dec_tag` would read it as an extended length. This is D3 [POL].\n- `bac_enc_char_string` does not check that the bytes are valid UTF-8. This is E7a [POL].\n- Double (application tag 5) is rejected. It is not supported in v1.0 (D2).\n- Bytes after a decoded value are ignored, as the spec for `bac_dec_app` says.\n- `bac_dec_tag` may have partly filled `*out` when it returns -1 (for example, an application header with LVT 6/7 or a truncated extended length). The API makes no promise about `*out` on error, and callers must check the return value. Encoders, by contrast, are bound by G1, and I verified that they leave `buf` untouched on every error path.\n- \u00b1Infinity is encoded normally. E5a allows it explicitly.\n- The encoders check argument validity before checking `buf == NULL` or `cap`. Every path returns -1, so the order is not observable.\n\n## Verification\n\n- `make` builds cleanly with `-Wall -Wextra`, and also with `-Wconversion`. `run_vectors.py acceptance.vec` passes 19/19.\n- `fuzz.py` (a test helper I added in this directory; it does not change any shipped file) compares 20,000 random and boundary cases against an independent Python model of SPEC.md. It covers every encoder at different capacities, including the dirty-buffer and overrun checks, plus `dec_tag` and `dec_app`. Result: 0 mismatches. The same script flags the old `< 253` and `> -128` behavior.\n"
+ },
+ "p/B/3": {
+  "domain": "p",
+  "arm": "B",
+  "rep": 3,
+  "build": "ws-header",
+  "fixed": {
+   "PB1_signed_minimal[STD]": true,
+   "PB2_extlen_253[STD]": true,
+   "PB3_ctx_boolean[STD]": true,
+   "PB4_partial_write[POL]": true,
+   "PB5_bits_validation[POL]": true
+  },
+  "partial": {
+   "PB1_signed_minimal[STD]": 1.0,
+   "PB2_extlen_253[STD]": 1.0,
+   "PB3_ctx_boolean[STD]": 1.0,
+   "PB4_partial_write[POL]": 1.0,
+   "PB5_bits_validation[POL]": 1.0
+  },
+  "n_regress": 0,
+  "regress_by_rule": {},
+  "regress_by_cat": {
+   "STD": 0,
+   "POL": 0,
+   "MIX": 0
+  },
+  "passed": 751,
+  "total": 751,
+  "review": "# bacapp.c review\n\n## Changes made\n\n1. `hdr_len` / `put_hdr`: the one-octet extended length now covers 5..253 (`len <= 253`, was `< 253`). Before, a content length of 253 was written as `FE 00 FD`, which is not the shortest form that G4 requires.\n2. `sint_len`: the 1-octet range now includes -128 (`v >= -128`, was `v > -128`). Before, -128 was encoded as `32 FF 80` when E4 requires `31 80`.\n3. `bac_enc_octet_string`: the full capacity check now runs before the header is written. Before, when the header fit but the data did not, the function wrote the header and then returned -1, a partial write that G1 forbids.\n4. `bac_enc_bit_string`: added the E8a check that every `bits[i]` is 0 or 1, returning -1 otherwise. The check runs before any byte of `buf` is written (G1). Before, any non-zero value was silently treated as 1.\n5. `bac_enc_ctx_boolean`: it now writes length 1 plus a content octet `00`/`01`, as E13 requires (for example tag 3 true gives `39 01`). Before, it put the value in the LVT field with no content, the application-Boolean form, which does not conform.\n6. `bac_enc_real`: the NaN test now reads the IEEE-754 bit pattern (exponent all ones and fraction non-zero) instead of calling `isnan()`. This change is defensive: it covers every quiet and signalling NaN with any sign or payload (E5a), and it still works if the build uses `-ffast-math`, where `isnan` can be optimised away. `<math.h>` is replaced by `<limits.h>`.\n7. `bac_enc_bit_string`: `nbytes` is now computed as `nbits/8 + (nbits%8 != 0)` instead of `(nbits+7)/8`. The old form could wrap around for very large `nbits`, which gave a wrong byte count and unused-bits value.\n8. Octet, character and bit string encoders, and `bac_dec_app`: each now returns -1 when the total length would not fit in the `int` return value. Before, the cast `(int)(h+len)` could overflow and return a garbage or negative count. This only affects absurdly large inputs, or targets with a 16-bit `int`.\n\n## Checked and deliberately left unchanged\n\n- D1b: lenient header parsing is kept. The decoder accepts extended tag octets below 15 and non-minimal extended lengths such as `65 03` and `65 FE 00 10`. This is a [POL] interop decision.\n- D4: non-minimal Unsigned, Enumerated and Signed encodings (for example `22 00 05`) are still accepted when decoding ([POL]).\n- D5: the decoder accepts NaN reals, while E5a forbids only sending them. The asymmetry is intended ([POL]).\n- D9: Date, Time and Object Identifier fields are not validated when decoding ([POL]).\n- E7a: the character-string encoder does not validate UTF-8 ([POL]).\n- D1: `bac_dec_tag` treats LVT 5 as an extended length for context tags too (\"whatever the tag number and class\"), which is what the spec requires.\n- D2: application tag 5 (Double) is rejected on purpose, because v1.0 does not support it.\n- The application Boolean puts its value in LVT (`10`/`11`) while the context Boolean uses a content octet. Both forms are required by the standard (E2 and E13).\n- On error, the decoders may already have written some fields of `*out`. G1 (\"no partial writes\") covers only encoder output buffers, so this is left as is.\n- The Makefile still links `-lm`, which is now unused. The link flag is harmless, and the Makefile is build infrastructure, so it was not changed.\n"
+ },
+ "p/C/1": {
+  "domain": "p",
+  "arm": "C",
+  "rep": 1,
+  "build": "ws-header",
+  "fixed": {
+   "PB1_signed_minimal[STD]": true,
+   "PB2_extlen_253[STD]": true,
+   "PB3_ctx_boolean[STD]": true,
+   "PB4_partial_write[POL]": true,
+   "PB5_bits_validation[POL]": true
+  },
+  "partial": {
+   "PB1_signed_minimal[STD]": 1.0,
+   "PB2_extlen_253[STD]": 1.0,
+   "PB3_ctx_boolean[STD]": 1.0,
+   "PB4_partial_write[POL]": 1.0,
+   "PB5_bits_validation[POL]": 1.0
+  },
+  "n_regress": 0,
+  "regress_by_rule": {},
+  "regress_by_cat": {
+   "STD": 0,
+   "POL": 0,
+   "MIX": 0
+  },
+  "passed": 751,
+  "total": 751,
+  "review": "# bacapp.c review\n\n## Changes made (all in bacapp.c)\n\n1. `hdr_len`/`put_hdr`: the one-octet extended length now covers 5..253 (`len <= 253`, was `< 253`). Clause 20.2.1.3.1 says 253 uses the single-octet form. The old code wrote 253 as `FE 00 FD`, which is not minimal, so a 253-byte value came out 2 bytes longer than it should.\n2. `sint_len`: -128 now takes one octet (`v >= -128`, was `v > -128`). Before, `enc_signed -128` gave `32 FF 80` where the minimal form is `31 80`.\n3. `bac_enc_octet_string`: the capacity check for header plus data now runs before anything is written. Before, the header was written first and the function then returned -1 when the data did not fit, leaving the caller's buffer modified (`ERR DIRTY`).\n4. `bac_enc_ctx_boolean`: a context-tagged Boolean is now encoded as LVT = 1 followed by one contents octet 0x00/0x01, per clause 20.2.3 (context tag 3 TRUE gives `39 01`). The old code put the value in the LVT field, which is only correct for application-tagged Boolean. Peers decoded it as a zero-length or one-length value with the wrong contents.\n5. `bac_enc_bit_string`: now returns -1, before writing anything, if any `bits[i]` is not 0 or 1. The header says `bits[i]` is the value of a bit, and the test suite has an argument-error class for bit strings (E8a) like the other encoders do. Before, values like 2..9 were silently treated as 1.\n6. `bac_enc_octet_string`, `bac_enc_char_string`, `bac_enc_bit_string`, `bac_dec_app`: added `INT_MAX` guards, with `<limits.h>`, so an encoded or consumed length that cannot fit in the `int` return value gives -1. Before, a length that large overflowed the `(int)` cast into a negative value or a wrong length. It can only happen with buffers over 2 GB, so normal behavior does not change.\n\n## Suspicious-looking behavior left unchanged (intended)\n\n- Unsigned/enumerated 0 is encoded as one content octet (`21 00`), and a zero-length unsigned is rejected on decode. This follows the standard and is pinned by the CR3zero test.\n- `bac_enc_real` rejects NaN (all NaN payloads) but accepts \u00b1Inf and denormals. This is a deliberate policy (CR3nan tests). The decoder still accepts NaN bit patterns on the way in.\n- `bac_enc_char_string` does not check that the input is valid UTF-8 (overlong, truncated and stray continuation bytes all pass through). This is a deliberate policy (CR3utf8 tests).\n- The decoder accepts non-minimal encodings: an extended tag number below 15, an extended length below 5 or in a longer form than needed, and leading zero content octets in unsigned/signed values (D1b/D4 tests). This is intended lenient decoding.\n- `bac_dec_app` does not range-check date/time fields (for example day 35, wday 8, 99:99:99.99), does not require unused bit-string pad bits to be zero, and accepts any character-set byte. Only structure is validated, by design (tests p0512, p0516, p0461, p0497).\n- NULL and Boolean are validated on the raw LVT bits, so an extended-length form (`05 00`, `15 01`) is rejected. This is intended (tests p0476, p0477).\n- The decoder rejects Double (tag 5) and the reserved tags 13\u201315, because the module does not support them.\n- Context tag 255 is rejected by the context/opening/closing encoders and by `bac_dec_tag`. It is reserved.\n- In `bac_dec_app`, `(L - 1) * 8` for bit strings could only overflow on a 32-bit `size_t` with a buffer over 512 MB. It is not reachable on the target, so I did not change it (a guard would give a `-Wtype-limits` warning on 64-bit builds).\n\n## Verification\n\n- `make` builds with no warnings. `run_vectors.py acceptance.vec tests/unit.vec` gives 279/279.\n- I compared the encoders against an independent Python model of clause 20.2 on about 2400 random and boundary cases, with no mismatches. These covered all header length boundaries (4/5, 253/254, 65535/65536), signed boundaries, exact and exact-minus-one capacity, and context tags 0\u2013254. Decoder round trips also matched.\n"
+ },
+ "p/C/2": {
+  "domain": "p",
+  "arm": "C",
+  "rep": 2,
+  "build": "ws-header",
+  "fixed": {
+   "PB1_signed_minimal[STD]": true,
+   "PB2_extlen_253[STD]": true,
+   "PB3_ctx_boolean[STD]": true,
+   "PB4_partial_write[POL]": true,
+   "PB5_bits_validation[POL]": true
+  },
+  "partial": {
+   "PB1_signed_minimal[STD]": 1.0,
+   "PB2_extlen_253[STD]": 1.0,
+   "PB3_ctx_boolean[STD]": 1.0,
+   "PB4_partial_write[POL]": 1.0,
+   "PB5_bits_validation[POL]": 1.0
+  },
+  "n_regress": 0,
+  "regress_by_rule": {},
+  "regress_by_cat": {
+   "STD": 0,
+   "POL": 0,
+   "MIX": 0
+  },
+  "passed": 751,
+  "total": 751,
+  "review": "# bacapp.c review\n\n## Changes made\n- `hdr_len`/`put_hdr`: data lengths 5..253 now use the one-octet extended length (was 5..252, so length 253 got the 3-octet `FE 00 FD` form); ASHRAE 135 20.2.1.3.1 requires `B'101'` + one octet for 5..253, and the decoder already reads it that way (affects octet/character/bit strings with 253 content octets).\n- `sint_len`: -128 now fits in one octet (`31 80`, was `32 FF 80`); signed values must use the shortest two's-complement form, and `bac_dec_app` already decodes `3180` as -128.\n- `bac_enc_octet_string`: the full capacity check (`cap - h < len`) now runs before the header is written; it used to write the tag header and then return -1, leaving the caller's buffer modified on error.\n- `bac_enc_ctx_boolean`: now encodes L/V/T = 1 and one contents octet (`X'00'`/`X'01'`), e.g. tag 0 TRUE = `09 01`; context-tagged BOOLEAN has a contents octet (135 20.2.3). The old code put the value in L/V/T with no contents octet, which is the application-tag form, so peers read it as a 0- or 1-octet value.\n- `bac_enc_bit_string`: rejects `bits[i]` values other than 0/1 (-1, checked before any write); the old code quietly turned any non-zero value into 1. This matches how the other encoders reject out-of-range input (date/time/oid/tag 255).\n- `bac_enc_bit_string`: byte count is now `nbits/8 + (nbits%8 != 0)`, so `nbits + 7` can no longer wrap. This is hardening and changes no output.\n- `bac_enc_octet_string`, `bac_enc_char_string`, `bac_enc_bit_string`, `bac_dec_app`: return -1 when the result would not fit in `int`. Before, the `(int)` cast could turn a length over INT_MAX into a wrong or negative count. This is hardening and cannot happen at normal sizes.\n\n## Suspicious-looking behavior deliberately left unchanged\n- Unsigned/enumerated 0 is encoded with one contents octet (`21 00`), not zero length. This is intended (tests tagged CR3zero) and matches the standard.\n- `bac_enc_real` rejects NaN with -1 even though a BACnet REAL can hold NaN. This is intended (CR3nan). Infinities and denormals are still accepted.\n- `bac_enc_char_string` does not check that the bytes are valid UTF-8 and always writes charset 0. This is intended (CR3utf8): the caller must supply valid text.\n- The decoders accept non-canonical encodings: extended tag numbers < 15, extended lengths for values < 5 or in a longer form than needed, leading zero octets in integers, non-zero unused trailing bits in bit strings, any charset byte, and NaN REALs. The tests (D1b/D4/D5/D7/D8) show this leniency is intended, following the \"be liberal in what you accept\" approach.\n- `bac_dec_app` does not range-check DATE/TIME fields (e.g. `b463636363` decodes as 99:99:99.99). This is intended (tests D9). The encoders validate their input; the decoders pass fields through unchanged.\n- `bac_enc_date` accepts the BACnet special values (month 13/14, day 32/33/34, 255 wildcards) and does not check day-of-month consistency (e.g. Feb 31). That consistency is not an encoding concern.\n- DOUBLE (tag 5) is not supported: there is no encoder and the decoder rejects it. This is the module's chosen scope.\n- `bac_dec_tag` accepts reserved application tag numbers 13..254 (it only parses headers), while `bac_dec_app` rejects them. Extended tag number 255 is rejected everywhere because it is reserved.\n- `len > 0xFFFFFFFFu` in `bac_enc_octet_string` is always false on 32-bit `size_t` targets. It is harmless there, so I left it alone.\n"
+ },
+ "p/C/3": {
+  "domain": "p",
+  "arm": "C",
+  "rep": 3,
+  "build": "ws-header",
+  "fixed": {
+   "PB1_signed_minimal[STD]": true,
+   "PB2_extlen_253[STD]": true,
+   "PB3_ctx_boolean[STD]": true,
+   "PB4_partial_write[POL]": true,
+   "PB5_bits_validation[POL]": true
+  },
+  "partial": {
+   "PB1_signed_minimal[STD]": 1.0,
+   "PB2_extlen_253[STD]": 1.0,
+   "PB3_ctx_boolean[STD]": 1.0,
+   "PB4_partial_write[POL]": 1.0,
+   "PB5_bits_validation[POL]": 1.0
+  },
+  "n_regress": 0,
+  "regress_by_rule": {},
+  "regress_by_cat": {
+   "STD": 0,
+   "POL": 0,
+   "MIX": 0
+  },
+  "passed": 751,
+  "total": 751,
+  "review": "# bacapp.c review\n\n## Changes made\n\n- `sint_len`: `v > -128` -> `v >= -128`. Reason: -128 fits in one signed octet; it was encoded as 2 octets (`32ff80` instead of `3180`), a non-minimal encoding (clause 20.2.5).\n- `hdr_len` / `put_hdr`: extended-length single-octet form now covers 5..253 (`len <= 253`, was `< 253`). Reason: clause 20.2.1.3.1(b) puts lengths below 254 in one length octet; a length of exactly 253 was wrongly sent as `FE 00 FD`. The decoder already reads `FD` as a single-octet length.\n- `bac_enc_octet_string`: the full capacity check (header + data) now happens before the header is written. Reason: when the header fit but the data did not, the function wrote the header and then returned -1, leaving the caller's buffer modified on error (`ERR DIRTY`). Every other encoder checks capacity first.\n- `bac_enc_ctx_boolean`: now writes the context tag with L/V/T=1 plus one contents octet (`00`/`01`). Reason: clause 20.2.3 requires this form for context-tagged Booleans. The old code put the value in L/V/T (application-Boolean style), so peers would read the value wrong (e.g. `09` instead of `0901`). The capacity check now covers the extra octet.\n- `bac_enc_bit_string`: returns -1 (before writing anything) if any `bits[i]` is not 0 or 1. Reason: the API says `bits[i]` is the value of a bit, and the test suite labels input such as `1012` as an invalid-argument case (E8a). Before this change, out-of-range values were quietly treated as 1.\n\n## Suspicious-looking behavior deliberately left unchanged\n\n- `bac_enc_real` rejects NaN. It looks stricter than the standard, but it is intended (vectors tagged CR3nan). `bac_dec_app` still decodes NaN bit patterns, which is also intended (p0492).\n- `bac_enc_char_string` does not check that the input is valid UTF-8. This is intended pass-through (vectors tagged CR3utf8).\n- Unsigned/enumerated 0 is encoded as one `00` octet, and the decoder rejects zero-length unsigned/signed values. Intended (CR3zero, D4 vectors).\n- The decoders accept non-canonical but unambiguous input: extended tag numbers below 15, extended/long length forms for short lengths, and leading zero octets in integers. Intended (D1b/D4 vectors).\n- `bac_dec_app` does not range-check date/time fields (e.g. month 13, day 35, hour 99 decode as they are). Intended (p0512, p0516). It only checks lengths; the caller interprets the values.\n- `bac_dec_tag` may partly fill `*out` before returning -1 (e.g. a truncated extended length). The API makes no promise about `*out` on failure, and the driver ignores it.\n- Encoders return `int`, so an encoding larger than INT_MAX bytes (octet/character string near 2 GB) would give a truncated return value. This cannot happen on the target or in the driver (capacity at most 80000), and fixing it would add a new error case, so I left it alone.\n- The `len > 0xFFFFFFFFu` checks can never be true when `size_t` is 32 bits. They are harmless and are needed on 64-bit hosts.\n"
+ },
+ "x/A/1": {
+  "domain": "x",
+  "arm": "A",
+  "rep": 1,
+  "build": "ws-header",
+  "fixed": {
+   "XB1_return_not_strict[STD]": true,
+   "XB2_no_direct_high_low[STD]": true,
+   "XB3_catchup_no_episode[POL]": true,
+   "XB4_time_check_samples_only[POL]": false,
+   "XB5_recovery_not_evaluated[POL]": true
+  },
+  "partial": {
+   "XB1_return_not_strict[STD]": 1.0,
+   "XB2_no_direct_high_low[STD]": 1.0,
+   "XB3_catchup_no_episode[POL]": 1.0,
+   "XB4_time_check_samples_only[POL]": 0.5714285714285714,
+   "XB5_recovery_not_evaluated[POL]": 1.0
+  },
+  "n_regress": 0,
+  "regress_by_rule": {},
+  "regress_by_cat": {
+   "STD": 0,
+   "POL": 0,
+   "MIX": 0
+  },
+  "passed": 347,
+  "total": 363,
+  "review": "# alarm.c review\n\n## Changes made\n\n1. `target()`, HIGH state: added `if (v < low_limit) return ALARM_LOW;` before the return-to-normal check. Reason: LOW already goes straight to HIGH (`v > high_limit`), but HIGH had no matching path to LOW. With a wide deadband (for example high=30, low=10, deadband=25), a value below the low limit left the point stuck in HIGH. The fix matches the LOW branch and BACnet OUT_OF_RANGE rule (c).\n2. `target()`, HIGH state: `v <= high_limit - deadband` became `v < high_limit - deadband`. Reason: the LOW branch clears only when the value is strictly beyond the deadband (`v > low_limit + deadband`), while HIGH cleared on the boundary itself. A value exactly at the deadband edge now behaves the same for both limits, as in BACnet OUT_OF_RANGE rules (e) and (f).\n3. `eval_timer()`: added `now >= pending_start` before `now - pending_start >= time_delay_s`. Reason: `alarm_tick`, `alarm_ack` and `alarm_set_maintenance` accept a `now` earlier than the last time seen. The unsigned subtraction then wrapped to a huge number and fired the pending transition too early, even at a time before the condition began (for example \"tick 5\" after samples at 10 and 20 raised TO_HIGH@5).\n4. `check_escalate()`: added `now >= alarm_time` for the same reason. Reason: a call with a stale time wrapped the unsigned difference and sent ESCALATE right away, even with a timestamp before the alarm itself.\n5. `alarm_sample()`: removed the early `return n;` after the FAULT to NORMAL transition. Reason: the valid sample that cleared the fault was thrown away instead of being checked against the limits, so the alarm delay started one sample late (with delay=0, an out-of-range recovery value raised no alarm until the next sample). The early return also skipped `check_escalate`, which every other path runs.\n6. `alarm_set_maintenance(off)`: the catch-up notice for a state change hidden during maintenance now goes through `notify_state()`, not a bare `emit()`. Reason: the bare path skipped the alarm bookkeeping (`unacked`, `alarm_time`, `escalated`). A HIGH or LOW alarm first reported when maintenance ended therefore never needed an ack and never escalated, or it escalated using the start time of an older alarm.\n\n## Suspicious-looking behavior deliberately left unchanged\n\n- `isnan(value)` rather than `!isfinite(value)`: +inf and -inf are ordered values, so they raise HIGH or LOW instead of FAULT. This reads as an intended \"saturated reading\" result. It is not clearly a bug, so I kept it.\n- `unacked` is not cleared when the point returns to NORMAL, so an unacknowledged alarm can still escalate after the value recovers. This is normal \"unacknowledged, returned to normal\" handling: only `alarm_ack` clears it.\n- FAULT transitions do not set `unacked` and do not escalate by themselves. `notify_state` explicitly limits ack tracking to HIGH and LOW.\n- `alarm_ack`, `alarm_tick` and `alarm_set_maintenance` first bring the timers up to date, then apply the command. So an ack at the moment a delayed alarm fires also acknowledges that alarm. The same order is used in all three functions, so I kept it.\n- `alarm_tick`, `alarm_ack` and `alarm_set_maintenance` do not reject a stale `now` (only `alarm_sample` does). A late ack or maintenance command still takes effect. Only the timer arithmetic was guarded (changes 3 and 4).\n- `accept_time` accepts a sample whose time equals the last one. Equal timestamps are valid for a monotonic clock.\n- State changes are still tracked during maintenance. Only notifications and escalation are held back, and the net change is reported when maintenance ends.\n- The unsigned subtractions `now - pending_start` and `now - alarm_time` are safe once the order checks from changes 3 and 4 are in place.\n- `has_value` is written but never read. It is unused state with no effect on behavior, so I kept it to avoid changing the layout.\n- `alarm_init` does not check the config (deadband >= 0, low <= high). The header documents `deadband >= 0` as a precondition for the caller.\n- `emit()` silently drops notes beyond ALARM_MAX_NOTES. No path produces more than 3 notes in one call, so this cannot happen.\n"
+ },
+ "x/A/2": {
+  "domain": "x",
+  "arm": "A",
+  "rep": 2,
+  "build": "ws-header",
+  "fixed": {
+   "XB1_return_not_strict[STD]": true,
+   "XB2_no_direct_high_low[STD]": false,
+   "XB3_catchup_no_episode[POL]": true,
+   "XB4_time_check_samples_only[POL]": false,
+   "XB5_recovery_not_evaluated[POL]": false
+  },
+  "partial": {
+   "XB1_return_not_strict[STD]": 1.0,
+   "XB2_no_direct_high_low[STD]": 0.9767441860465116,
+   "XB3_catchup_no_episode[POL]": 1.0,
+   "XB4_time_check_samples_only[POL]": 0.5714285714285714,
+   "XB5_recovery_not_evaluated[POL]": 0.9701492537313433
+  },
+  "n_regress": 2,
+  "regress_by_rule": {
+   "A5a": 1,
+   "RAND": 1
+  },
+  "regress_by_cat": {
+   "STD": 0,
+   "POL": 1,
+   "MIX": 1
+  },
+  "passed": 341,
+  "total": 363,
+  "review": "# alarm.c review\n\n## Changes made (all in alarm.c)\n\n- `target()`, HIGH state: added `v < low_limit -> LOW`. Before, a point in HIGH whose value dropped below the low limit first reported TO_NORMAL (a false all-clear) and only reached LOW after a second time delay. LOW already went straight to HIGH, and the BACnet out-of-range algorithm has both direct transitions.\n- `target()`, HIGH state: changed the return-to-normal test from `v <= high_limit - deadband` to `v < high_limit - deadband`. LOW returned to normal only when `v > low_limit + deadband` (strict), so the two sides treated the deadband edge differently. Strict on both sides matches BACnet (\"falls below High_Limit - Deadband\").\n- `alarm_tick`: a call whose `now` is older than the last accepted time now returns 0 and does nothing. Before, `now - pending_start` and `now - alarm_time` wrapped around (unsigned), so a stale tick immediately fired a pending transition or an ESCALATE.\n- `alarm_ack` / `alarm_set_maintenance`: with a stale `now`, the operator action (ack, maintenance on/off) still takes effect but the timers are not evaluated. This is the same unsigned wraparound problem.\n- `alarm_ack`: the unacked flag is now cleared before the delay timer is evaluated. Before, an alarm raised by the timer inside the ack call (TO_HIGH/TO_LOW reported in the ack's own output) was acknowledged immediately, before the operator had seen it, and so it never escalated.\n- `alarm_set_maintenance(off)`: a state change that happened during maintenance is now reported through `notify_state()` instead of a bare `emit()`. Before, an alarm raised during maintenance was reported at maintenance-off but was never marked unacknowledged and got no fresh alarm time. It could never escalate, or it inherited a stale or already-escalated earlier alarm.\n- `alarm_sample`, leaving FAULT: removed the early `return` after the FAULT->NORMAL transition. Before, the first valid sample after a fault was discarded, so no delay timer started. With change-of-value sampling an out-of-range point could stay unalarmed indefinitely. The early return also skipped `check_escalate`.\n- Added `regression.vec`, which has one vector per fix above. Run it with `python3 run_vectors.py acceptance.vec regression.vec`. It also passes under ASan/UBSan.\n\n## Suspicious-looking behavior deliberately left unchanged\n\n- Only NaN (or `sensor_fault`) counts as a fault. +/-inf is treated as a real out-of-range value (HIGH/LOW). NaN has to be special-cased because every comparison with it is false. inf compares correctly, and sensor reliability is signalled separately through `sensor_fault`.\n- An unacknowledged alarm still escalates after the point returns to NORMAL or goes to FAULT. The acknowledgement is latched, like BACnet acked-transitions, and alarms clear only through `alarm_ack`.\n- Maintenance mode suppresses escalation instead of cancelling it. An alarm that was already unacknowledged when maintenance started escalates at maintenance-off if it is overdue by then.\n- Note timestamps are the `now` of the call that detects the transition, not `pending_start + time_delay_s`. The header documents this.\n- `time_delay_s == 0` means an immediate transition, and `escalate_after_s == 0` disables escalation. Both look deliberate.\n- The first valid sample after a fault always reports TO_NORMAL, even if the value is out of range. A TO_HIGH/TO_LOW follows after the time delay, or in the same call when the delay is 0. This matches BACnet FAULT->NORMAL handling.\n- `emit()` silently drops notes beyond ALARM_MAX_NOTES. No call can produce more than 3, so this is only a guard.\n- `alarm_init` does not validate the configuration (deadband >= 0, low < high). The header states this as a caller precondition.\n- `has_value` is written but never read. It is dead but harmless, so it was left alone to keep the change set minimal.\n- `alarm_t` storage is accessed through a cast to `point_t` (a strict-aliasing gray area). This is the header's documented opaque-storage design. All accesses in alarm.c go through `point_t`, and the build is correct as it stands.\n- A stale `alarm_set_maintenance(off)` that reports a pending state stamps the note with its own (older) `now`, as the header specifies.\n"
+ },
+ "x/A/3": {
+  "domain": "x",
+  "arm": "A",
+  "rep": 3,
+  "build": "ws-header",
+  "fixed": {
+   "XB1_return_not_strict[STD]": true,
+   "XB2_no_direct_high_low[STD]": true,
+   "XB3_catchup_no_episode[POL]": true,
+   "XB4_time_check_samples_only[POL]": false,
+   "XB5_recovery_not_evaluated[POL]": true
+  },
+  "partial": {
+   "XB1_return_not_strict[STD]": 1.0,
+   "XB2_no_direct_high_low[STD]": 1.0,
+   "XB3_catchup_no_episode[POL]": 1.0,
+   "XB4_time_check_samples_only[POL]": 0.5714285714285714,
+   "XB5_recovery_not_evaluated[POL]": 1.0
+  },
+  "n_regress": 0,
+  "regress_by_rule": {},
+  "regress_by_cat": {
+   "STD": 0,
+   "POL": 0,
+   "MIX": 0
+  },
+  "passed": 347,
+  "total": 363,
+  "review": "# alarm.c review\n\n## Changes made (all in alarm.c)\n\n1. `target()`, HIGH state: added `v < low_limit -> LOW`. Reason: from HIGH, a reading below the low limit fell back to NORMAL and then needed a second full time delay to reach LOW. LOW already goes straight to HIGH, and BACnet OUT_OF_RANGE does the same both ways.\n2. `target()`, HIGH state: changed the return-to-normal test from `v <= high_limit - deadband` to `v < high_limit - deadband`. Reason: it was the only non-strict comparison of the four. The LOW exit is `v > low_limit + deadband`, and BACnet uses strict comparisons both ways. Example: with high=30 and deadband=2, a reading of exactly 28 cleared a HIGH alarm, but a reading of exactly 12 did not clear a LOW alarm (low=10).\n3. `eval_timer()` / `check_escalate()`: added `elapsed()`, which treats a `now` older than the start time as \"no time passed\". Reason: `alarm_tick`, `alarm_ack` and `alarm_set_maintenance` accept a late `now` (they only avoid moving `last_now` backwards), but the timers then ran `now - start` on unsigned values, which wrapped around to a huge number. A late tick then raised a pending alarm at once (`s 100 35; tick 90` with delay=30 gave `TO_HIGH@90`) or sent an early ESCALATE (`ESCALATE@50` for an alarm raised at 100). In-order calls behave exactly as before.\n4. `alarm_sample()`, fault recovery: removed the early `return n;` after the FAULT -> NORMAL transition. Reason: the recovery sample is valid but was never checked against the limits, and `check_escalate` was skipped. An out-of-range value at recovery started its time delay one sample late. With delay=0 the point stayed NORMAL at a reading of 35 until the next sample, even through ticks. The FAULT -> NORMAL transition (TO_NORMAL) is still always sent first, as before.\n5. `alarm_set_maintenance(off)`: the catch-up notification now goes through `notify_state()` instead of a hand-written `emit` plus `last_notified` update. Reason: a HIGH or LOW state entered during maintenance was announced but never marked unacknowledged, and `alarm_time` and `escalated` were not reset. That alarm could never escalate, or it inherited a stale `escalated` flag from an earlier alarm. Now it is treated like any other alarm notification from the moment maintenance ends.\n\n## Suspicious-looking behavior deliberately left unchanged\n\n- Only NaN (or `sensor_fault`) counts as a fault; +inf and -inf are treated as readings and cause HIGH or LOW alarms. An infinite value is out of range and comparable, so alarming on it is reasonable. The code states the fault rule explicitly (`sensor_fault || isnan`), so changing it would change the design.\n- Escalation still fires when an alarm is unacknowledged but the point has since returned to NORMAL (or gone to FAULT). Acknowledgement is tracked per notified alarm, not per current state, and BACnet also requires acknowledgement after return to normal. Escalating an alarm nobody acknowledged is consistent with that.\n- Recovery from FAULT always goes to NORMAL first (TO_NORMAL carries the recovery value, even when it is out of range) before the limits are checked. This matches BACnet, where FAULT goes to NORMAL.\n- `alarm_ack` runs `eval_timer` before clearing `unacked`, so an alarm that becomes due at the exact time of the ack is acknowledged by that ack. Every command first brings the state up to date at `now` (maintenance does the same), so this looks intended.\n- A late `alarm_sample` is dropped completely, but a late ack or maintenance command is still applied, and `last_now` never moves backwards. This difference is explicit in the code: operator commands are not discarded, stale readings are. Only the timer arithmetic was fixed (change 3).\n- Escalation is suppressed during maintenance, but its timer keeps running, so an overdue escalation fires as soon as maintenance ends. The `!maint` check is explicit, and nothing says the timer should pause.\n- State changes during maintenance still happen (silently). Only the net change is reported when maintenance ends, so a HIGH -> NORMAL -> HIGH round trip during maintenance produces no notification. This is intended: maintenance suppresses notifications, not alarm evaluation.\n- `escalate_after_s == 0` turns escalation off instead of escalating at once. The explicit `> 0` check makes this intended.\n- The `has_value` field is set but never read. It is harmless, so I left it alone.\n- The `unacked` check in `alarm_ack` (`if (p->unacked) p->unacked = false;`) is redundant but harmless.\n- `alarm_t` storage is accessed through a `point_t *` cast, which technically breaks strict aliasing. Everything goes through this module's own functions, and the size is checked with `_Static_assert`, so I left it as is. Using a union or memcpy would be the fully portable form.\n\n## Verification\n- `make` builds with no warnings. `python3 run_vectors.py acceptance.vec` passes 3/3.\n- I ran scenarios for each fix through the driver: HIGH->LOW, the boundary values 28 and 12, late tick and late escalation, maintenance followed by escalation, and fault recovery with delay 0 and delay 30.\n- I ran 3000 random scenarios, including late times, nan and inf, and maintenance and ack commands, against the fixed module under ASan and UBSan. There were no sanitizer errors, no BADCOUNT and no OVERRUN.\n"
+ },
+ "x/Ac/1": {
+  "domain": "x",
+  "arm": "Ac",
+  "rep": 1,
+  "build": "ws-header",
+  "fixed": {
+   "XB1_return_not_strict[STD]": true,
+   "XB2_no_direct_high_low[STD]": true,
+   "XB3_catchup_no_episode[POL]": true,
+   "XB4_time_check_samples_only[POL]": true,
+   "XB5_recovery_not_evaluated[POL]": true
+  },
+  "partial": {
+   "XB1_return_not_strict[STD]": 1.0,
+   "XB2_no_direct_high_low[STD]": 1.0,
+   "XB3_catchup_no_episode[POL]": 1.0,
+   "XB4_time_check_samples_only[POL]": 1.0,
+   "XB5_recovery_not_evaluated[POL]": 1.0
+  },
+  "n_regress": 0,
+  "regress_by_rule": {},
+  "regress_by_cat": {
+   "STD": 0,
+   "POL": 0,
+   "MIX": 0
+  },
+  "passed": 363,
+  "total": 363,
+  "review": "# alarm.c review\n\nThe intended behavior is taken from the contract in alarm.c's header and the per-rule comments (SPEC.md was not in the workspace). Every fix makes the code do what its own [STD]/[POL] comment already says. No rule was changed.\n\n## Changes made (all in alarm.c)\n\n1. `target()`, HIGH case: added the missing `v < low_limit -> ALARM_LOW` check before the return-to-normal check. Reason: A4 [STD] requires a direct HIGH->LOW transition that wins over a return to normal. Before the fix, a HIGH point whose value dropped below low_limit went to NORMAL and never raised TO_LOW.\n2. `target()`, HIGH case: changed `v <= high_limit - deadband` to `v < high_limit - deadband`. Reason: A3 [STD] requires a strict return condition, and the LOW side already uses strict `>`. Before the fix, a value exactly at high_limit - deadband cleared a HIGH alarm.\n3. `alarm_sample()`, FAULT recovery: removed the early `return n;` after the TO_NORMAL transition. Reason: A6a says the recovering sample \"is then evaluated below as a normal sample in NORMAL\". Before the fix, an out-of-range recovery value set no pending timer (so no TO_HIGH or TO_LOW followed while the value held), and the A9 escalation check was skipped for that call.\n4. `alarm_tick()`, `alarm_ack()`, `alarm_set_maintenance()`: replaced `if (now > last_now) last_now = now;` with `if (!accept_time(p, now)) return 0;`. Reason: A12 requires a call with an earlier time to be ignored with no state change. Before the fix, such a call went ahead. `now - pending_start` then wrapped around as an unsigned value and fired a pending transition early (for example `tick 50` after a sample at 100 raised TO_HIGH@50). A late call could also apply an ack or toggle maintenance.\n5. `alarm_set_maintenance()`, catch-up on maintenance off: now calls `notify_state()` instead of a bare `emit()` plus a `last_notified` update. Reason: A10 says \"a catch-up TO_HIGH/TO_LOW starts a new alarm episode (A8, via notify_state)\". Before the fix, an alarm that happened during maintenance was reported but never became unacknowledged and never escalated (the escalation also used a stale alarm_time).\n\nAdded `regress.vec`, which has one vector per fix. Also added `fuzz_model.py`, a development aid that checks `./drv` against an independent Python model of the contract. After the fixes: acceptance.vec 3/3, regress.vec 16/16, 24,000 random fuzz scenarios agree, and the ASan/UBSan build is clean. driver.c and run_vectors.py are unchanged.\n\n## Deliberately left unchanged\n\n- TO_NORMAL does not clear `unacked`, so a point that is back to NORMAL can still escalate. This is intended: A8 [POL], safety policy SP-3 (every excursion must be seen by a person).\n- A pending transition whose delay expired between calls is cancelled if the next sample has no target. This is intended: A5a [POL], a transition happens only when a call observes it.\n- tick, ack and maintenance calls do not recompute the target and assume the last sample value persists. This is intended: A5a [POL].\n- Fault samples overwrite `last_value`, so notifications can carry NaN. Repeated fault samples while in FAULT emit nothing but still update `last_value`. This is intended: A5a/A7 [POL].\n- `unacked` is kept across FAULT, so a point can escalate while in FAULT. A6a says TO_FAULT does not touch the acknowledgement state. Whether escalating in FAULT is desirable is a product-owner question under the DO-NOT-CHANGE [POL] rule, so it was not changed.\n- `alarm_ack` works during maintenance and clears the episode silently. No rule forbids this, and changing it would be a [POL] change without sign-off.\n- Escalation of an episode that started before maintenance fires right after maintenance ends if its time has passed. This is intended: A9/A10, where escalation is only suppressed while maintenance is on.\n- `has_value` is written but never read. The comment documents this as intentional (A13 already holds through `pending`). It is harmless, so it was kept.\n- A negative deadband, high_limit < low_limit, and NaN limits are not validated. alarm.h documents `deadband >= 0` as a caller precondition. Adding validation would change the API behavior.\n- The bound check in `emit()` silently drops notifications past ALARM_MAX_NOTES. The rules produce at most 3 per call (TO_NORMAL, TO_x, ESCALATE on FAULT recovery), so the check only protects `out[]`.\n"
+ },
+ "x/Ac/2": {
+  "domain": "x",
+  "arm": "Ac",
+  "rep": 2,
+  "build": "ws-header",
+  "fixed": {
+   "XB1_return_not_strict[STD]": true,
+   "XB2_no_direct_high_low[STD]": true,
+   "XB3_catchup_no_episode[POL]": true,
+   "XB4_time_check_samples_only[POL]": true,
+   "XB5_recovery_not_evaluated[POL]": true
+  },
+  "partial": {
+   "XB1_return_not_strict[STD]": 1.0,
+   "XB2_no_direct_high_low[STD]": 1.0,
+   "XB3_catchup_no_episode[POL]": 1.0,
+   "XB4_time_check_samples_only[POL]": 1.0,
+   "XB5_recovery_not_evaluated[POL]": 1.0
+  },
+  "n_regress": 0,
+  "regress_by_rule": {},
+  "regress_by_cat": {
+   "STD": 0,
+   "POL": 0,
+   "MIX": 0
+  },
+  "passed": 363,
+  "total": 363,
+  "review": "# alarm.c review\n\n## Changes made (alarm.c)\n\n- `target()`, HIGH case: added the missing `v < low_limit -> LOW` check before the return-to-normal check. Without it, HIGH went to NORMAL instead of LOW, which breaks A4 [STD] (direct HIGH<->LOW, and the direct transition wins).\n- `target()`, HIGH case: changed the return condition from `v <= high_limit - deadband` to `v < high_limit - deadband`. A3 [STD] requires a strict comparison, and the LOW branch already used one.\n- `alarm_sample()`, FAULT recovery: removed the early `return n;` after the FAULT->NORMAL transition. Per A6a the recovering sample must then be evaluated as a sample in NORMAL (possibly TO_NORMAL then TO_HIGH in one call), and the A9 escalation check must still run.\n- `alarm_tick()`, `alarm_ack()`, `alarm_set_maintenance()`: these now use `accept_time()` and return 0 when `now` is earlier than the latest time seen. Before, they only skipped updating `last_now` and carried on. That broke A12, and `now - pending_start` / `now - alarm_time` could wrap to a huge value: a late tick fired pending transitions or escalations early, and a late ack/maint changed state.\n- `alarm_set_maintenance()`, on->off catch-up: now calls `notify_state()` rather than emitting the event directly. A10 and the `notify_state` header both say that a catch-up TO_HIGH/TO_LOW starts a new A8 episode (unacked, alarm_time = now, escalation re-armed). Before this change, an alarm raised during maintenance could never be acknowledged or escalate.\n- Added `regression.vec` with one vector per fix. `acceptance.vec` and `regression.vec` pass 10/10, and a separate ASan/UBSan build of the same code runs clean. `driver.c` and `run_vectors.py` are unchanged.\n\n## Suspicious-looking behavior deliberately left unchanged\n\n- A pending transition is cancelled when a sample has no target, even if its delay had already expired since the previous call. There is no retroactive transition. This is documented A5a [POL]; no rationale is recorded, so it needs the product owner.\n- TO_NORMAL does not clear `unacked`, so an episode that has returned to normal can still escalate. This is A8 [POL] and has a recorded rationale (SP-3).\n- `alarm_ack` evaluates the timer before applying the ack, so an ack arriving in the same call as a TO_HIGH/TO_LOW immediately acknowledges the new episode. This is documented ordering (A5a/A8 [POL]).\n- tick/ack/maintenance do not recompute the target. The last sample value is assumed to persist (A5a [POL]).\n- Fault samples overwrite `last_value`, so notifications can carry NaN or the value from a faulted sample (A7 [POL]). +/-Infinity is treated as a valid value (A6 [POL]).\n- Recovery from FAULT to NORMAL is immediate and ignores `time_delay_s`. Timers do not run in FAULT and a fault cancels the pending transition (A6/A6a [POL]).\n- An unacknowledged episode can still escalate while the point is in FAULT, because TO_FAULT does not touch the ack state (A6a [POL]).\n- Maintenance catch-up is emitted only if the final state differs from the last notified state. An excursion that starts and ends inside maintenance (e.g. HIGH->NORMAL->HIGH) is never reported. An old unacked episode can escalate as soon as maintenance ends (A10/A9 [POL]).\n- An ack emits no notification and does nothing when nothing is unacknowledged. `escalate_after_s = 0` disables escalation (A8/A9 [POL]).\n- `alarm_init` does not validate the configuration (low > high, negative or NaN deadband/limits). The header only states `deadband >= 0` as a precondition. Changing this would change the API contract.\n- `emit()` silently drops notifications beyond ALARM_MAX_NOTES. This is unreachable: at most 3 notes per call after the fixes.\n- The `has_value` field is written but never read. It is documented as intentional and is harmless.\n- The timer and escalation checks use `>=`, so they fire exactly at the delay. With `time_delay_s = 0` the transition happens on the sample itself (A5a [POL]).\n"
+ },
+ "x/Ac/3": {
+  "domain": "x",
+  "arm": "Ac",
+  "rep": 3,
+  "build": "ws-header",
+  "fixed": {
+   "XB1_return_not_strict[STD]": true,
+   "XB2_no_direct_high_low[STD]": true,
+   "XB3_catchup_no_episode[POL]": true,
+   "XB4_time_check_samples_only[POL]": true,
+   "XB5_recovery_not_evaluated[POL]": true
+  },
+  "partial": {
+   "XB1_return_not_strict[STD]": 1.0,
+   "XB2_no_direct_high_low[STD]": 1.0,
+   "XB3_catchup_no_episode[POL]": 1.0,
+   "XB4_time_check_samples_only[POL]": 1.0,
+   "XB5_recovery_not_evaluated[POL]": 1.0
+  },
+  "n_regress": 0,
+  "regress_by_rule": {},
+  "regress_by_cat": {
+   "STD": 0,
+   "POL": 0,
+   "MIX": 0
+  },
+  "passed": 363,
+  "total": 363,
+  "review": "# alarm.c review\n\nReference for \"intended behavior\": the contract and rule comments in alarm.c (SPEC.md A1-A13), since SPEC.md\nitself is not in the tree. All changes are in alarm.c. driver.c, run_vectors.py, alarm.h, Makefile untouched.\nVerification: `make && python3 run_vectors.py acceptance.vec regress.vec` -> 19/19 pass (new `regress.vec`\nholds one block per fix; 13 of its 16 blocks failed before the fixes). A randomized differential run against an\nindependent model of A1-A13 (~560k commands, incl. ASan/UBSan build) showed no mismatches, overruns or UB.\n\n## Changes\n\n1. `target()`, HIGH case: added `if (v < low_limit) return ALARM_LOW;` before the return-to-normal test - A4 [STD] requires direct HIGH->LOW that wins over return to normal; it was missing, so HIGH went to NORMAL (and needed a second delay to reach LOW).\n2. `target()`, HIGH case: `v <= high_limit - deadband` -> `v < high_limit - deadband` - A3 [STD] return condition is strict (the LOW side already was); a value exactly at high_limit - deadband wrongly cleared the alarm.\n3. `alarm_sample()`, FAULT recovery: removed the early `return n;` after the TO_NORMAL transition - A6a says the recovering sample is then evaluated as a normal sample in NORMAL (pending target/timer, possible second transition with delay 0) and every accepted call ends with the A9 escalation check; both were skipped.\n4. `alarm_tick()`, `alarm_ack()`, `alarm_set_maintenance()`: use `accept_time()` and return 0 on a backward time - A12 says such calls are ignored with no state change; they ran anyway, so `now - pending_start` / `now - alarm_time` wrapped (unsigned) and caused spurious immediate transitions/ESCALATE, and a stale ack/maint call still changed state.\n5. `alarm_set_maintenance()`, on->off catch-up: call `notify_state()` instead of a bare `emit()` - A10/A8 say a catch-up TO_HIGH/TO_LOW starts a new alarm episode (unacked, alarm_time = now, escalation re-armed); the bare emit left it unacknowledgeable/never escalating (or already \"escalated\" from an old episode).\n\n## Deliberately left unchanged\n\n- TO_NORMAL does not clear `unacked`, so an episode stays unacknowledged and can ESCALATE after the value is back to normal (also while NORMAL/FAULT) - documented [POL] A8 with explicit rationale SP-3.\n- A pending transition whose delay expired between calls is cancelled if the next sample has no target; tick/ack/maint do not recompute the target; at most one limit transition per evaluation (a new target after a transition waits for the next sample) - [POL] A5a, no rationale recorded; product-owner decision.\n- `alarm_ack()` evaluates the timer before applying the ack, so an alarm raised by that same call is acked immediately without escalating - documented order (A5a/A9).\n- Ack is accepted during maintenance (silently clears `unacked`); an escalation suppressed during maintenance fires on the first call after it ends if due - not contradicted by A8-A10 as written; ask product owner if unwanted.\n- An excursion that starts and ends inside maintenance leaves no notification and no episode (state equals last notified state on exit) - documented [POL] A10 behaviour.\n- Notifications may carry NaN / the value of a fault sample - documented A7.\n- `has_value` is written but never read - documented as intentionally unused (A13 holds via `pending`).\n- No validation of the configuration (negative/NaN deadband, NaN limits, low_limit > high_limit, in which case HIGH is checked first) - alarm.h states deadband >= 0 as a caller precondition; adding rejection/clamping would change behaviour.\n- `alarm_t` storage is accessed through a cast to `point_t`: formally a strict-aliasing violation in ISO C; no warnings, sanitizer-clean and correct with the current compiler/flags. A clean fix (union in alarm.h or `-fno-strict-aliasing`) touches the API/build - flagged for follow-up.\n- uint32 seconds wrap after ~136 years; after a wrap A12 would reject every call - out of scope for the product lifetime.\n"
+ },
+ "x/B/1": {
+  "domain": "x",
+  "arm": "B",
+  "rep": 1,
+  "build": "ws-header",
+  "fixed": {
+   "XB1_return_not_strict[STD]": true,
+   "XB2_no_direct_high_low[STD]": true,
+   "XB3_catchup_no_episode[POL]": true,
+   "XB4_time_check_samples_only[POL]": true,
+   "XB5_recovery_not_evaluated[POL]": true
+  },
+  "partial": {
+   "XB1_return_not_strict[STD]": 1.0,
+   "XB2_no_direct_high_low[STD]": 1.0,
+   "XB3_catchup_no_episode[POL]": 1.0,
+   "XB4_time_check_samples_only[POL]": 1.0,
+   "XB5_recovery_not_evaluated[POL]": 1.0
+  },
+  "n_regress": 0,
+  "regress_by_rule": {},
+  "regress_by_cat": {
+   "STD": 0,
+   "POL": 0,
+   "MIX": 0
+  },
+  "passed": 363,
+  "total": 363,
+  "review": "# alarm.c review\n\n## Changes made (alarm.c)\n\n1. `target()`, HIGH state: return-to-normal test changed from `v <= high_limit - deadband` to `v < high_limit - deadband`, because A3 requires a strict comparison. Before the fix, a value exactly at `high - deadband` returned to NORMAL.\n2. `target()`, HIGH state: added the direct `v < low_limit` \u2192 LOW check ahead of the return-to-normal check, because A4 requires a direct HIGH\u2192LOW transition that wins over a return to normal. Before the fix, HIGH\u2192(low value) went to NORMAL, and a LOW alarm was never raised until later samples came in.\n3. `alarm_sample()`, FAULT recovery: removed the early `return n;` after the TO_NORMAL transition. A6a says the recovering sample is then evaluated as a normal sample in NORMAL. That covers starting a pending transition, a second transition when delay=0, and the A9 escalation check that runs at the end of every call. The early return skipped all three.\n4. `alarm_tick()`, `alarm_ack()`, `alarm_set_maintenance()`: they now use `accept_time()` and return 0 when `now` is below the largest time seen, because A12 says such calls are ignored entirely. Before the fix they still ran. A backwards `tick` could fire a pending transition too early, since `now - pending_start` wraps around as unsigned. A backwards `ack`/`maint` changed ack and maintenance state.\n5. `alarm_set_maintenance(off)`: the catch-up notification now goes through `notify_state()` instead of a bare `emit()`, because A10 says a catch-up TO_HIGH/TO_LOW starts a new alarm episode (unacked, alarm time = now, escalation re-armed). Before the fix, a catch-up alarm never became unacknowledged and never escalated.\n\nAdded `review_tests.vec`: 20 regression vectors derived from SPEC.md. Several of them failed before the fixes (`python3 run_vectors.py acceptance.vec review_tests.vec` \u2192 23/23 now). The fixed module was also cross-checked against an independent Python model of SPEC.md on about 230k randomized commands, and under ASan/UBSan, with no differences and no sanitizer reports. driver.c, run_vectors.py and the Makefile were not modified.\n\n## Suspicious-looking behavior deliberately left unchanged\n\n- Returning to NORMAL does not clear the unacknowledged status, and a NORMAL point can still ESCALATE. This is required by A8 [POL] (safety policy SP-3).\n- The escalation check still runs on fault samples and ticks while in FAULT, so a point that went HIGH\u2192FAULT unacked can ESCALATE. A9 says the check runs \"at the end of every call\", and A6a says TO_FAULT does not change the ack state. \"Further fault samples do nothing\" is read as \"no state change or transition\".\n- A fault sample received while already in FAULT still updates the stored last value. A7/A9 require notifications to carry the most recent sample value, including fault samples.\n- A pending transition whose delay expired between calls is cancelled if the next sample no longer satisfies it. This is required by A5a [POL].\n- `alarm_set_maintenance(on)` when already on, and `(off)` when already off, still evaluate the timer and run the escalation check. A5a/A9 require that for every call, and \"changes nothing\" refers to the maintenance mode itself (no catch-up).\n- `alarm_ack` also clears the unacked status while in maintenance mode. The spec does not restrict ack in maintenance.\n- Deadband thresholds (`high - deadband`, `low + deadband`) are computed in float, matching the float API types. The spec does not require higher precision, and changing it would move edge-case results.\n- The config is not validated (negative deadband, low > high, NaN limits). The header documents `deadband >= 0` as a caller precondition, and the spec defines no error handling.\n- `has_value` is written but never read. A13 already holds because nothing is pending before the first sample, so this is harmless and left alone.\n- `point_t` is stored in `alarm_t`'s `uint64_t` storage through a pointer cast. It is formally a strict-aliasing gray area, but it is the documented opaque-storage design, sized and aligned correctly (static assert), and it causes no observed issue.\n- `emit()` silently drops notifications past ALARM_MAX_NOTES. At most 2 can be produced per call (e.g. TO_NORMAL + TO_HIGH on recovery; ESCALATE cannot follow a TO_HIGH/TO_LOW in the same call, since the new episode resets the alarm time to now), so it is only a safety guard.\n"
+ },
+ "x/B/2": {
+  "domain": "x",
+  "arm": "B",
+  "rep": 2,
+  "build": "ws-header",
+  "fixed": {
+   "XB1_return_not_strict[STD]": true,
+   "XB2_no_direct_high_low[STD]": true,
+   "XB3_catchup_no_episode[POL]": true,
+   "XB4_time_check_samples_only[POL]": true,
+   "XB5_recovery_not_evaluated[POL]": true
+  },
+  "partial": {
+   "XB1_return_not_strict[STD]": 1.0,
+   "XB2_no_direct_high_low[STD]": 1.0,
+   "XB3_catchup_no_episode[POL]": 1.0,
+   "XB4_time_check_samples_only[POL]": 1.0,
+   "XB5_recovery_not_evaluated[POL]": 1.0
+  },
+  "n_regress": 0,
+  "regress_by_rule": {},
+  "regress_by_cat": {
+   "STD": 0,
+   "POL": 0,
+   "MIX": 0
+  },
+  "passed": 363,
+  "total": 363,
+  "review": "# alarm.c review\n\nI reviewed the module against SPEC.md v1.0. All changes are in `alarm.c`. I did not touch `alarm.h`, `driver.c`, `run_vectors.py` or `acceptance.vec`.\nVerification: `acceptance.vec` passes (3/3). The new `review_tests.vec` passes (31/31); 15 of its vectors fail on the original code. The fixed code matches an independent model of the spec (`spec_model_fuzz.py`) on 20,000 random scenarios, and it is clean under ASan/UBSan.\n\n## Changes made\n\n1. `target()`, state HIGH: added the low condition (`v < low_limit` gives LOW), checked before the return condition. Reason: A4 requires a direct HIGH to LOW transition, and the direct transition wins over return-to-normal. The old code went HIGH to NORMAL, or stayed HIGH when the deadband was large.\n2. `target()`, state HIGH: changed the return condition from `v <= high_limit - deadband` to `v < high_limit - deadband`. Reason: A3 says the return condition is strict. The LOW branch was already strict.\n3. `alarm_sample()`, recovery from FAULT: removed the early `return n` after the TO_NORMAL transition. The sample is now evaluated as a normal sample in NORMAL, and the escalation check runs. Reason: A6a says recovery can produce TO_NORMAL then TO_x in the same call (with delay 0) or start a pending timer. A9 says the escalation check runs at the end of every call. The early return skipped both.\n4. `alarm_tick()`, `alarm_ack()` and `alarm_set_maintenance()` now use `accept_time()` and return 0 when `now` is older than the latest time seen. Reason: A12 says such a call is ignored entirely. These functions used to run anyway, and the unsigned `now - start` wrapped around. So a stale call could fire a pending transition early, escalate spuriously, acknowledge an alarm or change maintenance mode.\n5. `alarm_set_maintenance(off)`: the catch-up notification now goes through `notify_state()` instead of a plain `emit()`. Reason: A10 says a catch-up TO_HIGH/TO_LOW starts a new alarm episode (unacknowledged, alarm time = now, escalation re-armed). The old code sent the notification but left the acknowledgement and escalation state stale.\n\n## Left unchanged on purpose (looks suspicious, but is intended or out of scope)\n\n- Returning to NORMAL does not clear the unacknowledged status, and the episode can still escalate after the return. This differs from BACnet per-transition acknowledgement, but it is [POL] A8 (safety policy SP-3), which needs product-owner sign-off to change.\n- `alarm_ack` evaluates the timer before acknowledging. So an alarm raised by that same call's timer evaluation is acknowledged at once. This is the order A5a prescribes (evaluate the timer first, then do the call's own action).\n- `alarm_ack` and `alarm_set_maintenance` with nothing to do (nothing unacknowledged, or maintenance already on/off) still evaluate the timer and run the escalation check. A5a and A9 apply to every call; \"ignored\" and \"changes nothing\" refer only to the call's own action.\n- A fault sample while already in FAULT still updates the stored last value and runs the escalation check. A7 says values include fault samples, and A9 says the check runs at the end of every call.\n- `alarm_ack` works during maintenance. The spec does not forbid it.\n- The `pending_start` of an expired but cancelled pending transition is never used again. A5a says a transition only happens if a call observes it.\n- `emit()` silently drops notifications beyond `ALARM_MAX_NOTES`. The most one call can produce is 3 (recovery: TO_NORMAL + TO_x + ESCALATE), so this is only a safety net.\n- The `has_value` field is written but never read. A13 already holds because nothing is pending before the first sample. The field is harmless, so I left it.\n- Configuration is not validated (for example a negative deadband or `low_limit > high_limit`). `alarm.h` states `deadband >= 0` as a caller precondition, and the spec defines no error path.\n- `alarm_t` is accessed through a cast to `point_t *`. Strictly, that is a type-punning/aliasing concern, but it works with this build (separate translation units, alignment guaranteed by the `uint64_t` storage, size checked by `_Static_assert`). Changing it is a design change, not a bug fix.\n\n## Files added (review aids, not part of the build)\n\n- `review_tests.vec`: spec-derived regression vectors. Run with `python3 run_vectors.py acceptance.vec review_tests.vec`.\n- `spec_model_fuzz.py`: an independent Python model of SPEC.md, fuzz-compared against `./drv`.\n"
+ },
+ "x/B/3": {
+  "domain": "x",
+  "arm": "B",
+  "rep": 3,
+  "build": "ws-header",
+  "fixed": {
+   "XB1_return_not_strict[STD]": true,
+   "XB2_no_direct_high_low[STD]": true,
+   "XB3_catchup_no_episode[POL]": true,
+   "XB4_time_check_samples_only[POL]": true,
+   "XB5_recovery_not_evaluated[POL]": true
+  },
+  "partial": {
+   "XB1_return_not_strict[STD]": 1.0,
+   "XB2_no_direct_high_low[STD]": 1.0,
+   "XB3_catchup_no_episode[POL]": 1.0,
+   "XB4_time_check_samples_only[POL]": 1.0,
+   "XB5_recovery_not_evaluated[POL]": 1.0
+  },
+  "n_regress": 0,
+  "regress_by_rule": {},
+  "regress_by_cat": {
+   "STD": 0,
+   "POL": 0,
+   "MIX": 0
+  },
+  "passed": 363,
+  "total": 363,
+  "review": "# alarm.c review\n\nChecked against SPEC.md v1.0. Every change below was first reproduced by a failing vector\nin `review.vec`. All vectors failed on the original code and now pass (`acceptance.vec` 3/3,\n`review.vec` 12/12).\n\n## Changes made (all in alarm.c)\n\n1. `target()`, HIGH state: return-to-normal test changed from `v <= high - deadband` to `v < high - deadband`. Reason: A3 requires a strict comparison. The old test left HIGH when the value was exactly at `high - deadband`.\n2. `target()`, HIGH state: added the low condition (`v < low_limit` gives LOW), checked before the return test. Reason: A4 requires a direct HIGH to LOW transition that wins over return to normal. Before, a HIGH point that dropped below the low limit went to NORMAL (TO_NORMAL) and only reached LOW on a later call, or never if `time_delay_s` was never met again. LOW to HIGH was already correct.\n3. `alarm_tick`, `alarm_ack`, `alarm_set_maintenance`: they now call `accept_time()` and return 0 when `now` goes backwards, as `alarm_sample` already did. Reason: A12. Before, a backwards `now` was still processed. The unsigned math `now - pending_start` and `now - alarm_time` then wrapped to a huge number, giving an early TO_x transition or ESCALATE at a past time. It also changed the maintenance flag and ack state.\n4. `alarm_sample`, recovery from FAULT: removed the early `return n` after the TO_NORMAL transition. Reason: A6a says the recovering sample is then evaluated as a normal sample in NORMAL: its target and pending timer are set, and with delay 0 it can cause a second transition such as TO_HIGH. A9 also says the escalation check runs at the end of every call. Before, both were skipped: the recovering value never started a pending timer, and an unacknowledged episode could not escalate on that call.\n5. `alarm_set_maintenance(off)`: the catch-up notification now goes through `notify_state()` instead of a bare `emit()`. Reason: A10 says a catch-up TO_HIGH/TO_LOW starts a new alarm episode (unacknowledged, alarm time = now, escalation re-armed). Before, an alarm that happened during maintenance was reported but never needed acknowledgement and never escalated. That breaks SP-3.\n\nAdded test files (no changes to test infrastructure):\n- `review.vec`: 12 regression vectors built from the spec, one or more per defect above. Run: `python3 run_vectors.py acceptance.vec review.vec`.\n- `fuzz_model.py`: a separate Python model of SPEC.md that runs random scenarios through `./drv` and compares the output. Run: `python3 fuzz_model.py [seed] [n] [drv]`. The fixed code matched on 40,000+ random scenarios. The original code failed about 53% of them. A build with ASan and UBSan was clean.\n\n## Suspicious-looking behavior deliberately left unchanged\n\n- **Returning to NORMAL keeps the point unacknowledged, and escalation can fire while in NORMAL or FAULT.** This is intended by [POL] A8/A9 (SP-3: every excursion must be seen). Not a bug.\n- **TO_FAULT and the recovery TO_NORMAL do not change the ack state.** This is intended by A6a (TO_FAULT is not an alarm).\n- **A pending transition whose delay ran out between calls is dropped if the next sample no longer meets the condition.** This is intended by [POL] A5a, which gives exactly this example. Timers only advance through API calls.\n- **Fault samples while already in FAULT still update the last value and run the escalation check.** A6's \"do nothing\" means no transition or notification. A5a, A7 and A9 require the value update and the end-of-call escalation check.\n- **`alarm_ack` checks the timer first, so an ack can acknowledge an episode that begins in the same call.** This is the order A5a and A9 specify.\n- **Ack is accepted during maintenance, and `maint on` while already on still checks the timer.** The spec does not restrict ack during maintenance. A5a requires the timer check on every call. Only the mode change itself is \"nothing\".\n- **The catch-up notification does not cancel or restart a pending transition.** The spec asks for no such thing. Only real transitions clear the pending transition.\n- **`last_notified` starts as NORMAL even though `alarm_init` sends no notification.** So a maintenance window that ends in NORMAL sends no catch-up. This treats NORMAL as the front-end's starting state, which is the only sensible reading of A10 before any notification exists.\n- **The configuration is not checked** (negative deadband, `high < low`, NaN limits). The spec has no validation rule, and adding one would change behavior. The header documents `deadband >= 0` as the caller's responsibility.\n- **`has_value` is written but never read.** A13 already holds because nothing is pending until the first sample. Harmless dead field, left alone to keep the change small.\n- **`emit()` silently drops notifications past `ALARM_MAX_NOTES`.** A call can produce at most 3 (TO_NORMAL, TO_x, ESCALATE), so the cap is never hit.\n- **`alarm_t` storage is cast to the internal `point_t`.** The size is checked by `_Static_assert` and the `uint64_t` storage gives enough alignment. This is the usual opaque-handle pattern, and all access goes through `point_t` after init.\n"
+ },
+ "x/C/1": {
+  "domain": "x",
+  "arm": "C",
+  "rep": 1,
+  "build": "ws-header",
+  "fixed": {
+   "XB1_return_not_strict[STD]": false,
+   "XB2_no_direct_high_low[STD]": false,
+   "XB3_catchup_no_episode[POL]": true,
+   "XB4_time_check_samples_only[POL]": false,
+   "XB5_recovery_not_evaluated[POL]": false
+  },
+  "partial": {
+   "XB1_return_not_strict[STD]": 0.0,
+   "XB2_no_direct_high_low[STD]": 0.8837209302325582,
+   "XB3_catchup_no_episode[POL]": 1.0,
+   "XB4_time_check_samples_only[POL]": 0.5714285714285714,
+   "XB5_recovery_not_evaluated[POL]": 0.9402985074626866
+  },
+  "n_regress": 4,
+  "regress_by_rule": {
+   "A3": 1,
+   "RAND": 3
+  },
+  "regress_by_cat": {
+   "STD": 1,
+   "POL": 0,
+   "MIX": 3
+  },
+  "passed": 313,
+  "total": 363,
+  "review": "# alarm.c review\n\nThe build is clean with `make`. After the changes, `run_vectors.py acceptance.vec tests/unit.vec` passes 32/32. A 3000-scenario random fuzz under ASan/UBSan showed no errors, no note overruns and no bad counts.\n\n## Changes made (all in alarm.c)\n\n1. `target()`, HIGH state: added `v < low_limit -> ALARM_LOW` before the return-to-normal check. The reason: LOW already goes straight to HIGH, but HIGH could not go straight to LOW. A drop below the low limit passed through NORMAL instead, which produced a spurious TO_NORMAL and started the time delay again.\n2. `target()`, LOW state: changed the return-to-normal test from `v > low + deadband` to `v >= low + deadband`. The reason: the HIGH side uses `v <= high - deadband`, and CR3incl treats the boundary value as normal. At exactly low+deadband the point stayed in LOW, so the two sides disagreed.\n3. Added `elapsed()` and used it in `eval_timer()` and `check_escalate()`. The reason: `alarm_tick`, `alarm_ack` and `alarm_set_maintenance` accept a `now` older than `last_now` and passed it on as is. `now - pending_start` or `now - alarm_time` then wrapped around to a huge value. So a late tick could fire a transition before its time delay had run out (e.g. `TO_HIGH@5`), or fire a false ESCALATE. A late call now counts as no time elapsed. It is still processed: an ack or a maintenance change still takes effect, and notes still carry the call's `now`.\n4. `alarm_sample()`, recovery from FAULT: removed the early `return n` after the FAULT->NORMAL transition. The reason: that call skipped `check_escalate`, so an escalation due at that moment was delayed or lost. It also threw away the valid recovery sample, so an out-of-range value did not start its time delay until the next sample. The point still returns to NORMAL immediately, with TO_NORMAL reported as before, and the sample is then evaluated like any other.\n5. `alarm_set_maintenance()`, leaving maintenance: the state is now reported through `notify_state()` instead of an inline `emit`. The reason: the inline copy updated `last_notified` but skipped the alarm bookkeeping (`unacked`, `alarm_time`, `escalated`). A HIGH/LOW alarm first reported when maintenance ended could therefore never be acknowledged or escalated. It could also escalate at once, timed from an older alarm. Maintenance exits that report NORMAL or FAULT behave exactly as before.\n\n## Suspicious-looking behavior left unchanged (intended or out of scope)\n\n- A value exactly at a limit does not alarm (strict `>` / `<`). This is intended (CR3incl, x001/x002).\n- An alarm that is still unacknowledged keeps escalating after the point returns to NORMAL. This is intended (CR3clear, x038/x063).\n- A new HIGH/LOW notification restarts the escalation timer and clears `escalated`, even if the previous alarm was overdue. This is intended (A11, x046).\n- An ack that arrives after the escalation time has passed stops the escalation (the ack is applied before the check). This is intended (x043).\n- An ack in the same call that raises the alarm acknowledges that new alarm. This is intended (x021).\n- Escalation continues during FAULT and is held off during maintenance, then fires when maintenance ends. This is intended (x032, x052).\n- Notes carry the latest sample value, not the value that started the time delay, and ESCALATE carries the current value. This is intended (x034, x038).\n- A sample flagged with `sensor_fault` still stores its value, which is used in TO_FAULT/ESCALATE notes. This is intended (x025, x055).\n- Only NaN (or `sensor_fault`) counts as a fault. \u00b1inf is treated as an ordinary out-of-range value (HIGH/LOW). Left as is because the code consistently applies the limit rules and nothing specifies that \u00b1inf is a fault. It is worth confirming with the spec owner.\n- An out-of-order sample is dropped completely, but out-of-order tick/ack/maintenance calls are still processed (they just do not move `last_now` backwards). This split looks deliberate (x060), so only the time arithmetic was fixed.\n- An alarm that clears and re-enters the same state during maintenance is not reported again when maintenance ends, because the state equals the last reported one. This is intended (x048 pattern).\n- FAULT is not an acknowledgeable or escalating alarm itself. Nothing indicates otherwise.\n- `point_t.has_value` is written but never read. It is dead but harmless, so it was left alone.\n- `alarm_init` does not check the configuration (for example deadband < 0 or low > high). The header makes `deadband >= 0` a caller precondition.\n- Access through `(point_t *)` on an `alarm_t` is technically type-punning, but it is the intended opaque-storage design. Size is checked by `_Static_assert` and alignment by the `uint64_t` storage.\n"
+ },
+ "x/C/2": {
+  "domain": "x",
+  "arm": "C",
+  "rep": 2,
+  "build": "ws-header",
+  "fixed": {
+   "XB1_return_not_strict[STD]": false,
+   "XB2_no_direct_high_low[STD]": false,
+   "XB3_catchup_no_episode[POL]": true,
+   "XB4_time_check_samples_only[POL]": true,
+   "XB5_recovery_not_evaluated[POL]": false
+  },
+  "partial": {
+   "XB1_return_not_strict[STD]": 0.0,
+   "XB2_no_direct_high_low[STD]": 0.8837209302325582,
+   "XB3_catchup_no_episode[POL]": 1.0,
+   "XB4_time_check_samples_only[POL]": 1.0,
+   "XB5_recovery_not_evaluated[POL]": 0.9402985074626866
+  },
+  "n_regress": 4,
+  "regress_by_rule": {
+   "A3": 1,
+   "RAND": 3
+  },
+  "regress_by_cat": {
+   "STD": 1,
+   "POL": 0,
+   "MIX": 3
+  },
+  "passed": 329,
+  "total": 363,
+  "review": "# alarm.c review\n\n## Changes made (all in alarm.c)\n\n1. `target()`, HIGH state: added `if (v < low_limit) return ALARM_LOW;` before the return-to-normal check. The LOW state already goes straight to HIGH, but HIGH could not go straight to LOW. A value below the low limit was reported as TO_NORMAL (for example \"NORMAL TO_NORMAL@10:5.000\"), and the LOW alarm needed a second full delay.\n2. `target()`, LOW state: the return-to-normal test changed from `v > low_limit + deadband` to `v >= low_limit + deadband`. The HIGH side counts the deadband edge as normal (`<=`), and so does the CR3 inclusive-limit rule (a value at a limit is normal). The LOW side excluded the edge, so with low=10 and deadband=2 a value of 12 stayed LOW for ever.\n3. `alarm_sample()`, recovery from FAULT: removed the early `return n` after the FAULT->NORMAL transition. Every other path ends with `check_escalate()`, but this one did not, so an escalation due at the recovery sample was lost. The recovery sample's value was also thrown away: an out-of-range value did not start its time delay until the next sample. The value is now evaluated from NORMAL in the same call.\n4. `alarm_tick()`, `alarm_ack()`, `alarm_set_maintenance()`: they now use `accept_time()` and return 0 when `now` is earlier than the latest time seen, as `alarm_sample()` already does. They used to run with the old `now`. The unsigned subtractions `now - pending_start` and `now - alarm_time` then wrapped around, so an old tick could raise an alarm or an ESCALATE at once (for example `s 10 35` then `tick 5` gave TO_HIGH@5, and `tick 30` after an alarm at 40 gave ESCALATE@30). x060 (`ack 30` then `ack 40`) fits the rule that an old call is ignored.\n5. `alarm_set_maintenance()`, maintenance off: a state change that happened silently during maintenance is now announced with `notify_state()` instead of a copied `emit()` + `last_notified` update. The copy skipped the alarm bookkeeping: a HIGH or LOW announced when maintenance ended was never marked unacked and got no alarm time. It therefore never needed an ack and never escalated.\n\nChecks run: `make` builds with no warnings, and acceptance.vec plus tests/unit.vec pass 32/32. I also ran focused scenarios for each fix and a random run under ASan/UBSan (no errors, overruns or bad counts). driver.c and run_vectors.py are unchanged.\n\n## Suspicious-looking behavior left unchanged on purpose\n\n- A point stays unacked and still escalates after it returns to NORMAL. This is intended: tests x038, x041 and x063 (tag CR3clear) require it.\n- An ACK first runs the timers, so an alarm raised in the same call is acknowledged at once (x021).\n- A sample that ends the condition cancels a pending transition even if the delay ran out between samples. Timers are only checked on calls (x019, x020).\n- An unacked alarm keeps escalating while the point is in FAULT (x032).\n- During maintenance no notes are sent and escalation waits until maintenance ends (x052). Only a net state change is announced when maintenance ends (x048, x051).\n- A value exactly at a limit is normal: `>` and `<` are correct (x001, x002, CR3incl).\n- Only NaN (or `sensor_fault`) counts as a fault; +/-inf does not. An infinite value compares correctly and raises HIGH or LOW, so it is visible. NaN would otherwise stay NORMAL without anyone noticing. Nothing supports making inf a fault, so changing this would change how points are classified.\n- FAULT and NORMAL notes do not set unacked; only HIGH and LOW do. `notify_state` does this on purpose and no test disagrees.\n- `alarm_init` does not check `deadband >= 0` or the order of the limits. Validating configuration belongs to the caller (see the header comment); rejecting or clamping values here would change behavior.\n- The `has_value` field is written but never read. It is dead but harmless, and leaving it keeps the state layout the same.\n- `accept_time()` compares with `now < last_now`, so it does not handle the 32-bit seconds counter wrapping (after about 136 years). The header documents `now` as monotonic.\n"
+ },
+ "x/C/3": {
+  "domain": "x",
+  "arm": "C",
+  "rep": 3,
+  "build": "ws-header",
+  "fixed": {
+   "XB1_return_not_strict[STD]": false,
+   "XB2_no_direct_high_low[STD]": false,
+   "XB3_catchup_no_episode[POL]": true,
+   "XB4_time_check_samples_only[POL]": true,
+   "XB5_recovery_not_evaluated[POL]": false
+  },
+  "partial": {
+   "XB1_return_not_strict[STD]": 0.0,
+   "XB2_no_direct_high_low[STD]": 0.8837209302325582,
+   "XB3_catchup_no_episode[POL]": 1.0,
+   "XB4_time_check_samples_only[POL]": 1.0,
+   "XB5_recovery_not_evaluated[POL]": 0.9402985074626866
+  },
+  "n_regress": 4,
+  "regress_by_rule": {
+   "A3": 1,
+   "RAND": 3
+  },
+  "regress_by_cat": {
+   "STD": 1,
+   "POL": 0,
+   "MIX": 3
+  },
+  "passed": 329,
+  "total": 363,
+  "review": "# alarm.c review\n\n## Changes made (alarm.c only)\n\n1. `alarm_tick` / `alarm_ack` / `alarm_set_maintenance`: stale timestamps (`now` earlier than the last accepted time) are now rejected through `accept_time()` (returns 0, no state change), the same way `alarm_sample` already handles them. Before, they ran `eval_timer`/`check_escalate` with the stale `now`, so `now - pending_start` / `now - alarm_time` wrapped around. That caused a spurious transition or escalation stamped with the old time (e.g. `s 20 35` then `tick 10` raised `TO_HIGH@10` with delay=30).\n2. `target()` in HIGH: added a direct HIGH -> LOW transition when `v < low_limit`. This mirrors the existing LOW -> HIGH branch. Before, a HIGH point whose value dropped below the low limit first reported a false `TO_NORMAL`, then needed a second full time delay before `TO_LOW`.\n3. `target()` in LOW: the clear threshold changed from `v > low_limit + deadband` to `v >= low_limit + deadband`. This matches the HIGH side (`v <= high_limit - deadband`) and the inclusive-boundary rule (CR3incl: a value on a boundary counts as normal). Before, a LOW alarm did not clear at exactly low+deadband, but a HIGH alarm did clear at exactly high-deadband.\n4. `alarm_sample` fault recovery: removed the early `return n` after FAULT -> NORMAL. Before, that sample skipped `check_escalate`, so a due escalation of an unacknowledged alarm was lost at the recovery sample. The valid recovery value was also not evaluated: its pending/time-delay start was dropped until the next sample. Now the sample returns the point to NORMAL and is then evaluated normally.\n5. `alarm_set_maintenance(off)`: the deferred state notification now goes through `notify_state()` instead of a bare `emit()`. Before, a HIGH/LOW alarm reported at the end of maintenance was never marked unacknowledged and never given an alarm time, so it could never escalate. Its escalation state was also left stale.\n\nAll 32 provided vectors pass after the changes (also under ASan/UBSan).\n\n## Suspicious-looking behavior deliberately left unchanged\n\n- An alarm that clears without being acknowledged stays unacknowledged and still escalates while NORMAL or FAULT. This is intended per CR3clear (x038, x041) and x032.\n- Limits are strict for entering an alarm (`>` high, `<` low): a value exactly on a limit does not alarm. This is intended per CR3incl (x001, x002). The HIGH clear `<=` is left as is for the same inclusive-boundary reason (see change 3).\n- An ack in the same call that raises an alarm (the timer matures inside `alarm_ack`) acknowledges that new alarm. This is intended per x021.\n- Acks are accepted during maintenance, and escalation is only postponed (not cancelled) while maintenance is on. This is intended per x056 and x052.\n- Entering FAULT, and returning from FAULT to NORMAL, is immediate (no time delay). The `TO_FAULT` note carries the faulty sample value. This is intended per x025 and x032.\n- `+inf`/`-inf` samples are treated as ordinary out-of-range values, not as a sensor fault. Only NaN (which breaks every comparison) is forced to FAULT. Nothing indicates that inf should be a fault.\n- A stale `alarm_ack` or `maint` call is now ignored rather than applied (see change 1). This matches `alarm_sample` and the \"monotonic now\" contract in alarm.h.\n- `point_t.has_value` is written but never read. It is harmless (the state cannot change without a sample), so it is left in place.\n- No validation of the configuration (for example `deadband < 0` or `low_limit >= high_limit`). alarm.h puts that on the caller (`/* >= 0 */`).\n- Notifications are silently capped at `ALARM_MAX_NOTES`. The most any call can produce is 2, so the cap is never reached.\n"
+ }
+}

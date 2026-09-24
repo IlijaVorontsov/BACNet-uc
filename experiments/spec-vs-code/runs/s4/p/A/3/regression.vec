@@ -1,0 +1,31 @@
+# Regression vectors for the fixes listed in REVIEW.md.
+### signed-minus-128-one-octet
+enc_signed -128
+enc_signed -129
+---
+OK 3180
+OK 32ff7f
+### length-253-one-octet-extension
+enc_octets rep:41:253
+enc_str rep:41:252
+enc_octets rep:41:254
+---
+OK 65fd4141414141414141414141414141..c8a730c15bed2538/255
+OK 75fd0041414141414141414141414141..0383bba108e5c183/255
+OK 65fe00fe414141414141414141414141..162a682a22f45a40/258
+### octets-short-cap-not-dirty
+enc_octets rep:41:5 @6
+enc_octets 01020304 @4
+---
+ERR
+ERR
+### ctx-boolean-content-octet
+enc_ctx_bool 0 1
+enc_ctx_bool 0 0
+enc_ctx_bool 20 1
+enc_ctx_bool 3 1 @1
+---
+OK 0901
+OK 0900
+OK f91401
+ERR

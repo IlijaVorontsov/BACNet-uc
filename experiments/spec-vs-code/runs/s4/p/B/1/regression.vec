@@ -1,0 +1,67 @@
+# Regression vectors for the fixes listed in REVIEW.md.
+### signed-minus-128 E4
+enc_signed -128
+enc_signed -129
+enc_signed 127
+enc_signed 128
+---
+OK 3180
+OK 32ff7f
+OK 317f
+OK 320080
+### length-253-one-octet G4
+enc_octets rep:41:252 @300
+enc_octets rep:41:253 @300
+enc_octets rep:41:254 @300
+enc_str rep:41:252 @300
+enc_bits rep:1:2016 @300
+---
+OK 65fc4141414141414141414141414141..437ec55336696e6e/254
+OK 65fd4141414141414141414141414141..c8a730c15bed2538/255
+OK 65fe00fe414141414141414141414141..162a682a22f45a40/258
+OK 75fd0041414141414141414141414141..0383bba108e5c183/255
+OK 85fd00ffffffffffffffffffffffffff..551a9e8e34ca9b9b/255
+### octet-string-no-partial-write G1
+enc_octets rep:41:10 @5
+enc_octets rep:41:10 @11
+enc_octets rep:41:10 @12
+---
+ERR
+ERR
+OK 650a41414141414141414141
+### ctx-boolean-length-1 E13
+enc_ctx_bool 3 1
+enc_ctx_bool 3 0
+enc_ctx_bool 20 1
+enc_ctx_bool 3 1 @1
+enc_ctx_bool 255 0
+---
+OK 3901
+OK 3900
+OK f91401
+ERR
+ERR
+### bit-string-values-0-or-1 E8a
+enc_bits 102
+enc_bits 2
+enc_bits 0000000000000009
+enc_bits 101
+---
+ERR
+ERR
+ERR
+OK 8205a0
+### real-nan-refused E5a
+enc_real 7fc00000
+enc_real 7f800001
+enc_real ffc00001
+enc_real 7f800000
+enc_real ff800000
+enc_real 80000000
+---
+ERR
+ERR
+ERR
+OK 447f800000
+OK 44ff800000
+OK 4480000000

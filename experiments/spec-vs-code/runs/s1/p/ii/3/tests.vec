@@ -1,0 +1,958 @@
+# Unit tests for bacapp.c (run: python3 run_vectors.py tests.vec)
+#
+# Expected values are derived from ASHRAE 135 clause 20.2, not captured from the
+# implementation.  Long outputs use the driver's <16 bytes>..<fnv1a64>/<len> form;
+# those hashes were computed independently from the byte layout the standard gives.
+#
+# Implementation choices pinned by these tests (not dictated by the standard):
+#   - bit-string encoder: any nonzero bits[i] is a 1 bit
+#   - decoders accept non-minimal forms (leading-zero integers, short lengths in
+#     extended form, tag numbers < 15 in extended form)
+#   - decoders reject DATE/TIME field values the encoders reject
+#   - application DOUBLE (tag 5) is rejected: bac_value_t has no slot for it
+
+# ======================================================================= NULL / BOOLEAN
+### null-encode null
+enc_null
+enc_null @1
+enc_null @0
+---
+OK 00
+OK 00
+ERR
+### boolean-encode boolean
+enc_bool 0
+enc_bool 1
+enc_bool 0 @1
+enc_bool 1 @0
+---
+OK 10
+OK 11
+OK 10
+ERR
+### null-boolean-decode null boolean decode
+dec_app 00
+dec_app 10
+dec_app 11
+dec_app 1100
+---
+OK n=1 null
+OK n=1 bool 0
+OK n=1 bool 1
+OK n=1 bool 1
+### null-boolean-decode-malformed null boolean decode malformed
+# null with contents; boolean LVT must be 0 or 1; boolean in extended form
+dec_app 0100
+dec_app 12
+dec_app 14
+dec_app 1501
+---
+ERR
+ERR
+ERR
+ERR
+
+### unsigned-octet-boundaries unsigned
+enc_unsigned 0
+enc_unsigned 1
+enc_unsigned 255
+enc_unsigned 256
+enc_unsigned 65535
+enc_unsigned 65536
+enc_unsigned 16777215
+enc_unsigned 16777216
+enc_unsigned 4294967295
+---
+OK 2100
+OK 2101
+OK 21ff
+OK 220100
+OK 22ffff
+OK 23010000
+OK 23ffffff
+OK 2401000000
+OK 24ffffffff
+### unsigned-capacity unsigned capacity
+enc_unsigned 72 @2
+enc_unsigned 72 @1
+enc_unsigned 72 @0
+enc_unsigned 4294967295 @5
+enc_unsigned 4294967295 @4
+enc_unsigned 256 @3
+enc_unsigned 256 @2
+---
+OK 2148
+ERR
+ERR
+OK 24ffffffff
+ERR
+OK 220100
+ERR
+### unsigned-decode unsigned decode
+dec_app 2100
+dec_app 21ff
+dec_app 220100
+dec_app 23010000
+dec_app 24ffffffff
+dec_app 21480000
+---
+OK n=2 u 0
+OK n=2 u 255
+OK n=3 u 256
+OK n=4 u 65536
+OK n=5 u 4294967295
+OK n=2 u 72
+### unsigned-decode-nonminimal unsigned decode lenient
+dec_app 220048
+dec_app 2400000048
+dec_app 250148
+---
+OK n=3 u 72
+OK n=5 u 72
+OK n=3 u 72
+### unsigned-decode-malformed unsigned decode malformed
+# zero-length, 5 octets (does not fit uint32), truncated contents
+dec_app 20
+dec_app 2500
+dec_app 25050000000048
+dec_app 21
+dec_app 22ff
+dec_app 24ffffff
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### enumerated-encode enumerated
+enc_enum 1
+enc_enum 255
+enc_enum 256
+enc_enum 65536
+enc_enum 4294967295
+enc_enum 4294967295 @4
+---
+OK 9101
+OK 91ff
+OK 920100
+OK 93010000
+OK 94ffffffff
+ERR
+### enumerated-decode enumerated decode
+dec_app 9100
+dec_app 920100
+dec_app 94ffffffff
+dec_app 90
+dec_app 950500000000ff
+---
+OK n=2 enum 0
+OK n=3 enum 256
+OK n=5 enum 4294967295
+ERR
+ERR
+
+### signed-octet-boundaries signed
+enc_signed 0
+enc_signed -1
+enc_signed -72
+enc_signed 127
+enc_signed 128
+enc_signed -128
+enc_signed -129
+enc_signed 32767
+enc_signed 32768
+enc_signed -32768
+enc_signed -32769
+enc_signed 8388607
+enc_signed 8388608
+enc_signed -8388608
+enc_signed -8388609
+enc_signed 2147483647
+enc_signed -2147483648
+---
+OK 3100
+OK 31ff
+OK 31b8
+OK 317f
+OK 320080
+OK 3180
+OK 32ff7f
+OK 327fff
+OK 33008000
+OK 328000
+OK 33ff7fff
+OK 337fffff
+OK 3400800000
+OK 33800000
+OK 34ff7fffff
+OK 347fffffff
+OK 3480000000
+### signed-capacity signed capacity
+enc_signed -2147483648 @5
+enc_signed -2147483648 @4
+enc_signed -1 @1
+---
+OK 3480000000
+ERR
+ERR
+### signed-decode signed decode
+dec_app 3148
+dec_app 31ff
+dec_app 3180
+dec_app 32ff7f
+dec_app 320080
+dec_app 33ff7fff
+dec_app 33800000
+dec_app 347fffffff
+dec_app 3480000000
+dec_app 34ffffffff
+---
+OK n=2 i 72
+OK n=2 i -1
+OK n=2 i -128
+OK n=3 i -129
+OK n=3 i 128
+OK n=4 i -32769
+OK n=4 i -8388608
+OK n=5 i 2147483647
+OK n=5 i -2147483648
+OK n=5 i -1
+### signed-decode-nonminimal signed decode lenient
+dec_app 32ffff
+dec_app 3300ffff
+dec_app 33ff0000
+dec_app 340000007f
+---
+OK n=3 i -1
+OK n=4 i 65535
+OK n=4 i -65536
+OK n=5 i 127
+### signed-decode-malformed signed decode malformed
+dec_app 30
+dec_app 350500000000ff
+dec_app 32ff
+---
+ERR
+ERR
+ERR
+
+### real-encode real
+enc_real 00000000
+enc_real 80000000
+enc_real 3f800000
+enc_real bf800000
+enc_real 7f800000
+enc_real ff800000
+enc_real 00000001
+enc_real 7f7fffff
+---
+OK 4400000000
+OK 4480000000
+OK 443f800000
+OK 44bf800000
+OK 447f800000
+OK 44ff800000
+OK 4400000001
+OK 447f7fffff
+### real-nan-bits-preserved real
+enc_real 7fc00000
+enc_real 7fc12345
+enc_real ffc00000
+---
+OK 447fc00000
+OK 447fc12345
+OK 44ffc00000
+### real-capacity real capacity
+enc_real 42900000 @5
+enc_real 42900000 @4
+---
+OK 4442900000
+ERR
+### real-decode real decode
+dec_app 4400000000
+dec_app 4480000000
+dec_app 44ff800000
+dec_app 447fc12345
+dec_app 4400000001
+dec_app 45043f800000
+---
+OK n=5 r 00000000
+OK n=5 r 80000000
+OK n=5 r ff800000
+OK n=5 r 7fc12345
+OK n=5 r 00000001
+OK n=6 r 3f800000
+### real-decode-malformed real decode malformed
+# wrong length (3, 5, 0) and truncated
+dec_app 433f8000
+dec_app 45053f80000000
+dec_app 40
+dec_app 443f8000
+---
+ERR
+ERR
+ERR
+ERR
+### double-decode-unsupported double decode
+dec_app 55083ff0000000000000
+dec_app 5508
+---
+ERR
+ERR
+
+### octets-encode octets
+enc_octets -
+enc_octets 01
+enc_octets 01020304
+enc_octets 0102030405
+enc_octets 00
+---
+OK 60
+OK 6101
+OK 6401020304
+OK 65050102030405
+OK 6100
+### octets-extended-length octets extlen
+enc_octets rep:aa:253
+enc_octets rep:aa:254
+enc_octets rep:33:65535 @70000
+enc_octets rep:33:65536 @70000
+enc_octets rep:00:70000 @70006
+---
+OK 65fdaaaaaaaaaaaaaaaaaaaaaaaaaaaa..7a9063ce7a342c55/255
+OK 65fe00feaaaaaaaaaaaaaaaaaaaaaaaa..067d41560c8042e2/258
+OK 65feffff333333333333333333333333..1120b8d0a076998d/65539
+OK 65ff0001000033333333333333333333..c414bbc7f76731bc/65542
+OK 65ff0001117000000000000000000000..7423bf46602d1585/70006
+### octets-capacity octets capacity
+enc_octets - @1
+enc_octets - @0
+enc_octets rep:11:10 @12
+enc_octets rep:11:10 @11
+enc_octets rep:11:4 @5
+enc_octets rep:11:4 @4
+enc_octets rep:aa:253 @255
+enc_octets rep:aa:253 @254
+enc_octets rep:aa:254 @258
+enc_octets rep:aa:254 @257
+enc_octets rep:aa:254 @255
+enc_octets rep:33:65536 @65542
+enc_octets rep:33:65536 @65541
+---
+OK 60
+ERR
+OK 650a11111111111111111111
+ERR
+OK 6411111111
+ERR
+OK 65fdaaaaaaaaaaaaaaaaaaaaaaaaaaaa..7a9063ce7a342c55/255
+ERR
+OK 65fe00feaaaaaaaaaaaaaaaaaaaaaaaa..067d41560c8042e2/258
+ERR
+ERR
+OK 65ff0001000033333333333333333333..c414bbc7f76731bc/65542
+ERR
+### octets-decode octets decode
+dec_app 60
+dec_app 6101
+dec_app 6401020304
+dec_app 65050102030405
+dec_app 61ff0000
+dec_app 650401020304
+dec_app 65fe00050102030405
+dec_app 65ff000000050102030405
+---
+OK n=1 oct -
+OK n=2 oct 01
+OK n=5 oct 01020304
+OK n=7 oct 0102030405
+OK n=2 oct ff
+OK n=6 oct 01020304
+OK n=9 oct 0102030405
+OK n=11 oct 0102030405
+### octets-decode-long octets decode extlen
+dec_app 65fe0100+rep:ab:256
+dec_app 65ff00010000+rep:5a:65536
+---
+OK n=260 oct abababababababababababababababab..92822016da711883/256
+OK n=65542 oct 5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a..3278f7cf9fb50383/65536
+### octets-decode-truncated octets decode malformed
+dec_app 640102
+dec_app 6505010203
+dec_app 65
+dec_app 65fe01
+dec_app 65fe0100+rep:ab:255
+dec_app 65ff000100
+dec_app 65ffffffffff00
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### charstring-encode charstring
+enc_str -
+enc_str 41
+enc_str 414243
+enc_str 41424344
+enc_str c3a9
+enc_str e282ac
+enc_str 410042
+---
+OK 7100
+OK 720041
+OK 7400414243
+OK 75050041424344
+OK 7300c3a9
+OK 7400e282ac
+OK 7400410042
+### charstring-extended-length charstring extlen
+enc_str rep:41:252
+enc_str rep:41:253
+enc_str rep:7a:65534 @70000
+enc_str rep:7a:65535 @70000
+---
+OK 75fd0041414141414141414141414141..0383bba108e5c183/255
+OK 75fe00fe004141414141414141414141..276e7407f803f035/258
+OK 75feffff007a7a7a7a7a7a7a7a7a7a7a..2ee4a321529b60ea/65539
+OK 75ff00010000007a7a7a7a7a7a7a7a7a..c4500e0d98cb7656/65542
+### charstring-capacity charstring capacity
+enc_str - @2
+enc_str - @1
+enc_str 414243 @5
+enc_str 414243 @4
+enc_str 41424344 @7
+enc_str 41424344 @6
+enc_str rep:41:253 @258
+enc_str rep:41:253 @257
+---
+OK 7100
+ERR
+OK 7400414243
+ERR
+OK 75050041424344
+ERR
+OK 75fe00fe004141414141414141414141..276e7407f803f035/258
+ERR
+### charstring-decode charstring decode
+dec_app 7100
+dec_app 720041
+dec_app 75050041424344
+dec_app 730541e9
+dec_app 75050400410042
+dec_app 75fe012d+00+rep:7a:300
+---
+OK n=2 str cs=0 -
+OK n=3 str cs=0 41
+OK n=7 str cs=0 41424344
+OK n=4 str cs=5 41e9
+OK n=7 str cs=4 00410042
+OK n=305 str cs=0 7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a..e6809eb02765c0e3/300
+### charstring-decode-malformed charstring decode malformed
+# no character-set octet; truncated
+dec_app 70
+dec_app 7500
+dec_app 74004142
+dec_app 71
+---
+ERR
+ERR
+ERR
+ERR
+
+### bits-encode bits
+enc_bits -
+enc_bits 0
+enc_bits 1
+enc_bits 101
+enc_bits 10000000
+enc_bits 11111111
+enc_bits 000000001
+enc_bits 0000000000000001
+enc_bits rep:1:24
+enc_bits rep:1:25
+---
+OK 8100
+OK 820700
+OK 820780
+OK 8205a0
+OK 820080
+OK 8200ff
+OK 83070080
+OK 83000001
+OK 8400ffffff
+OK 850507ffffff80
+### bits-encode-nonzero-is-one bits
+enc_bits 2
+enc_bits 91
+enc_bits 0900
+enc_bits 12345678
+---
+OK 820780
+OK 8206c0
+OK 820440
+OK 8200ff
+### bits-extended-length bits extlen
+enc_bits rep:1:2016
+enc_bits rep:1:2017
+enc_bits rep:0:2039+1
+---
+OK 85fd00ffffffffffffffffffffffffff..551a9e8e34ca9b9b/255
+OK 85fe00fe07ffffffffffffffffffffff..b669e037578c7355/258
+OK 85fe0100000000000000000000000000..06df4ce3ca8de6ba/260
+### bits-capacity bits capacity
+enc_bits - @2
+enc_bits - @1
+enc_bits 10101 @3
+enc_bits 10101 @2
+enc_bits rep:1:32 @7
+enc_bits rep:1:32 @6
+---
+OK 8100
+ERR
+OK 8203a8
+ERR
+OK 850500ffffffff
+ERR
+### bits-decode bits decode
+dec_app 8100
+dec_app 820780
+dec_app 8203a8
+dec_app 8200ff
+dec_app 83070080
+dec_app 850507ffffff80
+---
+OK n=2 bits -
+OK n=3 bits 1
+OK n=3 bits 10101
+OK n=3 bits 11111111
+OK n=4 bits 000000001
+OK n=7 bits 1111111111111111111111111
+### bits-decode-nonzero-unused-bits bits decode lenient
+dec_app 8207ff
+dec_app 82037f
+---
+OK n=3 bits 1
+OK n=3 bits 01111
+### bits-decode-long bits decode extlen
+dec_app 8522+07+rep:ff:32+80
+dec_app 85fe0101+00+rep:ff:256
+dec_app 85fe0101+03+rep:aa:256
+dec_app 85fe0100+00+rep:00:254+01
+---
+OK n=36 bits 257bits..ebf971b46638e0e2
+OK n=261 bits 2048bits..2179b248805875f1
+OK n=261 bits 2045bits..d4012b49a746b64e
+OK n=260 bits 2040bits..e9881eb9d3c83eca
+### bits-decode-malformed bits decode malformed
+# no unused-bits octet; unused bits with no data octets; unused > 7; truncated
+dec_app 80
+dec_app 8101
+dec_app 8107
+dec_app 820800
+dec_app 82ff00
+dec_app 8300ff
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### date-encode date
+enc_date 1900 1 1 1
+enc_date 2154 12 31 7
+enc_date 2024 2 29 4
+enc_date 65535 255 255 255
+enc_date 2024 255 255 255
+enc_date 65535 6 15 255
+---
+OK a400010101
+OK a4fe0c1f07
+OK a47c021d04
+OK a4ffffffff
+OK a47cffffff
+OK a4ff060fff
+### date-encode-special-values date
+# month 13/14 = odd/even months; day 32 = last day, 33/34 = odd/even days
+enc_date 2024 13 32 1
+enc_date 2024 14 33 2
+enc_date 2024 1 34 3
+---
+OK a47c0d2001
+OK a47c0e2102
+OK a47c012203
+### date-encode-out-of-range date invalid
+enc_date 1899 1 1 1
+enc_date 2155 1 1 1
+enc_date 124 1 1 1
+enc_date 0 1 1 1
+enc_date 2024 0 1 1
+enc_date 2024 15 1 1
+enc_date 2024 254 1 1
+enc_date 2024 1 0 1
+enc_date 2024 1 35 1
+enc_date 2024 1 1 0
+enc_date 2024 1 1 8
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+### date-capacity date capacity
+enc_date 1991 1 24 4 @5
+enc_date 1991 1 24 4 @4
+enc_date 1991 1 24 4 @0
+---
+OK a45b011804
+ERR
+ERR
+### date-decode date decode
+dec_app a45b011804
+dec_app a400010101
+dec_app a4fe0c1f07
+dec_app a4ffffffff
+dec_app a47c0e2202
+---
+OK n=5 date 1991 1 24 4
+OK n=5 date 1900 1 1 1
+OK n=5 date 2154 12 31 7
+OK n=5 date 65535 255 255 255
+OK n=5 date 2024 14 34 2
+### date-decode-malformed date decode malformed
+# wrong length, truncated, out-of-range fields
+dec_app a35b0118
+dec_app a5055b01180400
+dec_app a45b0118
+dec_app a45b001804
+dec_app a45b0f1804
+dec_app a45b010004
+dec_app a45b012304
+dec_app a45b011800
+dec_app a45b011808
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### time-encode time
+enc_time 0 0 0 0
+enc_time 23 59 59 99
+enc_time 255 255 255 255
+enc_time 12 255 255 255
+---
+OK b400000000
+OK b4173b3b63
+OK b4ffffffff
+OK b40cffffff
+### time-encode-out-of-range time invalid
+enc_time 24 0 0 0
+enc_time 0 60 0 0
+enc_time 0 0 60 0
+enc_time 0 0 0 100
+enc_time 254 0 0 0
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+### time-capacity time capacity
+enc_time 17 35 45 17 @5
+enc_time 17 35 45 17 @4
+---
+OK b411232d11
+ERR
+### time-decode time decode
+dec_app b411232d11
+dec_app b4173b3b63
+dec_app b4ffffffff
+---
+OK n=5 time 17 35 45 17
+OK n=5 time 23 59 59 99
+OK n=5 time 255 255 255 255
+### time-decode-malformed time decode malformed
+dec_app b418000000
+dec_app b4003c0000
+dec_app b400003c00
+dec_app b400000064
+dec_app b3112345
+dec_app b411232d
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### oid-encode oid
+enc_oid 0 0
+enc_oid 8 1234
+enc_oid 8 4194303
+enc_oid 1023 4194303
+enc_oid 1023 0
+---
+OK c400000000
+OK c4020004d2
+OK c4023fffff
+OK c4ffffffff
+OK c4ffc00000
+### oid-encode-out-of-range oid invalid
+enc_oid 1024 0
+enc_oid 65535 0
+enc_oid 0 4194304
+enc_oid 0 4294967295
+---
+ERR
+ERR
+ERR
+ERR
+### oid-capacity oid capacity
+enc_oid 3 15 @5
+enc_oid 3 15 @4
+---
+OK c400c0000f
+ERR
+### oid-decode oid decode
+dec_app c400000000
+dec_app c4020004d2
+dec_app c4ffffffff
+dec_app c4ffc00000
+dec_app c3000000
+dec_app c400c000
+---
+OK n=5 oid 0 0
+OK n=5 oid 8 1234
+OK n=5 oid 1023 4194303
+OK n=5 oid 1023 0
+ERR
+ERR
+
+### ctx-unsigned ctx
+enc_ctx_unsigned 0 0
+enc_ctx_unsigned 1 72
+enc_ctx_unsigned 3 65536
+enc_ctx_unsigned 14 1
+enc_ctx_unsigned 15 1
+enc_ctx_unsigned 254 4294967295
+enc_ctx_unsigned 255 0
+---
+OK 0900
+OK 1948
+OK 3b010000
+OK e901
+OK f90f01
+OK fcfeffffffff
+ERR
+### ctx-unsigned-capacity ctx capacity
+enc_ctx_unsigned 15 1 @3
+enc_ctx_unsigned 15 1 @2
+enc_ctx_unsigned 0 256 @3
+enc_ctx_unsigned 0 256 @2
+---
+OK f90f01
+ERR
+OK 0a0100
+ERR
+### ctx-boolean ctx
+enc_ctx_bool 0 0
+enc_ctx_bool 0 1
+enc_ctx_bool 2 1
+enc_ctx_bool 14 0
+enc_ctx_bool 20 1
+enc_ctx_bool 255 1
+enc_ctx_bool 0 1 @1
+enc_ctx_bool 20 1 @2
+---
+OK 0900
+OK 0901
+OK 2901
+OK e900
+OK f91401
+ERR
+ERR
+ERR
+### opening-closing ctx
+enc_open 0
+enc_close 0
+enc_open 14
+enc_close 14
+enc_open 15
+enc_close 15
+enc_open 254
+enc_close 254
+enc_open 255
+enc_close 255
+---
+OK 0e
+OK 0f
+OK ee
+OK ef
+OK fe0f
+OK ff0f
+OK fefe
+OK fffe
+ERR
+ERR
+### opening-closing-capacity ctx capacity
+enc_open 3 @1
+enc_open 3 @0
+enc_open 15 @2
+enc_open 15 @1
+enc_close 200 @1
+---
+OK 3e
+ERR
+OK fe0f
+ERR
+ERR
+
+### tag-decode-application tag decode
+dec_tag 00
+dec_tag 11
+dec_tag 2148
+dec_tag 44
+dec_tag 6505
+dec_tag 65fe0100
+dec_tag 65ff00010000
+dec_tag 65ffffffffff
+dec_tag c4
+---
+OK hl=1 tag=0 app lvt=0
+OK hl=1 tag=1 app lvt=1
+OK hl=1 tag=2 app lvt=1
+OK hl=1 tag=4 app lvt=4
+OK hl=2 tag=6 app lvt=5
+OK hl=4 tag=6 app lvt=256
+OK hl=6 tag=6 app lvt=65536
+OK hl=6 tag=6 app lvt=4294967295
+OK hl=1 tag=12 app lvt=4
+### tag-decode-context tag decode ctx
+dec_tag 0a0100
+dec_tag 0e
+dec_tag 1f
+dec_tag ee
+dec_tag 1eff
+dec_tag fe0f
+dec_tag fffe
+dec_tag f90f01
+dec_tag fd20fe0100
+dec_tag f0
+---
+OK hl=1 tag=0 ctx lvt=2
+OK hl=1 tag=0 ctx open
+OK hl=1 tag=1 ctx close
+OK hl=1 tag=14 ctx open
+OK hl=1 tag=1 ctx open
+OK hl=2 tag=15 ctx open
+OK hl=2 tag=254 ctx close
+OK hl=2 tag=15 ctx lvt=1
+OK hl=5 tag=32 ctx lvt=256
+ERR
+### tag-decode-lenient tag decode lenient
+# tag number < 15 in extended form; application tag number >= 15 (reserved type, header still well-formed)
+dec_tag f903
+dec_tag f00f
+---
+OK hl=2 tag=3 ctx lvt=1
+OK hl=2 tag=15 app lvt=0
+### tag-decode-malformed tag decode malformed
+# empty; reserved tag number 255; truncated extended tag/length; app-class open/close
+dec_tag -
+dec_tag f9ff
+dec_tag feff
+dec_tag f9
+dec_tag 65
+dec_tag 65fe01
+dec_tag 65ff000100
+dec_tag fd20
+dec_tag fd20ff0001
+dec_tag 06
+dec_tag 07
+dec_tag f60f
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### app-decode-rejects-non-application decode malformed
+# empty; context-class value; opening/closing tags
+dec_app -
+dec_app 0900
+dec_app 0a0100
+dec_app 0e
+dec_app 1f
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+### app-decode-reserved-tags decode malformed
+dec_app d0
+dec_app d100
+dec_app e0
+dec_app f00f
+dec_app f10f00
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### roundtrip-sequence roundtrip
+enc_signed -129
+dec_app 32ff7f
+enc_unsigned 16777216
+dec_app 2401000000
+enc_bits 0110
+dec_app 820460
+enc_str e282ac
+dec_app 7400e282ac
+enc_date 65535 13 32 255
+dec_app a4ff0d20ff
+enc_oid 8 4194303
+dec_app c4023fffff
+---
+OK 32ff7f
+OK n=3 i -129
+OK 2401000000
+OK n=5 u 16777216
+OK 820460
+OK n=3 bits 0110
+OK 7400e282ac
+OK n=5 str cs=0 e282ac
+OK a4ff0d20ff
+OK n=5 date 65535 13 32 255
+OK c4023fffff
+OK n=5 oid 8 4194303

@@ -1,0 +1,199 @@
+# Acceptance test: known-good encodings (ASHRAE 135 clause 20.2 examples) and round trips.
+### unsigned-72
+enc_unsigned 72
+---
+OK 2148
+### signed-72
+enc_signed 72
+---
+OK 3148
+### real-72
+enc_real 42900000
+---
+OK 4442900000
+### boolean-true
+enc_bool 1
+---
+OK 11
+### null
+enc_null
+---
+OK 00
+### octet-string
+enc_octets 1234ff
+---
+OK 631234ff
+### character-string
+enc_str 546869732069732061204241436e657420737472696e6721
+---
+OK 751900546869732069732061204241436e657420737472696e6721
+### bit-string
+enc_bits 10101
+---
+OK 8203a8
+### enumerated-0
+enc_enum 0
+---
+OK 9100
+### date
+enc_date 1991 1 24 4
+---
+OK a45b011804
+### time
+enc_time 17 35 45 17
+---
+OK b411232d11
+### object-id
+enc_oid 3 15
+---
+OK c400c0000f
+### context-unsigned
+enc_ctx_unsigned 0 256
+---
+OK 0a0100
+### opening-closing
+enc_open 1
+enc_close 1
+---
+OK 1e
+OK 1f
+### decode-unsigned
+dec_app 2148
+---
+OK n=2 u 72
+### decode-real
+dec_app 4442900000
+---
+OK n=5 r 42900000
+### decode-string
+dec_app 751900546869732069732061204241436e657420737472696e6721
+---
+OK n=27 str cs=0 546869732069732061204241436e657420737472696e6721
+### decode-object-id
+dec_app c400c0000f
+---
+OK n=5 oid 3 15
+### decode-context-header
+dec_tag 0a0100
+---
+OK hl=1 tag=0 ctx lvt=2
+### double-72
+enc_double 4052000000000000
+---
+OK 55084052000000000000
+### decode-double
+dec_app 55084052000000000000
+---
+OK n=10 d 4052000000000000
+### context-enumerated
+enc_ctx_enum 9 0
+enc_ctx_enum 1 256
+---
+OK 9900
+OK 1a0100
+### context-signed
+enc_ctx_signed 1 -1
+enc_ctx_signed 0 128
+---
+OK 19ff
+OK 0a0080
+### real-nan-boundaries
+# CR-102 regression (expected output = pre-CR-102 build). IEEE-754 bit patterns, no FP ops: Inf/-0/max finite encode; quiet/signalling NaN of either sign rejected
+enc_real 7f800000
+enc_real ff800000
+enc_real 80000000
+enc_real 7f7fffff
+enc_real 7f800001
+enc_real ffc00000
+enc_real 7fbfffff
+---
+OK 447f800000
+OK 44ff800000
+OK 4480000000
+OK 447f7fffff
+ERR
+ERR
+ERR
+### double-nan-boundaries
+# NaN with the fraction bit only in the low word, or only in the high word, is rejected
+enc_double 7ff0000000000000
+enc_double fff0000000000000
+enc_double 8000000000000000
+enc_double 7ff0000000000001
+enc_double 7ff8000000000000
+enc_double fff0000100000000
+---
+OK 55087ff0000000000000
+OK 5508fff0000000000000
+OK 55088000000000000000
+ERR
+ERR
+ERR
+### signed-minimal-length
+# two's complement minimal length boundaries (20.2.5)
+enc_signed 127
+enc_signed 128
+enc_signed -128
+enc_signed -129
+enc_signed 8388607
+enc_signed 8388608
+enc_signed -8388609
+enc_signed -2147483648
+---
+OK 317f
+OK 320080
+OK 3180
+OK 32ff7f
+OK 337fffff
+OK 3400800000
+OK 34ff7fffff
+OK 3480000000
+### unsigned-minimal-length
+# minimal length boundaries (20.2.4)
+enc_unsigned 255
+enc_unsigned 65536
+enc_unsigned 16777216
+enc_unsigned 4294967295
+---
+OK 21ff
+OK 23010000
+OK 2401000000
+OK 24ffffffff
+### header-extended-tag-and-length
+# extended tag number, extended length 253/254 boundary, reserved tag 255 (20.2.1)
+enc_ctx_unsigned 15 1
+enc_ctx_signed 254 -1
+enc_ctx_unsigned 255 1
+enc_ctx_bool 3 1
+enc_ctx_bool 20 0
+enc_open 15
+enc_close 254
+enc_open 255
+enc_octets rep:00:253
+enc_octets rep:00:254
+---
+OK f90f01
+OK f9feff
+ERR
+OK 3901
+OK f91400
+OK fe0f
+OK fffe
+ERR
+OK 65fd0000000000000000000000000000..2811e668855c2e97/255
+OK 65fe00fe000000000000000000000000..60d83eb8c196dc46/258
+### buffer-too-small
+# nothing is written when the value does not fit
+enc_null @0
+enc_real 42900000 @4
+enc_double 4052000000000000 @9
+enc_ctx_unsigned 20 256 @3
+enc_open 20 @1
+enc_date 1991 1 24 4 @4
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR

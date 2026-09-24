@@ -1,0 +1,284 @@
+# CR-102 regression vectors: encoder edge cases touched by the CR-102 refactoring
+# (shared tag-header writer, shared minimal-length integer writer, integer NaN test).
+# Expected results were produced by the pre-CR-102 implementation; CR-102 must not
+# change any of them. Run: python3 run_vectors.py acceptance.vec cr102.vec
+### real-nan-refused
+# E5a: every NaN (quiet, signalling, negative, max payload) -> ERR
+enc_real 7fc00000
+enc_real 7f800001
+enc_real ffc00000
+enc_real ff800001
+enc_real 7fffffff
+enc_real ffffffff
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+### real-special-values
+# E5: +/-Inf, -0.0, subnormal, max finite are encoded bit-exact
+enc_real 7f800000
+enc_real ff800000
+enc_real 80000000
+enc_real 00000001
+enc_real 7f7fffff
+enc_real 807fffff
+---
+OK 447f800000
+OK 44ff800000
+OK 4480000000
+OK 4400000001
+OK 447f7fffff
+OK 44807fffff
+### double-nan-refused
+# E15a: every NaN, incl. fraction bits only in the high or only in the low word -> ERR
+enc_double 7ff8000000000000
+enc_double 7ff0000000000001
+enc_double 7ff0000100000000
+enc_double fff8000000000000
+enc_double fff0000000000001
+enc_double 7fffffffffffffff
+enc_double ffffffffffffffff
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+### double-special-values
+# E15: +/-Inf, -0.0, subnormal, max finite are encoded bit-exact
+enc_double 7ff0000000000000
+enc_double fff0000000000000
+enc_double 8000000000000000
+enc_double 0000000000000001
+enc_double 7fefffffffffffff
+enc_double 000fffffffffffff
+---
+OK 55087ff0000000000000
+OK 5508fff0000000000000
+OK 55088000000000000000
+OK 55080000000000000001
+OK 55087fefffffffffffff
+OK 5508000fffffffffffff
+### real-double-capacity
+# G1: one byte short -> ERR (buffer untouched), exact fit -> OK
+enc_real 42900000 @4
+enc_real 42900000 @5
+enc_double 4052000000000000 @9
+enc_double 4052000000000000 @10
+enc_real 7fc00000 @0
+---
+ERR
+OK 4442900000
+ERR
+OK 55084052000000000000
+ERR
+### unsigned-length-boundaries
+# E3: minimal content length at every octet boundary
+enc_unsigned 0
+enc_unsigned 255
+enc_unsigned 256
+enc_unsigned 65535
+enc_unsigned 65536
+enc_unsigned 16777215
+enc_unsigned 16777216
+enc_unsigned 4294967295
+enc_enum 4294967295
+enc_enum 256
+---
+OK 2100
+OK 21ff
+OK 220100
+OK 22ffff
+OK 23010000
+OK 23ffffff
+OK 2401000000
+OK 24ffffffff
+OK 94ffffffff
+OK 920100
+### signed-length-boundaries
+# E4: minimal two's-complement length at every octet boundary
+enc_signed 0
+enc_signed -1
+enc_signed 127
+enc_signed 128
+enc_signed -128
+enc_signed -129
+enc_signed 32767
+enc_signed 32768
+enc_signed -32768
+enc_signed -32769
+enc_signed 8388607
+enc_signed 8388608
+enc_signed -8388608
+enc_signed -8388609
+enc_signed 2147483647
+enc_signed -2147483648
+---
+OK 3100
+OK 31ff
+OK 317f
+OK 320080
+OK 3180
+OK 32ff7f
+OK 327fff
+OK 33008000
+OK 328000
+OK 33ff7fff
+OK 337fffff
+OK 3400800000
+OK 33800000
+OK 34ff7fffff
+OK 347fffffff
+OK 3480000000
+### integer-capacity
+# G1: one byte short -> ERR, exact fit -> OK
+enc_unsigned 16777216 @4
+enc_unsigned 16777216 @5
+enc_signed -129 @2
+enc_signed -129 @3
+enc_ctx_unsigned 20 65536 @4
+enc_ctx_unsigned 20 65536 @5
+---
+ERR
+OK 2401000000
+ERR
+OK 32ff7f
+ERR
+OK fb14010000
+### context-extended-tags
+# G3: tags 14 / 15 / 254 and reserved 255 for every context encoder
+enc_ctx_unsigned 14 1
+enc_ctx_unsigned 15 1
+enc_ctx_unsigned 254 70000
+enc_ctx_unsigned 255 1
+enc_ctx_enum 15 0
+enc_ctx_enum 255 0
+enc_ctx_signed 15 -129
+enc_ctx_signed 254 2147483647
+enc_ctx_signed 255 0
+enc_ctx_bool 14 1
+enc_ctx_bool 15 0
+enc_ctx_bool 255 1
+---
+OK e901
+OK f90f01
+OK fbfe011170
+ERR
+OK f90f00
+ERR
+OK fa0fff7f
+OK fcfe7fffffff
+ERR
+OK e901
+OK f90f00
+ERR
+### open-close-tags
+# E14/G5: opening/closing tags, extended tag numbers, tag 255, capacity
+enc_open 0
+enc_close 14
+enc_open 15
+enc_close 15
+enc_open 254
+enc_close 255
+enc_open 15 @1
+enc_close 15 @2
+---
+OK 0e
+OK ef
+OK fe0f
+OK ff0f
+OK fefe
+ERR
+ERR
+OK ff0f
+### null-boolean
+# E1/E2: single-octet headers, capacity 0 -> ERR
+enc_null
+enc_bool 0
+enc_bool 1
+enc_null @0
+enc_bool 1 @0
+---
+OK 00
+OK 10
+OK 11
+ERR
+ERR
+### header-length-forms
+# G4: shortest extended-length form at each boundary
+enc_octets -
+enc_octets rep:ab:4
+enc_octets rep:ab:5
+enc_octets rep:ab:253
+enc_octets rep:ab:254
+enc_octets rep:ab:65535 @65539
+enc_octets rep:ab:65536 @65542
+enc_str -
+enc_str rep:41:252
+enc_str rep:41:253
+enc_bits rep:1:2016
+enc_bits rep:1:2017
+---
+OK 60
+OK 64abababab
+OK 6505ababababab
+OK 65fdabababababababababababababab..c456215935f4a136/255
+OK 65fe00feabababababababababababab..d51d44ebca21dc68/258
+OK 65feffffabababababababababababab..68b00b5ca1769915/65539
+OK 65ff00010000abababababababababab..07c1678433a731bc/65542
+OK 7100
+OK 75fd0041414141414141414141414141..0383bba108e5c183/255
+OK 75fe00fe004141414141414141414141..276e7407f803f035/258
+OK 85fd00ffffffffffffffffffffffffff..551a9e8e34ca9b9b/255
+OK 85fe00fe07ffffffffffffffffffffff..b669e037578c7355/258
+### header-length-capacity
+# G1 with extended lengths: one byte short -> ERR, exact fit -> OK
+enc_octets rep:ab:253 @254
+enc_octets rep:ab:253 @255
+enc_octets rep:ab:254 @257
+enc_octets rep:ab:254 @258
+enc_octets rep:ab:65535 @65538
+enc_octets rep:ab:65535 @65539
+enc_octets rep:ab:65536 @65541
+enc_octets rep:ab:65536 @65542
+enc_str rep:41:253 @257
+enc_str rep:41:253 @258
+enc_bits 101 @2
+enc_bits 101 @3
+---
+ERR
+OK 65fdabababababababababababababab..c456215935f4a136/255
+ERR
+OK 65fe00feabababababababababababab..d51d44ebca21dc68/258
+ERR
+OK 65feffffabababababababababababab..68b00b5ca1769915/65539
+ERR
+OK 65ff00010000abababababababababab..07c1678433a731bc/65542
+ERR
+OK 75fe00fe004141414141414141414141..276e7407f803f035/258
+ERR
+OK 8205a0
+### fixed-size-types
+# E9..E11: fixed 4-octet contents and their capacity check
+enc_date 2154 14 34 7
+enc_date 65535 255 255 255
+enc_date 1900 1 1 1 @4
+enc_time 23 59 59 99
+enc_time 255 255 255 255 @4
+enc_oid 1023 4194303
+enc_oid 0 0
+enc_oid 0 0 @4
+---
+OK a4fe0e2207
+OK a4ffffffff
+ERR
+OK b4173b3b63
+ERR
+OK c4ffffffff
+OK c400000000
+ERR

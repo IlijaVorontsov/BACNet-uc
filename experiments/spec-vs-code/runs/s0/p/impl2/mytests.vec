@@ -1,0 +1,587 @@
+# Hand-derived vectors, one block per SPEC rule
+### G1-capacity
+enc_unsigned 72 @0
+enc_unsigned 72 @1
+enc_unsigned 72 @2
+enc_null @0
+enc_bool 0 @0
+enc_real 3f800000 @4
+enc_octets rep:11:5 @6
+enc_octets rep:11:5 @7
+enc_str 41 @2
+enc_str 41 @3
+enc_bits 1 @2
+enc_bits 1 @3
+enc_date 2024 1 1 1 @4
+enc_time 1 2 3 4 @4
+enc_oid 8 1 @4
+enc_ctx_unsigned 20 1 @2
+enc_ctx_unsigned 20 1 @3
+enc_open 20 @1
+enc_open 20 @2
+enc_close 3 @0
+enc_ctx_bool 3 1 @1
+---
+ERR
+ERR
+OK 2148
+ERR
+ERR
+ERR
+ERR
+OK 65051111111111
+ERR
+OK 720041
+ERR
+OK 820780
+ERR
+ERR
+ERR
+ERR
+OK f91401
+ERR
+OK fe14
+ERR
+ERR
+### G3-extended-tags
+enc_ctx_unsigned 14 5
+enc_ctx_unsigned 15 5
+enc_ctx_unsigned 254 5
+enc_ctx_unsigned 255 5
+enc_ctx_bool 15 0
+enc_ctx_bool 255 0
+enc_open 255
+enc_close 255
+enc_open 14
+enc_close 254
+---
+OK e905
+OK f90f05
+OK f9fe05
+ERR
+OK f90f00
+ERR
+ERR
+ERR
+OK ee
+OK fffe
+### G4-lengths-short
+enc_octets rep:00:4
+enc_octets rep:00:5
+enc_str 41424344
+enc_str 41424344 @6
+enc_bits rep:1:24
+enc_bits rep:1:25
+---
+OK 6400000000
+OK 65050000000000
+OK 75050041424344
+ERR
+OK 8400ffffff
+OK 850507ffffff80
+### G5-open-close
+enc_open 0
+enc_close 0
+enc_open 15
+enc_close 15
+---
+OK 0e
+OK 0f
+OK fe0f
+OK ff0f
+### E1-E2
+enc_null
+enc_bool 0
+enc_bool 1
+---
+OK 00
+OK 10
+OK 11
+### E3-unsigned-enum
+enc_unsigned 0
+enc_unsigned 255
+enc_unsigned 256
+enc_unsigned 65535
+enc_unsigned 65536
+enc_unsigned 16777215
+enc_unsigned 16777216
+enc_unsigned 4294967295
+enc_enum 0
+enc_enum 255
+enc_enum 256
+enc_enum 4294967295
+---
+OK 2100
+OK 21ff
+OK 220100
+OK 22ffff
+OK 23010000
+OK 23ffffff
+OK 2401000000
+OK 24ffffffff
+OK 9100
+OK 91ff
+OK 920100
+OK 94ffffffff
+### E4-signed
+enc_signed 0
+enc_signed 127
+enc_signed 128
+enc_signed -1
+enc_signed -128
+enc_signed -129
+enc_signed 32767
+enc_signed 32768
+enc_signed -32768
+enc_signed -32769
+enc_signed 8388607
+enc_signed 8388608
+enc_signed -8388608
+enc_signed -8388609
+enc_signed 2147483647
+enc_signed -2147483648
+---
+OK 3100
+OK 317f
+OK 320080
+OK 31ff
+OK 3180
+OK 32ff7f
+OK 327fff
+OK 33008000
+OK 328000
+OK 33ff7fff
+OK 337fffff
+OK 3400800000
+OK 33800000
+OK 34ff7fffff
+OK 347fffffff
+OK 3480000000
+### E5-real
+enc_real 80000000
+enc_real 00000000
+enc_real 7f800000
+enc_real ff800000
+enc_real 00000001
+enc_real 7f7fffff
+enc_real 7fc00000
+enc_real ffc00000
+enc_real 7f800001
+enc_real ff800001
+enc_real 7fffffff
+enc_real ffffffff
+enc_real 7fbfffff
+---
+OK 4480000000
+OK 4400000000
+OK 447f800000
+OK 44ff800000
+OK 4400000001
+OK 447f7fffff
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+### E6-E7-octets-str
+enc_octets -
+enc_octets 00
+enc_str -
+enc_str ff00fe
+---
+OK 60
+OK 6100
+OK 7100
+OK 7400ff00fe
+### E8-bits
+enc_bits -
+enc_bits 0
+enc_bits 1
+enc_bits 10000000
+enc_bits 100000001
+enc_bits 11111111
+enc_bits 2
+enc_bits 1111111112
+enc_bits 9
+---
+OK 8100
+OK 820700
+OK 820780
+OK 820080
+OK 83078080
+OK 8200ff
+ERR
+ERR
+ERR
+### E9-date
+enc_date 1900 1 1 1
+enc_date 2154 12 31 7
+enc_date 1899 1 1 1
+enc_date 2155 1 1 1
+enc_date 65535 255 255 255
+enc_date 255 1 1 1
+enc_date 0 1 1 1
+enc_date 2024 0 1 1
+enc_date 2024 13 1 1
+enc_date 2024 14 1 1
+enc_date 2024 15 1 1
+enc_date 2024 254 1 1
+enc_date 2024 1 0 1
+enc_date 2024 1 32 1
+enc_date 2024 1 33 1
+enc_date 2024 1 34 1
+enc_date 2024 1 35 1
+enc_date 2024 1 254 1
+enc_date 2024 1 1 0
+enc_date 2024 1 1 8
+enc_date 2024 1 1 254
+enc_date 65534 1 1 1
+enc_date 2024 2 31 1
+---
+OK a400010101
+OK a4fe0c1f07
+ERR
+ERR
+OK a4ffffffff
+ERR
+ERR
+ERR
+OK a47c0d0101
+OK a47c0e0101
+ERR
+ERR
+ERR
+OK a47c012001
+OK a47c012101
+OK a47c012201
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+OK a47c021f01
+### E10-time
+enc_time 0 0 0 0
+enc_time 23 59 59 99
+enc_time 255 255 255 255
+enc_time 24 0 0 0
+enc_time 0 60 0 0
+enc_time 0 0 60 0
+enc_time 0 0 0 100
+enc_time 254 0 0 0
+enc_time 0 0 0 254
+---
+OK b400000000
+OK b4173b3b63
+OK b4ffffffff
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+### E11-oid
+enc_oid 0 0
+enc_oid 1023 4194303
+enc_oid 1024 0
+enc_oid 0 4194304
+enc_oid 65535 0
+enc_oid 8 4294967295
+---
+OK c400000000
+OK c4ffffffff
+ERR
+ERR
+ERR
+ERR
+### E12-E14-context
+enc_ctx_unsigned 0 0
+enc_ctx_unsigned 1 4294967295
+enc_ctx_bool 0 0
+enc_ctx_bool 2 1
+enc_ctx_bool 14 1
+---
+OK 0900
+OK 1cffffffff
+OK 0900
+OK 2901
+OK e901
+### D1-dec_tag
+dec_tag -
+dec_tag 00
+dec_tag 11
+dec_tag 29
+dec_tag 0e
+dec_tag 0f
+dec_tag 06
+dec_tag 07
+dec_tag f6
+dec_tag fe0f
+dec_tag ff0f
+dec_tag f8
+dec_tag f8ff
+dec_tag f8fe
+dec_tag f903
+dec_tag f900
+dec_tag 65
+dec_tag 6503
+dec_tag 65fd
+dec_tag 65fe
+dec_tag 65fe00
+dec_tag 65fe0010
+dec_tag 65ff
+dec_tag 65ff000000
+dec_tag 65ffffffffff
+dec_tag 15
+dec_tag 1501
+dec_tag 0d05
+dec_tag fd2005
+dec_tag fd20
+dec_tag fd20fe0102
+dec_tag c4
+dec_tag 4c
+---
+ERR
+OK hl=1 tag=0 app lvt=0
+OK hl=1 tag=1 app lvt=1
+OK hl=1 tag=2 ctx lvt=1
+OK hl=1 tag=0 ctx open
+OK hl=1 tag=0 ctx close
+ERR
+ERR
+ERR
+OK hl=2 tag=15 ctx open
+OK hl=2 tag=15 ctx close
+ERR
+ERR
+OK hl=2 tag=254 ctx lvt=0
+OK hl=2 tag=3 ctx lvt=1
+OK hl=2 tag=0 ctx lvt=1
+ERR
+OK hl=2 tag=6 app lvt=3
+OK hl=2 tag=6 app lvt=253
+ERR
+ERR
+OK hl=4 tag=6 app lvt=16
+ERR
+ERR
+OK hl=6 tag=6 app lvt=4294967295
+ERR
+OK hl=2 tag=1 app lvt=1
+OK hl=2 tag=0 ctx lvt=5
+OK hl=3 tag=32 ctx lvt=5
+ERR
+OK hl=5 tag=32 ctx lvt=258
+OK hl=1 tag=12 app lvt=4
+OK hl=1 tag=4 ctx lvt=4
+### D2-dec_app-errors
+dec_app -
+dec_app 09
+dec_app 0e
+dec_app 0f
+dec_app 5800000000000000
+dec_app 5800000000000000
+dec_app d0
+dec_app e0
+dec_app f00f
+dec_app f0fe
+dec_app f0ff
+dec_app 2102
+dec_app 21
+dec_app 22ff
+dec_app 6503
+dec_app 650341
+dec_app 65034142
+dec_app 6503414243
+dec_app 06
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+OK n=2 u 2
+ERR
+ERR
+ERR
+ERR
+ERR
+OK n=5 oct 414243
+ERR
+### D3-null-bool
+dec_app 00
+dec_app 0000
+dec_app 01
+dec_app 0100
+dec_app 10
+dec_app 11
+dec_app 12
+dec_app 1501
+dec_app 14
+dec_app 05
+dec_app f000
+dec_app f101
+---
+OK n=1 null
+OK n=1 null
+ERR
+ERR
+OK n=1 bool 0
+OK n=1 bool 1
+ERR
+ERR
+ERR
+ERR
+OK n=2 null
+OK n=2 bool 1
+### D4-integers
+dec_app 2100
+dec_app 22ffff
+dec_app 2200 05
+dec_app 220005
+dec_app 24ffffffff
+dec_app 2500000000ff
+dec_app 20
+dec_app 3100
+dec_app 31ff
+dec_app 3180
+dec_app 32ffff
+dec_app 32ff7f
+dec_app 320080
+dec_app 33800000
+dec_app 3480000000
+dec_app 347fffffff
+dec_app 34ffffffff
+dec_app 30
+dec_app 350500000000ff
+dec_app 9100
+dec_app 94ffffffff
+dec_app 90
+dec_app 9505ffffffffff
+dec_app 250400000005
+---
+OK n=2 u 0
+OK n=3 u 65535
+BADCMD
+OK n=3 u 5
+OK n=5 u 4294967295
+ERR
+ERR
+OK n=2 i 0
+OK n=2 i -1
+OK n=2 i -128
+OK n=3 i -1
+OK n=3 i -129
+OK n=3 i 128
+OK n=4 i -8388608
+OK n=5 i -2147483648
+OK n=5 i 2147483647
+OK n=5 i -1
+ERR
+ERR
+OK n=2 enum 0
+OK n=5 enum 4294967295
+ERR
+ERR
+OK n=6 u 5
+### D5-real
+dec_app 447fc00001
+dec_app 44ff800001
+dec_app 4480000000
+dec_app 43000000
+dec_app 450500000000ff
+dec_app 45040000803f
+dec_app 440000
+---
+OK n=5 r 7fc00001
+OK n=5 r ff800001
+OK n=5 r 80000000
+ERR
+ERR
+OK n=6 r 0000803f
+ERR
+### D6-D7-strings
+dec_app 60
+dec_app 6000
+dec_app 610001
+dec_app 70
+dec_app 7100
+dec_app 7104
+dec_app 71ff
+dec_app 7203ab
+dec_app 7300
+---
+OK n=1 oct -
+OK n=1 oct -
+OK n=2 oct 00
+ERR
+OK n=2 str cs=0 -
+OK n=2 str cs=4 -
+OK n=2 str cs=255 -
+OK n=3 str cs=3 ab
+ERR
+### D8-bits
+dec_app 80
+dec_app 8100
+dec_app 8101
+dec_app 8107
+dec_app 820780
+dec_app 820700
+dec_app 8200ff
+dec_app 8208ff
+dec_app 82ff00
+dec_app 83078080
+dec_app 820781
+dec_app 850507ffffff80
+dec_app 8203a8
+---
+ERR
+OK n=2 bits -
+ERR
+ERR
+OK n=3 bits 1
+OK n=3 bits 0
+OK n=3 bits 11111111
+ERR
+ERR
+OK n=4 bits 100000001
+OK n=3 bits 1
+OK n=7 bits 1111111111111111111111111
+OK n=3 bits 10101
+### D9-date-time-oid
+dec_app a45b011804
+dec_app a4ffffffff
+dec_app a400000000
+dec_app a4fe0f2300
+dec_app a3000000
+dec_app a50500000000ff
+dec_app b411232d11
+dec_app b4ff00fe63
+dec_app b3000000
+dec_app c400c0000f
+dec_app c4ffffffff
+dec_app c400000000
+dec_app c5040000000100
+---
+OK n=5 date 1991 1 24 4
+OK n=5 date 65535 255 255 255
+OK n=5 date 1900 0 0 0
+OK n=5 date 2154 15 35 0
+ERR
+ERR
+OK n=5 time 17 35 45 17
+OK n=5 time 255 0 254 99
+ERR
+OK n=5 oid 3 15
+OK n=5 oid 1023 4194303
+OK n=5 oid 0 0
+OK n=6 oid 0 1

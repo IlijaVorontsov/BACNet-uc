@@ -1,0 +1,1258 @@
+# Black-box tests derived from SPEC.md v1.0 (no implementation consulted).
+# Header tags = rule ids targeted.  Expected outputs derived by hand from SPEC.md.
+# Comments are only placed in input sections (the runner treats '#' lines in
+# expected sections as expected output).
+
+# ===================== Encoders =====================
+
+### t001 E1 G1 G2
+enc_null
+enc_null @1
+enc_null @0
+---
+OK 00
+OK 00
+ERR
+
+### t002 E2 G1 G2
+enc_bool 0
+enc_bool 1
+enc_bool 0 @1
+enc_bool 1 @0
+---
+OK 10
+OK 11
+OK 10
+ERR
+
+### t003 E3 G4
+enc_unsigned 0
+enc_unsigned 255
+enc_unsigned 256
+---
+OK 2100
+OK 21ff
+OK 220100
+
+### t004 E3 G4
+enc_unsigned 65535
+enc_unsigned 65536
+---
+OK 22ffff
+OK 23010000
+
+### t005 E3 G4
+enc_unsigned 16777215
+enc_unsigned 16777216
+enc_unsigned 4294967295
+---
+OK 23ffffff
+OK 2401000000
+OK 24ffffffff
+
+### t006 E3 G1
+enc_unsigned 72 @1
+enc_unsigned 72 @2
+enc_unsigned 256 @2
+enc_unsigned 4294967295 @4
+enc_unsigned 4294967295 @5
+---
+ERR
+OK 2148
+ERR
+ERR
+OK 24ffffffff
+
+### t007 E3
+enc_enum 0
+enc_enum 255
+enc_enum 256
+---
+OK 9100
+OK 91ff
+OK 920100
+
+### t008 E3
+enc_enum 65535
+enc_enum 65536
+enc_enum 4294967295
+---
+OK 92ffff
+OK 93010000
+OK 94ffffffff
+
+### t009 E3 G1
+enc_enum 16777216 @4
+enc_enum 16777216 @5
+---
+ERR
+OK 9401000000
+
+### t010 E4
+enc_signed 0
+enc_signed -1
+enc_signed 127
+enc_signed -128
+---
+OK 3100
+OK 31ff
+OK 317f
+OK 3180
+
+### t011 E4
+enc_signed 128
+enc_signed -129
+enc_signed 255
+enc_signed -256
+---
+OK 320080
+OK 32ff7f
+OK 3200ff
+OK 32ff00
+
+### t012 E4
+enc_signed 32767
+enc_signed -32768
+enc_signed 32768
+enc_signed -32769
+---
+OK 327fff
+OK 328000
+OK 33008000
+OK 33ff7fff
+
+### t013 E4
+enc_signed 8388607
+enc_signed -8388608
+enc_signed 8388608
+enc_signed -8388609
+---
+OK 337fffff
+OK 33800000
+OK 3400800000
+OK 34ff7fffff
+
+### t014 E4
+enc_signed 2147483647
+enc_signed -2147483648
+---
+OK 347fffffff
+OK 3480000000
+
+### t015 E4 G1
+enc_signed -129 @2
+enc_signed -129 @3
+enc_signed -2147483648 @4
+---
+ERR
+OK 32ff7f
+ERR
+
+### t016 E5
+# +0.0 and -0.0 must stay distinct (bit-exact)
+enc_real 00000000
+enc_real 80000000
+---
+OK 4400000000
+OK 4480000000
+
+### t017 E5
+enc_real 3f800000
+enc_real bf800000
+enc_real 7f7fffff
+enc_real ff7fffff
+---
+OK 443f800000
+OK 44bf800000
+OK 447f7fffff
+OK 44ff7fffff
+
+### t018 E5 E5a
+# +/-Infinity are encoded normally
+enc_real 7f800000
+enc_real ff800000
+---
+OK 447f800000
+OK 44ff800000
+
+### t019 E5
+# subnormals / smallest normal are not flushed
+enc_real 00000001
+enc_real 807fffff
+enc_real 00800000
+---
+OK 4400000001
+OK 44807fffff
+OK 4400800000
+
+### t020 E5a G1
+# quiet NaNs, both signs, with and without payload
+enc_real 7fc00000
+enc_real ffc00000
+enc_real 7fc00001
+enc_real ffffffff
+---
+ERR
+ERR
+ERR
+ERR
+
+### t021 E5a G1
+# signalling NaNs and other payloads
+enc_real 7f800001
+enc_real ff800001
+enc_real 7fa00000
+enc_real 7fbfffff
+enc_real 7fffffff
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### t022 E5 E5a G1
+enc_real 42900000 @4
+enc_real 42900000 @5
+enc_real 7fc00000 @0
+enc_real 7fc00000 @5
+---
+ERR
+OK 4442900000
+ERR
+ERR
+
+### t023 E6 G4
+enc_octets -
+enc_octets 00
+enc_octets 01020304
+---
+OK 60
+OK 6100
+OK 6401020304
+
+### t024 E6 G4
+enc_octets 0102030405
+enc_octets rep:ab:62
+---
+OK 65050102030405
+OK 653eabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab
+
+### t025 E6 G1
+enc_octets 0102030405 @6
+enc_octets 0102030405 @7
+enc_octets - @0
+enc_octets - @1
+---
+ERR
+OK 65050102030405
+ERR
+OK 60
+
+### t026 E6 G4 G1
+# 253 bytes -> 1+1+253 = 255 needed; 254 bytes -> 1+1+2+254 = 258 needed
+enc_octets rep:00:253 @254
+enc_octets rep:00:254 @257
+---
+ERR
+ERR
+
+### t027 E6 G4 G1
+# 65535 bytes -> 1+1+2+65535 = 65539; 65536 bytes -> 1+1+4+65536 = 65542
+enc_octets rep:00:65535 @65538
+enc_octets rep:00:65536 @65541
+---
+ERR
+ERR
+
+### t028 E7 G4
+enc_str -
+enc_str 41
+enc_str 414243
+enc_str 41424344
+---
+OK 7100
+OK 720041
+OK 7400414243
+OK 75050041424344
+
+### t029 E7 G4
+enc_str rep:41:61
+---
+OK 753e0041414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141
+
+### t030 E7a
+# bytes are not validated as UTF-8
+enc_str ff
+enc_str c0af
+enc_str 00
+enc_str eda080
+enc_str 410042
+---
+OK 7200ff
+OK 7300c0af
+OK 720000
+OK 7400eda080
+OK 7400410042
+
+### t031 E7 G1
+enc_str 414243 @4
+enc_str 414243 @5
+enc_str - @1
+enc_str - @2
+---
+ERR
+OK 7400414243
+ERR
+OK 7100
+
+### t032 E7 G4 G1
+# 252 chars -> content 253 -> 255 bytes; 253 chars -> content 254 -> 1+1+2+254 = 258 bytes
+enc_str rep:41:252 @254
+enc_str rep:41:253 @257
+---
+ERR
+ERR
+
+### t033 E8
+enc_bits -
+enc_bits 1
+enc_bits 0
+---
+OK 8100
+OK 820780
+OK 820700
+
+### t034 E8
+enc_bits 11111111
+enc_bits 10000001
+enc_bits 1000001
+enc_bits 01
+---
+OK 8200ff
+OK 820081
+OK 820182
+OK 820640
+
+### t035 E8
+enc_bits 101010101
+enc_bits 1100101011110000
+---
+OK 8307aa80
+OK 8300caf0
+
+### t036 E8 G4
+enc_bits rep:1:24
+enc_bits rep:1:25
+---
+OK 8400ffffff
+OK 850507ffffff80
+
+### t037 E8 G4
+enc_bits rep:0:32
+enc_bits rep:1:40
+---
+OK 85050000000000
+OK 850600ffffffffff
+
+### t038 E8a G1
+enc_bits 2
+enc_bits 10201
+enc_bits 9
+---
+ERR
+ERR
+ERR
+
+### t039 E8a G1
+# invalid value after many valid bits: no partial write allowed
+enc_bits rep:1:16+2
+enc_bits 0+rep:1:30+5
+---
+ERR
+ERR
+
+### t040 E8 G1
+enc_bits 101010101 @3
+enc_bits 101010101 @4
+enc_bits - @1
+enc_bits - @2
+---
+ERR
+OK 8307aa80
+ERR
+OK 8100
+
+### t041 E8 G4 G1
+# 2024 bits = 253 data octets -> content 254 -> 1+1+2+254 = 258 bytes
+enc_bits rep:1:2024 @257
+---
+ERR
+
+### t042 E9 E9a
+enc_date 1900 1 1 1
+enc_date 2154 12 31 7
+enc_date 65535 255 255 255
+---
+OK a400010101
+OK a4fe0c1f07
+OK a4ffffffff
+
+### t043 E9 E9a
+# special month/day values and mixed unspecified fields
+enc_date 2024 13 32 255
+enc_date 2024 14 33 1
+enc_date 65535 5 34 3
+enc_date 2000 255 1 255
+---
+OK a47c0d20ff
+OK a47c0e2101
+OK a4ff052203
+OK a464ff01ff
+
+### t044 E9a G1
+# year range 1900..2154 or 65535 only (255 and 2155 are not "unspecified")
+enc_date 2155 1 1 1
+enc_date 1899 12 31 7
+enc_date 255 1 1 1
+enc_date 0 1 1 1
+enc_date 65534 1 1 1
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### t045 E9a G1
+enc_date 2024 0 1 1
+enc_date 2024 15 1 1
+enc_date 2024 254 1 1
+---
+ERR
+ERR
+ERR
+
+### t046 E9a G1
+enc_date 2024 1 0 1
+enc_date 2024 1 35 1
+enc_date 2024 1 254 1
+---
+ERR
+ERR
+ERR
+
+### t047 E9a G1
+enc_date 2024 1 1 0
+enc_date 2024 1 1 8
+enc_date 2024 1 1 254
+---
+ERR
+ERR
+ERR
+
+### t048 E9 G1
+enc_date 1991 1 24 4 @4
+enc_date 1991 1 24 4 @5
+---
+ERR
+OK a45b011804
+
+### t049 E10 E10a
+enc_time 0 0 0 0
+enc_time 23 59 59 99
+enc_time 255 255 255 255
+enc_time 12 255 0 255
+---
+OK b400000000
+OK b4173b3b63
+OK b4ffffffff
+OK b40cff00ff
+
+### t050 E10a G1
+enc_time 24 0 0 0
+enc_time 0 60 0 0
+enc_time 0 0 60 0
+enc_time 0 0 0 100
+---
+ERR
+ERR
+ERR
+ERR
+
+### t051 E10a G1
+enc_time 254 0 0 0
+enc_time 0 254 0 0
+enc_time 0 0 254 0
+enc_time 0 0 0 254
+---
+ERR
+ERR
+ERR
+ERR
+
+### t052 E10 G1
+enc_time 17 35 45 17 @4
+enc_time 17 35 45 17 @5
+---
+ERR
+OK b411232d11
+
+### t053 E11
+enc_oid 0 0
+enc_oid 1023 4194303
+enc_oid 1023 0
+enc_oid 0 4194303
+enc_oid 8 1
+---
+OK c400000000
+OK c4ffffffff
+OK c4ffc00000
+OK c4003fffff
+OK c402000001
+
+### t054 E11a G1
+# never truncate type or instance
+enc_oid 1024 0
+enc_oid 0 4194304
+enc_oid 1023 4194304
+enc_oid 65535 0
+enc_oid 2047 4194303
+enc_oid 1 4294967295
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### t055 E11 G1
+enc_oid 3 15 @4
+enc_oid 3 15 @5
+---
+ERR
+OK c400c0000f
+
+### t056 E12 G2
+enc_ctx_unsigned 0 0
+enc_ctx_unsigned 1 255
+enc_ctx_unsigned 0 256
+---
+OK 0900
+OK 19ff
+OK 0a0100
+
+### t057 E12
+enc_ctx_unsigned 3 65536
+enc_ctx_unsigned 14 4294967295
+---
+OK 3b010000
+OK ecffffffff
+
+### t058 E12 G3
+enc_ctx_unsigned 15 0
+enc_ctx_unsigned 20 255
+enc_ctx_unsigned 254 16777216
+---
+OK f90f00
+OK f914ff
+OK fcfe01000000
+
+### t059 E12 G3 G1
+enc_ctx_unsigned 255 0
+enc_ctx_unsigned 255 4294967295
+---
+ERR
+ERR
+
+### t060 E12 G3 G1
+enc_ctx_unsigned 15 256 @3
+enc_ctx_unsigned 15 256 @4
+---
+ERR
+OK fa0f0100
+
+### t061 E13
+enc_ctx_bool 0 0
+enc_ctx_bool 0 1
+enc_ctx_bool 3 1
+enc_ctx_bool 14 0
+---
+OK 0900
+OK 0901
+OK 3901
+OK e900
+
+### t062 E13 G3
+enc_ctx_bool 15 1
+enc_ctx_bool 254 0
+---
+OK f90f01
+OK f9fe00
+
+### t063 E13 G3 G1
+enc_ctx_bool 255 0
+enc_ctx_bool 255 1
+---
+ERR
+ERR
+
+### t064 E13 G1
+enc_ctx_bool 2 1 @1
+enc_ctx_bool 2 1 @2
+enc_ctx_bool 15 1 @2
+---
+ERR
+OK 2901
+ERR
+
+### t065 E14 G5
+enc_open 0
+enc_close 0
+enc_open 5
+enc_open 14
+enc_close 14
+---
+OK 0e
+OK 0f
+OK 5e
+OK ee
+OK ef
+
+### t066 E14 G5 G3
+enc_open 15
+enc_close 15
+enc_open 254
+enc_close 254
+---
+OK fe0f
+OK ff0f
+OK fefe
+OK fffe
+
+### t067 E14 G3 G1
+enc_open 255
+enc_close 255
+---
+ERR
+ERR
+
+### t068 E14 G5 G1
+enc_open 15 @1
+enc_close 16 @1
+enc_open 3 @0
+enc_close 3 @1
+enc_open 16 @2
+---
+ERR
+ERR
+ERR
+OK 3f
+OK fe10
+
+
+### t069 D1 G2
+dec_tag 00
+dec_tag 11
+dec_tag 24
+---
+OK hl=1 tag=0 app lvt=0
+OK hl=1 tag=1 app lvt=1
+OK hl=1 tag=2 app lvt=4
+
+### t070 D1 G2
+# content bytes are not required / not consumed by dec_tag
+dec_tag 2148
+dec_tag c4
+dec_tag 3c
+---
+OK hl=1 tag=2 app lvt=1
+OK hl=1 tag=12 app lvt=4
+OK hl=1 tag=3 ctx lvt=4
+
+### t071 D1 G4
+dec_tag 6505
+dec_tag 65fd
+---
+OK hl=2 tag=6 app lvt=5
+OK hl=2 tag=6 app lvt=253
+
+### t072 D1 G4
+dec_tag 65fe00fe
+dec_tag 65feffff
+---
+OK hl=4 tag=6 app lvt=254
+OK hl=4 tag=6 app lvt=65535
+
+### t073 D1 G4
+dec_tag 65ff00010000
+dec_tag 65ffffffffff
+---
+OK hl=6 tag=6 app lvt=65536
+OK hl=6 tag=6 app lvt=4294967295
+
+### t074 D1 G3
+dec_tag f90f
+dec_tag fcfe
+---
+OK hl=2 tag=15 ctx lvt=1
+OK hl=2 tag=254 ctx lvt=4
+
+### t075 D1 G3 G4
+# extended tag octet precedes the extended length octets
+dec_tag fd20fe0100
+dec_tag f5fe05
+---
+OK hl=5 tag=32 ctx lvt=256
+OK hl=3 tag=254 app lvt=5
+
+### t076 D1 G5
+dec_tag 0e
+dec_tag 3f
+dec_tag fe0f
+dec_tag fffe
+---
+OK hl=1 tag=0 ctx open
+OK hl=1 tag=3 ctx close
+OK hl=2 tag=15 ctx open
+OK hl=2 tag=254 ctx close
+
+### t077 D1
+# LVT = 5 is always an extended length, even for Boolean/Null/context tags
+dec_tag 1501
+dec_tag 0500
+dec_tag 1d05
+---
+OK hl=2 tag=1 app lvt=1
+OK hl=2 tag=0 app lvt=0
+OK hl=2 tag=1 ctx lvt=5
+
+### t078 D1
+# dec_tag does not reject unsupported application tag numbers (only dec_app does)
+dec_tag d1
+dec_tag 5508
+---
+OK hl=1 tag=13 app lvt=1
+OK hl=2 tag=5 app lvt=8
+
+### t079 D1a
+# len 0 and missing extended tag octet
+dec_tag -
+dec_tag f9
+dec_tag fe
+dec_tag ff
+dec_tag f5
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### t080 D1a
+# missing extended length octets
+dec_tag 65
+dec_tag 65fe
+dec_tag 65fe00
+dec_tag 65ff
+dec_tag 65ff000000
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### t081 D1a
+# missing length octets after an extended tag octet
+dec_tag fd0f
+dec_tag fd0ffe01
+dec_tag f520
+---
+ERR
+ERR
+ERR
+
+### t082 D1a
+# extended tag number octet 255
+dec_tag f9ff
+dec_tag feff
+dec_tag fdff05
+---
+ERR
+ERR
+ERR
+
+### t083 D1a
+# application class with LVT 6/7
+dec_tag 06
+dec_tag 07
+dec_tag c6
+dec_tag f70f
+---
+ERR
+ERR
+ERR
+ERR
+
+### t084 D1b
+# extended tag octet below 15 accepted
+dec_tag f903
+dec_tag f900
+dec_tag fe02
+---
+OK hl=2 tag=3 ctx lvt=1
+OK hl=2 tag=0 ctx lvt=1
+OK hl=2 tag=2 ctx open
+
+### t085 D1b
+# non-shortest extended lengths accepted
+dec_tag 6503
+dec_tag 6500
+dec_tag 65fe0010
+---
+OK hl=2 tag=6 app lvt=3
+OK hl=2 tag=6 app lvt=0
+OK hl=4 tag=6 app lvt=16
+
+### t086 D1b
+dec_tag 65ff00000003
+dec_tag 65ff000000fe
+dec_tag 65fe0005
+dec_tag f510ff00000005
+---
+OK hl=6 tag=6 app lvt=3
+OK hl=6 tag=6 app lvt=254
+OK hl=4 tag=6 app lvt=5
+OK hl=7 tag=16 app lvt=5
+
+
+### t087 D2 D1a
+dec_app -
+dec_app 65
+dec_app 06
+dec_app f1ff00
+---
+ERR
+ERR
+ERR
+ERR
+
+### t088 D2
+# context class, including opening/closing tags
+dec_app 0900
+dec_app 1901
+dec_app 0e
+dec_app 0f
+dec_app f90f00
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### t089 D2
+# application tag 5 (Double) not supported
+dec_app 5508+0000000000000000
+dec_app 5400000000
+---
+ERR
+ERR
+
+### t090 D2
+# application tags 13, 14, >= 15
+dec_app d100
+dec_app e100
+dec_app f10f00
+dec_app f1fe00
+---
+ERR
+ERR
+ERR
+ERR
+
+### t091 D2
+# content extending beyond len
+dec_app 2201
+dec_app 21
+dec_app 44000000
+dec_app 631234
+dec_app a4000000
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### t092 D2 D1
+# content beyond len with extended lengths (incl. 32-bit wrap: 6 + 0xffffffff)
+dec_app 6505+01020304
+dec_app 65fe0100+rep:00:255
+dec_app 65ffffffffff00
+---
+ERR
+ERR
+ERR
+
+### t093 D2
+# bytes after the value are ignored
+dec_app 2148ff
+dec_app 0000
+dec_app 60ff
+dec_app a45b01180400
+---
+OK n=2 u 72
+OK n=1 null
+OK n=1 oct -
+OK n=5 date 1991 1 24 4
+
+### t094 D3
+dec_app 00
+dec_app 10
+dec_app 11
+dec_app 1100
+dec_app 1001
+---
+OK n=1 null
+OK n=1 bool 0
+OK n=1 bool 1
+OK n=1 bool 1
+OK n=1 bool 0
+
+### t095 D3
+# Null requires raw LVT 0
+dec_app 01
+dec_app 0100
+dec_app 0500
+dec_app 0400000000
+---
+ERR
+ERR
+ERR
+ERR
+
+### t096 D3
+# Boolean requires raw LVT 0 or 1
+dec_app 1501
+dec_app 1500
+dec_app 1200
+dec_app 1400000000
+---
+ERR
+ERR
+ERR
+ERR
+
+### t097 D4
+dec_app 2100
+dec_app 24ffffffff
+dec_app 23010000
+---
+OK n=2 u 0
+OK n=5 u 4294967295
+OK n=4 u 65536
+
+### t098 D4 D1b
+# non-minimal encodings accepted
+dec_app 220005
+dec_app 2400000000
+dec_app 2504+01020304
+---
+OK n=3 u 5
+OK n=5 u 0
+OK n=6 u 16909060
+
+### t099 D4
+dec_app 20
+dec_app 2500
+dec_app 2505+0000000001
+---
+ERR
+ERR
+ERR
+
+### t100 D4
+# sign extension
+dec_app 31ff
+dec_app 32ffff
+dec_app 3180
+dec_app 32ff7f
+---
+OK n=2 i -1
+OK n=3 i -1
+OK n=2 i -128
+OK n=3 i -129
+
+### t101 D4
+dec_app 320080
+dec_app 33ff0000
+dec_app 347fffffff
+dec_app 3480000000
+---
+OK n=3 i 128
+OK n=4 i -65536
+OK n=5 i 2147483647
+OK n=5 i -2147483648
+
+### t102 D4
+dec_app 3400000001
+dec_app 34ffffffff
+dec_app 3300ffff
+dec_app 337fffff
+---
+OK n=5 i 1
+OK n=5 i -1
+OK n=4 i 65535
+OK n=4 i 8388607
+
+### t103 D4
+dec_app 30
+dec_app 3505+0000000000
+---
+ERR
+ERR
+
+### t104 D4
+dec_app 9100
+dec_app 94ffffffff
+dec_app 9300ffff
+---
+OK n=2 enum 0
+OK n=5 enum 4294967295
+OK n=4 enum 65535
+
+### t105 D4
+dec_app 90
+dec_app 9505+0100000000
+---
+ERR
+ERR
+
+### t106 D5
+dec_app 4480000000
+dec_app 447f800000
+dec_app 4400000001
+dec_app 443f800000
+---
+OK n=5 r 80000000
+OK n=5 r 7f800000
+OK n=5 r 00000001
+OK n=5 r 3f800000
+
+### t107 D5
+# NaN is decoded like any other value
+dec_app 447fc00000
+dec_app 44ffc00001
+dec_app 44ffffffff
+---
+OK n=5 r 7fc00000
+OK n=5 r ffc00001
+OK n=5 r ffffffff
+
+### t108 D5
+# signalling NaN decoded like any other value (bits preserved)
+dec_app 447fa00000
+---
+OK n=5 r 7fa00000
+
+### t109 D5
+dec_app 43000000
+dec_app 4505+0000000000
+dec_app 40
+---
+ERR
+ERR
+ERR
+
+### t110 D5 D1b
+dec_app 4504+3f800000
+---
+OK n=6 r 3f800000
+
+### t111 D6
+dec_app 60
+dec_app 6500
+dec_app 61ab
+dec_app 64deadbeef
+---
+OK n=1 oct -
+OK n=2 oct -
+OK n=2 oct ab
+OK n=5 oct deadbeef
+
+### t112 D6 G4
+dec_app 6505+0102030405
+dec_app 653e+rep:00:62
+---
+OK n=7 oct 0102030405
+OK n=64 oct 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+
+### t113 D6 D1b
+dec_app 65fe0010+rep:ab:16
+dec_app 65ff00000002+abcd
+---
+OK n=20 oct abababababababababababababababab
+OK n=8 oct abcd
+
+### t114 D7
+dec_app 7100
+dec_app 720041
+dec_app 7200ff
+dec_app 7400c0af00
+---
+OK n=2 str cs=0 -
+OK n=3 str cs=0 41
+OK n=3 str cs=0 ff
+OK n=5 str cs=0 c0af00
+
+### t115 D7
+# charset reported as-is, any value
+dec_app 720441
+dec_app 71ff
+dec_app 7505+0341424344
+---
+OK n=3 str cs=4 41
+OK n=2 str cs=255 -
+OK n=7 str cs=3 41424344
+
+### t116 D7
+dec_app 70
+dec_app 7500
+dec_app 730041
+---
+ERR
+ERR
+ERR
+
+### t117 D8
+dec_app 8100
+dec_app 8203a8
+dec_app 820780
+---
+OK n=2 bits -
+OK n=3 bits 10101
+OK n=3 bits 1
+
+### t118 D8
+dec_app 8200ff
+dec_app 8307aa80
+dec_app 8300caf0
+---
+OK n=3 bits 11111111
+OK n=4 bits 101010101
+OK n=4 bits 1100101011110000
+
+### t119 D8
+# length 0; length-1 with unused != 0; unused > 7
+dec_app 80
+dec_app 8500
+dec_app 8101
+dec_app 8107
+dec_app 8208ff
+dec_app 82ff00
+dec_app 83080000
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### t120 D8
+# nbits = (length-1)*8 - unused; padding bit values are not checked
+dec_app 8207ff
+dec_app 8201ff
+dec_app 8505+00f0f0f0f0
+---
+OK n=3 bits 1
+OK n=3 bits 1111111
+OK n=7 bits 11110000111100001111000011110000
+
+### t121 D9
+dec_app a45b011804
+dec_app a4ffffffff
+dec_app a4fe0c1f07
+---
+OK n=5 date 1991 1 24 4
+OK n=5 date 65535 255 255 255
+OK n=5 date 2154 12 31 7
+
+### t122 D9
+# field values not validated on decode
+dec_app a400000000
+dec_app a47c0f2309
+dec_app a4ff00fe08
+---
+OK n=5 date 1900 0 0 0
+OK n=5 date 2024 15 35 9
+OK n=5 date 65535 0 254 8
+
+### t123 D9
+dec_app b411232d11
+dec_app b4ffffffff
+dec_app b4183c3c64
+---
+OK n=5 time 17 35 45 17
+OK n=5 time 255 255 255 255
+OK n=5 time 24 60 60 100
+
+### t124 D9
+dec_app c400c0000f
+dec_app c4ffffffff
+dec_app c400000000
+dec_app c4ffc00000
+dec_app c4003fffff
+dec_app c402000001
+---
+OK n=5 oid 3 15
+OK n=5 oid 1023 4194303
+OK n=5 oid 0 0
+OK n=5 oid 1023 0
+OK n=5 oid 0 4194303
+OK n=5 oid 8 1
+
+### t125 D9
+# length must be exactly 4
+dec_app a3000000
+dec_app a505+0000000000
+dec_app b3000000
+dec_app b505+0000000000
+dec_app b4
+dec_app c3000000
+dec_app c505+0000000000
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### t126 D9 D1b
+dec_app a504+5b011804
+dec_app b504+11232d11
+dec_app c504+00c0000f
+---
+OK n=6 date 1991 1 24 4
+OK n=6 time 17 35 45 17
+OK n=6 oid 3 15
+
+### t127 D1b D2
+# application tag 2 carried in a (non-canonical) extended tag octet
+dec_app f10205
+---
+OK n=3 u 5
+
+### t128 E9 E9a
+# E9a checks each field's range only; no cross-field (calendar/weekday) consistency is specified
+enc_date 2023 2 30 1
+enc_date 2024 4 31 3
+---
+OK a47b021e01
+OK a47c041f03

@@ -1,0 +1,86 @@
+# Regression vectors for the fixes listed in REVIEW.md (expected values per the
+# rule comments in bacapp.c / ASHRAE 135 clause 20.2).
+### signed-minus-128-one-octet
+enc_signed -128
+enc_signed -129
+enc_signed 127
+enc_signed 128
+enc_signed -32768
+enc_signed -32769
+enc_signed -8388608
+enc_signed -8388609
+enc_signed -2147483648
+---
+OK 3180
+OK 32ff7f
+OK 317f
+OK 320080
+OK 328000
+OK 33ff7fff
+OK 33800000
+OK 34ff7fffff
+OK 3480000000
+### decode-signed-minus-128
+dec_app 3180
+---
+OK n=2 i -128
+### ext-length-253-one-octet
+enc_octets rep:41:252
+enc_octets rep:41:253
+enc_octets rep:41:254
+---
+OK 65fc4141414141414141414141414141..437ec55336696e6e/254
+OK 65fd4141414141414141414141414141..c8a730c15bed2538/255
+OK 65fe00fe414141414141414141414141..162a682a22f45a40/258
+### ext-length-253-str
+enc_str rep:41:252
+---
+OK 75fd0041414141414141414141414141..0383bba108e5c183/255
+### octets-no-partial-write
+enc_octets 1234ff @3
+enc_octets 1234ff @4
+enc_octets rep:41:10 @2
+enc_octets rep:41:10 @11
+enc_octets rep:41:10 @12
+---
+ERR
+OK 631234ff
+ERR
+ERR
+OK 650a41414141414141414141
+### bits-must-be-0-or-1
+enc_bits 102
+enc_bits 2
+enc_bits 11111111+9
+enc_bits 1
+---
+ERR
+ERR
+ERR
+OK 820780
+### bits-empty
+enc_bits -
+---
+OK 8100
+### ctx-boolean
+enc_ctx_bool 0 0
+enc_ctx_bool 0 1
+enc_ctx_bool 3 1
+enc_ctx_bool 15 1
+enc_ctx_bool 254 0
+enc_ctx_bool 255 1
+enc_ctx_bool 3 1 @1
+enc_ctx_bool 3 1 @2
+enc_ctx_bool 15 1 @2
+enc_ctx_bool 15 1 @3
+---
+OK 0900
+OK 0901
+OK 3901
+OK f90f01
+OK f9fe00
+ERR
+ERR
+OK 3901
+ERR
+OK f90f01

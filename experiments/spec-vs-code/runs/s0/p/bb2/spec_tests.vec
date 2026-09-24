@@ -1,0 +1,1311 @@
+# spec_tests.vec - black-box tests for bacapp derived from SPEC.md v1.0.
+# Each block header lists the SPEC rule id(s) the block targets.
+# Expected outputs were derived by hand from SPEC.md, bacapp.h and the driver.c
+# output format; no implementation was consulted.  No printed byte string
+# exceeds 64 bytes (long encodings are only checked through capacity errors).
+
+### t001 E1 G1 G2
+enc_null
+enc_null @1
+enc_null @0
+---
+OK 00
+OK 00
+ERR
+
+### t002 E2 G1 G2
+enc_bool 0
+enc_bool 1
+enc_bool 0 @1
+enc_bool 1 @0
+---
+OK 10
+OK 11
+OK 10
+ERR
+
+### t003 E3
+enc_unsigned 0
+enc_unsigned 1
+enc_unsigned 255
+enc_unsigned 256
+---
+OK 2100
+OK 2101
+OK 21ff
+OK 220100
+
+### t004 E3
+enc_unsigned 65535
+enc_unsigned 65536
+enc_unsigned 16777215
+enc_unsigned 16777216
+enc_unsigned 4294967295
+---
+OK 22ffff
+OK 23010000
+OK 23ffffff
+OK 2401000000
+OK 24ffffffff
+
+### t005 E3
+enc_enum 0
+enc_enum 255
+enc_enum 256
+enc_enum 65536
+enc_enum 4294967295
+---
+OK 9100
+OK 91ff
+OK 920100
+OK 93010000
+OK 94ffffffff
+
+### t006 E3 G1
+enc_unsigned 256 @2
+enc_unsigned 256 @3
+enc_unsigned 0 @1
+enc_unsigned 0 @0
+---
+ERR
+OK 220100
+ERR
+ERR
+
+### t007 E3 G1
+enc_enum 4294967295 @4
+enc_enum 4294967295 @5
+enc_unsigned 16777216 @4
+---
+ERR
+OK 94ffffffff
+ERR
+
+### t008 E4
+enc_signed 0
+enc_signed 127
+enc_signed 128
+---
+OK 3100
+OK 317f
+OK 320080
+
+### t009 E4
+enc_signed -1
+enc_signed -128
+enc_signed -129
+---
+OK 31ff
+OK 3180
+OK 32ff7f
+
+### t010 E4
+enc_signed 255
+enc_signed -256
+enc_signed 32767
+enc_signed 32768
+enc_signed -32768
+enc_signed -32769
+---
+OK 3200ff
+OK 32ff00
+OK 327fff
+OK 33008000
+OK 328000
+OK 33ff7fff
+
+### t011 E4
+enc_signed 8388607
+enc_signed 8388608
+enc_signed -8388608
+enc_signed -8388609
+---
+OK 337fffff
+OK 3400800000
+OK 33800000
+OK 34ff7fffff
+
+### t012 E4
+enc_signed 2147483647
+enc_signed -2147483648
+---
+OK 347fffffff
+OK 3480000000
+
+### t013 E4 G1
+enc_signed 128 @2
+enc_signed -129 @3
+enc_signed -2147483648 @4
+enc_signed -1 @1
+enc_signed -1 @2
+---
+ERR
+OK 32ff7f
+ERR
+ERR
+OK 31ff
+
+### t014 E5
+enc_real 80000000
+enc_real 00000000
+enc_real 3f800000
+enc_real bf800000
+---
+OK 4480000000
+OK 4400000000
+OK 443f800000
+OK 44bf800000
+
+### t015 E5
+enc_real 00000001
+enc_real 807fffff
+enc_real 7f7fffff
+---
+OK 4400000001
+OK 44807fffff
+OK 447f7fffff
+
+### t016 E5 E5a
+enc_real 7f800000
+enc_real ff800000
+---
+OK 447f800000
+OK 44ff800000
+
+### t017 E5a
+enc_real 7fc00000
+enc_real ffc00000
+enc_real 7fc12345
+---
+ERR
+ERR
+ERR
+
+### t018 E5a
+enc_real 7f800001
+enc_real 7fbfffff
+enc_real ff800001
+enc_real 7fffffff
+enc_real ffffffff
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### t019 E5 E5a G1
+enc_real 3f800000 @4
+enc_real 3f800000 @5
+enc_real 7fc00000 @0
+enc_real 7f800000 @4
+enc_real ff800000 @5
+---
+ERR
+OK 443f800000
+ERR
+ERR
+OK 44ff800000
+
+### t020 E6
+enc_octets -
+enc_octets 01
+enc_octets 01020304
+---
+OK 60
+OK 6101
+OK 6401020304
+
+### t021 E6 G4
+enc_octets 0102030405
+enc_octets 00ff00ff00ff
+---
+OK 65050102030405
+OK 650600ff00ff00ff
+
+### t022 E6 G4
+enc_octets rep:ab:62
+---
+OK 653eabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab
+
+### t023 E6 G1
+enc_octets - @0
+enc_octets - @1
+enc_octets 01020304 @4
+enc_octets 01020304 @5
+---
+ERR
+OK 60
+ERR
+OK 6401020304
+
+### t024 E6 G1 G4
+enc_octets 0102030405 @6
+enc_octets 0102030405 @7
+enc_octets rep:ab:62 @63
+---
+ERR
+OK 65050102030405
+ERR
+
+### t025 E6 G4 G1
+enc_octets rep:00:254 @257
+enc_octets rep:00:65536 @65541
+---
+ERR
+ERR
+
+### t026 E7 G4
+enc_str -
+enc_str 41
+enc_str 414243
+enc_str 41424344
+---
+OK 7100
+OK 720041
+OK 7400414243
+OK 75050041424344
+
+### t027 E7 E7a
+enc_str ff00fe
+enc_str c328
+enc_str 00
+---
+OK 7400ff00fe
+OK 7300c328
+OK 720000
+
+### t028 E7 G1 G4
+enc_str - @1
+enc_str - @2
+enc_str 414243 @4
+enc_str 41424344 @6
+enc_str 41424344 @7
+---
+ERR
+OK 7100
+ERR
+ERR
+OK 75050041424344
+
+### t029 E7 G4
+enc_str rep:41:61
+---
+OK 753e0041414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141
+
+### t030 E7 G4 G1
+enc_str rep:41:253 @257
+---
+ERR
+
+### t031 E8
+enc_bits -
+enc_bits 1
+enc_bits 0
+---
+OK 8100
+OK 820780
+OK 820700
+
+### t032 E8
+enc_bits 01
+enc_bits 0100
+enc_bits 1100101
+---
+OK 820640
+OK 820440
+OK 8201ca
+
+### t033 E8
+enc_bits 11111111
+enc_bits 00000000
+enc_bits 111111111
+enc_bits 1000000000000001
+---
+OK 8200ff
+OK 820000
+OK 8307ff80
+OK 83008001
+
+### t034 E8 G4
+enc_bits rep:0:24+1
+enc_bits rep:1:32
+---
+OK 85050700000080
+OK 850500ffffffff
+
+### t035 E8a
+enc_bits 2
+enc_bits 9
+enc_bits 1012
+enc_bits 100000002
+enc_bits rep:1:16+3
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### t036 E8 G1
+enc_bits - @1
+enc_bits - @2
+enc_bits 10101 @2
+enc_bits 10101 @3
+enc_bits 111111111 @3
+enc_bits 111111111 @4
+---
+ERR
+OK 8100
+ERR
+OK 8203a8
+ERR
+OK 8307ff80
+
+### t037 E8 G4 G1
+enc_bits rep:1:2024 @257
+---
+ERR
+
+### t038 E9
+enc_date 1900 1 1 1
+enc_date 2154 12 31 7
+enc_date 2024 6 15 6
+---
+OK a400010101
+OK a4fe0c1f07
+OK a47c060f06
+
+### t039 E9 E9a
+enc_date 65535 255 255 255
+enc_date 65535 1 1 1
+enc_date 1991 255 255 255
+---
+OK a4ffffffff
+OK a4ff010101
+OK a45bffffff
+
+### t040 E9 E9a
+enc_date 2024 13 32 255
+enc_date 2024 14 34 7
+enc_date 2024 255 33 1
+---
+OK a47c0d20ff
+OK a47c0e2207
+OK a47cff2101
+
+### t041 E9a
+enc_date 1899 1 1 1
+enc_date 2155 1 1 1
+enc_date 255 1 1 1
+enc_date 0 1 1 1
+enc_date 65534 1 1 1
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### t042 E9a
+enc_date 2024 0 1 1
+enc_date 2024 15 1 1
+enc_date 2024 254 1 1
+---
+ERR
+ERR
+ERR
+
+### t043 E9a
+enc_date 2024 1 0 1
+enc_date 2024 1 35 1
+enc_date 2024 1 254 1
+---
+ERR
+ERR
+ERR
+
+### t044 E9a
+enc_date 2024 1 1 0
+enc_date 2024 1 1 8
+enc_date 2024 1 1 254
+---
+ERR
+ERR
+ERR
+
+### t045 E9 E9a
+enc_date 2023 2 30 3
+enc_date 2024 4 31 1
+---
+OK a47b021e03
+OK a47c041f01
+
+### t046 E9 G1
+enc_date 2024 6 15 6 @4
+enc_date 2024 6 15 6 @5
+enc_date 2024 0 1 1 @5
+---
+ERR
+OK a47c060f06
+ERR
+
+### t047 E10
+enc_time 0 0 0 0
+enc_time 23 59 59 99
+enc_time 12 30 0 0
+---
+OK b400000000
+OK b4173b3b63
+OK b40c1e0000
+
+### t048 E10 E10a
+enc_time 255 255 255 255
+enc_time 12 255 0 255
+enc_time 255 0 255 0
+---
+OK b4ffffffff
+OK b40cff00ff
+OK b4ff00ff00
+
+### t049 E10a
+enc_time 24 0 0 0
+enc_time 254 0 0 0
+enc_time 0 60 0 0
+enc_time 0 254 0 0
+---
+ERR
+ERR
+ERR
+ERR
+
+### t050 E10a
+enc_time 0 0 60 0
+enc_time 0 0 0 100
+enc_time 23 59 59 254
+enc_time 255 255 255 100
+---
+ERR
+ERR
+ERR
+ERR
+
+### t051 E10 G1
+enc_time 12 30 0 0 @4
+enc_time 12 30 0 0 @5
+enc_time 24 0 0 0 @5
+---
+ERR
+OK b40c1e0000
+ERR
+
+### t052 E11
+enc_oid 0 0
+enc_oid 1 1
+enc_oid 8 1234
+---
+OK c400000000
+OK c400400001
+OK c4020004d2
+
+### t053 E11
+enc_oid 1023 4194303
+enc_oid 8 4194303
+enc_oid 512 0
+---
+OK c4ffffffff
+OK c4023fffff
+OK c480000000
+
+### t054 E11a
+enc_oid 1024 0
+enc_oid 65535 0
+enc_oid 1024 4194303
+enc_oid 0 4194304
+enc_oid 0 4294967295
+enc_oid 1023 4194304
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### t055 E11 G1
+enc_oid 8 1 @4
+enc_oid 8 1 @5
+---
+ERR
+OK c402000001
+
+### t056 E12
+enc_ctx_unsigned 0 0
+enc_ctx_unsigned 1 256
+enc_ctx_unsigned 3 255
+enc_ctx_unsigned 2 16777216
+enc_ctx_unsigned 14 4294967295
+---
+OK 0900
+OK 1a0100
+OK 39ff
+OK 2c01000000
+OK ecffffffff
+
+### t057 E12 G3
+enc_ctx_unsigned 14 0
+enc_ctx_unsigned 15 0
+enc_ctx_unsigned 15 256
+enc_ctx_unsigned 15 4294967295
+---
+OK e900
+OK f90f00
+OK fa0f0100
+OK fc0fffffffff
+
+### t058 E12 G3
+enc_ctx_unsigned 200 1
+enc_ctx_unsigned 254 65536
+enc_ctx_unsigned 255 0
+enc_ctx_unsigned 255 4294967295
+---
+OK f9c801
+OK fbfe010000
+ERR
+ERR
+
+### t059 E12 G1 G3
+enc_ctx_unsigned 0 256 @2
+enc_ctx_unsigned 15 256 @3
+enc_ctx_unsigned 15 256 @4
+enc_ctx_unsigned 254 65536 @4
+---
+ERR
+ERR
+OK fa0f0100
+ERR
+
+### t060 E13
+enc_ctx_bool 0 0
+enc_ctx_bool 0 1
+enc_ctx_bool 3 1
+enc_ctx_bool 14 0
+---
+OK 0900
+OK 0901
+OK 3901
+OK e900
+
+### t061 E13 G3
+enc_ctx_bool 15 1
+enc_ctx_bool 254 0
+enc_ctx_bool 255 1
+enc_ctx_bool 255 0
+---
+OK f90f01
+OK f9fe00
+ERR
+ERR
+
+### t062 E13 G1
+enc_ctx_bool 2 1 @1
+enc_ctx_bool 2 1 @2
+enc_ctx_bool 15 1 @2
+enc_ctx_bool 15 1 @3
+---
+ERR
+OK 2901
+ERR
+OK f90f01
+
+### t063 E14 G5
+enc_open 0
+enc_close 0
+enc_open 14
+enc_close 14
+---
+OK 0e
+OK 0f
+OK ee
+OK ef
+
+### t064 E14 G5 G3
+enc_open 15
+enc_close 15
+enc_open 100
+enc_open 254
+enc_close 254
+---
+OK fe0f
+OK ff0f
+OK fe64
+OK fefe
+OK fffe
+
+### t065 E14 G3
+enc_open 255
+enc_close 255
+---
+ERR
+ERR
+
+### t066 E14 G1
+enc_open 3 @0
+enc_close 3 @1
+enc_open 15 @1
+enc_close 254 @1
+enc_close 15 @2
+---
+ERR
+OK 3f
+ERR
+ERR
+OK ff0f
+
+### t067 D1 G2
+dec_tag 00
+dec_tag 21
+dec_tag 44
+dec_tag c4
+---
+OK hl=1 tag=0 app lvt=0
+OK hl=1 tag=2 app lvt=1
+OK hl=1 tag=4 app lvt=4
+OK hl=1 tag=12 app lvt=4
+
+### t068 D1 G2
+dec_tag 08
+dec_tag 3c
+dec_tag e9
+---
+OK hl=1 tag=0 ctx lvt=0
+OK hl=1 tag=3 ctx lvt=4
+OK hl=1 tag=14 ctx lvt=1
+
+### t069 D1 G5
+dec_tag 1e
+dec_tag 1f
+dec_tag ee
+dec_tag ef
+---
+OK hl=1 tag=1 ctx open
+OK hl=1 tag=1 ctx close
+OK hl=1 tag=14 ctx open
+OK hl=1 tag=14 ctx close
+
+### t070 D1 G3 G5
+dec_tag fe0f
+dec_tag ff0f
+dec_tag fefe
+---
+OK hl=2 tag=15 ctx open
+OK hl=2 tag=15 ctx close
+OK hl=2 tag=254 ctx open
+
+### t071 D1 G3
+dec_tag f90f
+dec_tag fcc8
+dec_tag f0fe
+---
+OK hl=2 tag=15 ctx lvt=1
+OK hl=2 tag=200 ctx lvt=4
+OK hl=2 tag=254 app lvt=0
+
+### t072 D1 G4
+dec_tag 6505
+dec_tag 65fd
+dec_tag 65fe00fe
+---
+OK hl=2 tag=6 app lvt=5
+OK hl=2 tag=6 app lvt=253
+OK hl=4 tag=6 app lvt=254
+
+### t073 D1 G4
+dec_tag 65feffff
+dec_tag 65ff00010000
+dec_tag 65ffffffffff
+---
+OK hl=4 tag=6 app lvt=65535
+OK hl=6 tag=6 app lvt=65536
+OK hl=6 tag=6 app lvt=4294967295
+
+### t074 D1 G3 G4
+dec_tag fd0f05
+dec_tag fdfefe0100
+---
+OK hl=3 tag=15 ctx lvt=5
+OK hl=5 tag=254 ctx lvt=256
+
+### t075 D1
+dec_tag 1d05
+dec_tag 1501
+dec_tag 0d07
+---
+OK hl=2 tag=1 ctx lvt=5
+OK hl=2 tag=1 app lvt=1
+OK hl=2 tag=0 ctx lvt=7
+
+### t076 D1
+dec_tag 2148
+dec_tag 0e21
+dec_tag 7505004142
+---
+OK hl=1 tag=2 app lvt=1
+OK hl=1 tag=0 ctx open
+OK hl=2 tag=7 app lvt=5
+
+### t077 D1a
+dec_tag -
+dec_tag f0
+dec_tag f8
+dec_tag fe
+---
+ERR
+ERR
+ERR
+ERR
+
+### t078 D1a G4
+dec_tag 65
+dec_tag 65fe
+dec_tag 65fe00
+dec_tag 65ff
+dec_tag 65ff000000
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### t079 D1a G3 G4
+dec_tag f50f
+dec_tag fd0ffe00
+dec_tag fd0fff000000
+---
+ERR
+ERR
+ERR
+
+### t080 D1a G3
+dec_tag f0ff
+dec_tag feff
+dec_tag ffff
+dec_tag f9ff00
+---
+ERR
+ERR
+ERR
+ERR
+
+### t081 D1a G5
+dec_tag 06
+dec_tag 07
+dec_tag 76
+dec_tag f60f
+dec_tag f70f
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### t082 D1b
+dec_tag f903
+dec_tag f000
+dec_tag fe03
+dec_tag ff00
+---
+OK hl=2 tag=3 ctx lvt=1
+OK hl=2 tag=0 app lvt=0
+OK hl=2 tag=3 ctx open
+OK hl=2 tag=0 ctx close
+
+### t083 D1b G4
+dec_tag 6500
+dec_tag 6503
+dec_tag 65fe0010
+dec_tag 65ff00000003
+dec_tag 65ff000000fe
+---
+OK hl=2 tag=6 app lvt=0
+OK hl=2 tag=6 app lvt=3
+OK hl=4 tag=6 app lvt=16
+OK hl=6 tag=6 app lvt=3
+OK hl=6 tag=6 app lvt=254
+
+### t084 D1b D6
+dec_app 6503aabbcc
+dec_app 65fe0002abcd
+dec_app 65ff00000001ee
+---
+OK n=5 oct aabbcc
+OK n=6 oct abcd
+OK n=7 oct ee
+
+### t085 D1b D4 D5
+dec_app 3503ffff80
+dec_app 25ff0000000100
+dec_app 45043f800000
+---
+OK n=5 i -128
+OK n=7 u 0
+OK n=6 r 3f800000
+
+### t086 D1b D2 D3
+dec_app f2020105
+dec_app f101
+dec_app f000
+---
+OK n=4 u 261
+OK n=2 bool 1
+OK n=2 null
+
+### t087 D2 D1a
+dec_app -
+dec_app 06
+dec_app 65
+dec_app f0
+---
+ERR
+ERR
+ERR
+ERR
+
+### t088 D2
+dec_app 0e
+dec_app 0f
+dec_app fe0f
+dec_app ff0f
+---
+ERR
+ERR
+ERR
+ERR
+
+### t089 D2
+dec_app 0900
+dec_app 0a0100
+dec_app 1901
+dec_app 3c00000000
+---
+ERR
+ERR
+ERR
+ERR
+
+### t090 D2
+dec_app 55083ff0000000000000
+dec_app 5400000000
+dec_app 50
+---
+ERR
+ERR
+ERR
+
+### t091 D2
+dec_app d0
+dec_app d100
+dec_app e0
+dec_app e100
+---
+ERR
+ERR
+ERR
+ERR
+
+### t092 D2 G3
+dec_app f00f
+dec_app f10f00
+dec_app f0fe
+dec_app f00d
+dec_app f005
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### t093 D2
+dec_app 21
+dec_app 22ff
+dec_app 443f8000
+dec_app 6203
+dec_app 74004142
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+
+### t094 D2 G4
+dec_app 6505010203
+dec_app 65fd+rep:00:252
+dec_app 65fe00fe+rep:00:253
+---
+ERR
+ERR
+ERR
+
+### t095 D2 G4
+dec_app 65ffffffffff
+dec_app 65fffffffffa+rep:00:10
+dec_app 75ffffffffff+rep:00:10
+---
+ERR
+ERR
+ERR
+
+### t096 D2
+dec_app 2148ff
+dec_app 0000
+dec_app 610102
+dec_app a45b011804ff
+---
+OK n=2 u 72
+OK n=1 null
+OK n=2 oct 01
+OK n=5 date 1991 1 24 4
+
+### t097 D3
+dec_app 00
+dec_app 10
+dec_app 11
+dec_app 1100
+dec_app 1001
+---
+OK n=1 null
+OK n=1 bool 0
+OK n=1 bool 1
+OK n=1 bool 1
+OK n=1 bool 0
+
+### t098 D3
+dec_app 0100
+dec_app 0400000000
+dec_app 0500
+---
+ERR
+ERR
+ERR
+
+### t099 D3
+dec_app 120000
+dec_app 1400000000
+dec_app 13000000
+---
+ERR
+ERR
+ERR
+
+### t100 D3 D1
+dec_app 1501
+dec_app 1500
+dec_app 150101
+---
+ERR
+ERR
+ERR
+
+### t101 D4
+dec_app 2100
+dec_app 21ff
+dec_app 24ffffffff
+dec_app 220005
+dec_app 2400000001
+---
+OK n=2 u 0
+OK n=2 u 255
+OK n=5 u 4294967295
+OK n=3 u 5
+OK n=5 u 1
+
+### t102 D4
+dec_app 20
+dec_app 2500
+dec_app 25050000000001
+---
+ERR
+ERR
+ERR
+
+### t103 D4
+dec_app 9105
+dec_app 920000
+dec_app 9300ff00
+dec_app 94ffffffff
+---
+OK n=2 enum 5
+OK n=3 enum 0
+OK n=4 enum 65280
+OK n=5 enum 4294967295
+
+### t104 D4
+dec_app 90
+dec_app 9500
+dec_app 9505000000000a
+---
+ERR
+ERR
+ERR
+
+### t105 D4
+dec_app 31ff
+dec_app 32ffff
+dec_app 34ffffffff
+dec_app 3180
+dec_app 328000
+---
+OK n=2 i -1
+OK n=3 i -1
+OK n=5 i -1
+OK n=2 i -128
+OK n=3 i -32768
+
+### t106 D4
+dec_app 33800000
+dec_app 33ff7fff
+dec_app 3480000000
+---
+OK n=4 i -8388608
+OK n=4 i -32769
+OK n=5 i -2147483648
+
+### t107 D4
+dec_app 317f
+dec_app 320080
+dec_app 3300ffff
+dec_app 347fffffff
+---
+OK n=2 i 127
+OK n=3 i 128
+OK n=4 i 65535
+OK n=5 i 2147483647
+
+### t108 D4
+dec_app 30
+dec_app 3500
+dec_app 3505ff00000000
+---
+ERR
+ERR
+ERR
+
+### t109 D5
+dec_app 4480000000
+dec_app 447f800000
+dec_app 44ff800000
+dec_app 4400000001
+---
+OK n=5 r 80000000
+OK n=5 r 7f800000
+OK n=5 r ff800000
+OK n=5 r 00000001
+
+### t110 D5 E5a
+dec_app 447fc00000
+dec_app 44ffc12345
+dec_app 447fffffff
+---
+OK n=5 r 7fc00000
+OK n=5 r ffc12345
+OK n=5 r 7fffffff
+
+### t111 D5
+dec_app 40
+dec_app 43000000
+dec_app 45053f80000000
+---
+ERR
+ERR
+ERR
+
+### t112 D6
+dec_app 60
+dec_app 6500
+dec_app 6101
+dec_app 6401020304
+dec_app 65050102030405
+---
+OK n=1 oct -
+OK n=2 oct -
+OK n=2 oct 01
+OK n=5 oct 01020304
+OK n=7 oct 0102030405
+
+### t113 D6
+dec_app 653e+rep:ab:62
+---
+OK n=64 oct abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab
+
+### t114 D7
+dec_app 7100
+dec_app 720041
+dec_app 720441
+dec_app 73030041
+dec_app 72ff41
+---
+OK n=2 str cs=0 -
+OK n=3 str cs=0 41
+OK n=3 str cs=4 41
+OK n=4 str cs=3 0041
+OK n=3 str cs=255 41
+
+### t115 D7
+dec_app 70
+dec_app 7500
+dec_app 7300
+---
+ERR
+ERR
+ERR
+
+### t116 D7 E7a
+dec_app 7400ff00fe
+dec_app 75050041424344
+dec_app 750103
+---
+OK n=5 str cs=0 ff00fe
+OK n=7 str cs=0 41424344
+OK n=3 str cs=3 -
+
+### t117 D7
+dec_app 753e00+rep:41:61
+---
+OK n=64 str cs=0 41414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141
+
+### t118 D8
+dec_app 8100
+dec_app 820780
+dec_app 820700
+dec_app 8203a8
+---
+OK n=2 bits -
+OK n=3 bits 1
+OK n=3 bits 0
+OK n=3 bits 10101
+
+### t119 D8
+dec_app 8200ff
+dec_app 8307ff80
+dec_app 8304a55a
+dec_app 85050001020304
+---
+OK n=3 bits 11111111
+OK n=4 bits 111111111
+OK n=4 bits 101001010101
+OK n=7 bits 00000001000000100000001100000100
+
+### t120 D8
+dec_app 80
+dec_app 8101
+dec_app 8107
+---
+ERR
+ERR
+ERR
+
+### t121 D8
+dec_app 8208ff
+dec_app 82ff00
+dec_app 83090000
+dec_app 8200
+---
+ERR
+ERR
+ERR
+ERR
+
+### t122 D8
+dec_app 8207ff
+dec_app 8201cb
+---
+OK n=3 bits 1
+OK n=3 bits 1100101
+
+### t123 D9
+dec_app a45b011804
+dec_app a4ffffffff
+dec_app a4fe000000
+dec_app a4000d2309
+---
+OK n=5 date 1991 1 24 4
+OK n=5 date 65535 255 255 255
+OK n=5 date 2154 0 0 0
+OK n=5 date 1900 13 35 9
+
+### t124 D9
+dec_app a3000000
+dec_app a5050001010101
+dec_app a0
+---
+ERR
+ERR
+ERR
+
+### t125 D9 D1b
+dec_app a5047c010101
+---
+OK n=6 date 2024 1 1 1
+
+### t126 D9
+dec_app b400000000
+dec_app b4183c3c64
+dec_app b4ffffffff
+---
+OK n=5 time 0 0 0 0
+OK n=5 time 24 60 60 100
+OK n=5 time 255 255 255 255
+
+### t127 D9
+dec_app b3000000
+dec_app b0
+dec_app b5050000000000
+---
+ERR
+ERR
+ERR
+
+### t128 D9
+dec_app c4ffffffff
+dec_app c402000001
+dec_app c480000000
+dec_app c400000000
+---
+OK n=5 oid 1023 4194303
+OK n=5 oid 8 1
+OK n=5 oid 512 0
+OK n=5 oid 0 0
+
+### t129 D9
+dec_app c3000000
+dec_app c5050000000001
+dec_app c0
+---
+ERR
+ERR
+ERR
+
+### t130 E4 D4
+enc_signed -8388609
+dec_app 34ff7fffff
+---
+OK 34ff7fffff
+OK n=5 i -8388609
+
+### t131 E8 D8
+enc_bits 1000000000000001
+dec_app 83008001
+---
+OK 83008001
+OK n=4 bits 1000000000000001
+
+### t132 E9 D9
+enc_date 2154 12 32 255
+dec_app a4fe0c20ff
+---
+OK a4fe0c20ff
+OK n=5 date 2154 12 32 255

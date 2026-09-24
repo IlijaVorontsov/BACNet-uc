@@ -1,0 +1,241 @@
+# Edge cases derived by hand from SPEC.md (A2-A13).
+### strict-limits-deadband-direct-inf
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 1 30
+s 2 10
+s 3 30.5
+s 4 28
+s 5 27.9
+s 6 9
+s 7 12
+s 8 40
+s 9 5
+s 10 inf
+s 11 -inf
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@3:30.500
+HIGH
+NORMAL TO_NORMAL@5:27.900
+LOW TO_LOW@6:9.000
+LOW
+HIGH TO_HIGH@8:40.000
+LOW TO_LOW@9:5.000
+HIGH TO_HIGH@10:inf
+LOW TO_LOW@11:-inf
+### expired-but-unobserved-is-cancelled
+cfg high=30 low=10 deadband=2 delay=30 escalate=0
+init 0
+s 10 35
+s 50 20
+tick 100
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+### tick-fires-pending-and-direct-restarts-timer
+cfg high=30 low=10 deadband=2 delay=30 escalate=0
+init 0
+s 10 35
+tick 39
+tick 40
+s 100 27
+s 110 5
+tick 130
+tick 140
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@40:35.000
+HIGH
+HIGH
+HIGH
+LOW TO_LOW@140:5.000
+### fault-and-recovery
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 35
+sf 20 33
+s 30 nan
+s 40 36
+tick 139
+tick 140
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+FAULT TO_FAULT@20:33.000
+FAULT
+HIGH TO_NORMAL@40:36.000 TO_HIGH@40:36.000
+HIGH
+HIGH ESCALATE@140:36.000
+### escalation-in-fault
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 35
+s 20 nan
+tick 110
+tick 200
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+FAULT TO_FAULT@20:nan
+FAULT ESCALATE@110:nan
+FAULT
+### return-to-normal-keeps-unacked
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 35
+s 20 20
+tick 110
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+NORMAL TO_NORMAL@20:20.000
+NORMAL ESCALATE@110:20.000
+### late-ack-and-ack-after-timer
+cfg high=30 low=10 deadband=2 delay=30 escalate=100
+init 0
+s 10 35
+ack 40
+tick 1000
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@40:35.000
+HIGH
+### late-ack-no-escalate
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 35
+ack 110
+tick 300
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+HIGH
+### maintenance-suppress-and-catch-up
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+maint 5 on
+s 10 35
+s 20 20
+maint 30 off
+tick 500
+maint 510 on
+s 520 5
+maint 530 off
+tick 629
+tick 630
+---
+cfg
+NORMAL
+NORMAL
+HIGH
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+LOW
+LOW TO_LOW@530:5.000
+LOW
+LOW ESCALATE@630:5.000
+### maintenance-defers-escalation
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 35
+maint 20 on
+tick 200
+maint 210 off
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+HIGH
+HIGH ESCALATE@210:35.000
+### maintenance-catch-up-normal-then-escalate
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 35
+maint 20 on
+s 30 20
+maint 200 off
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+NORMAL
+NORMAL TO_NORMAL@200:20.000 ESCALATE@200:20.000
+### maintenance-call-evaluates-timer-first
+cfg high=30 low=10 deadband=2 delay=30 escalate=0
+init 0
+s 10 35
+maint 40 on
+s 50 20
+tick 80
+maint 90 off
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@40:35.000
+HIGH
+NORMAL
+NORMAL TO_NORMAL@90:20.000
+### time-backwards-ignored
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 100
+s 50 35
+s 100 35
+tick 99
+s 99 20
+s 100 20
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@100:35.000
+HIGH
+HIGH
+NORMAL TO_NORMAL@100:20.000
+### escalate-zero-disables
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 10 35
+tick 100000
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+### nothing-before-first-sample
+cfg high=30 low=10 deadband=2 delay=0 escalate=10
+init 0
+tick 10
+ack 20
+maint 30 on
+maint 40 off
+tick 1000
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL

@@ -1,0 +1,1309 @@
+### p0001 E1
+enc_null
+---
+OK 00
+### p0002 G1 E1
+enc_null @0
+---
+ERR
+### p0003 E2
+enc_bool 0
+---
+OK 10
+### p0004 G1 E2
+enc_bool 0 @0
+---
+ERR
+### p0007 E3 CR3zero
+enc_unsigned 0
+---
+OK 2100
+### p0009 E3
+enc_unsigned 72
+---
+OK 2148
+### p0010 E3
+enc_unsigned 127
+---
+OK 217f
+### p0011 E3
+enc_unsigned 128
+---
+OK 2180
+### p0013 E3
+enc_unsigned 256
+---
+OK 220100
+### p0014 E3
+enc_unsigned 4095
+---
+OK 220fff
+### p0017 E3
+enc_unsigned 11259375
+---
+OK 23abcdef
+### p0020 E3
+enc_unsigned 2147483647
+---
+OK 247fffffff
+### p0022 E3
+enc_unsigned 4294967295
+---
+OK 24ffffffff
+### p0024 E3
+enc_unsigned 32175636
+---
+OK 2401eaf614
+### p0026 E3
+enc_unsigned 360511942
+---
+OK 24157cf9c6
+### p0027 E3
+enc_unsigned 3292010550
+---
+OK 24c4381836
+### p0030 E3
+enc_unsigned 2676973563
+---
+OK 249f8f5ffb
+### p0031 E3
+enc_unsigned 2644908285
+---
+OK 249da618fd
+### p0033 E3
+enc_unsigned 4144220671
+---
+OK 24f703c9ff
+### p0034 E3
+enc_unsigned 2001019095
+---
+OK 24774520d7
+### p0035 E3
+enc_unsigned 2486797600
+---
+OK 2494398520
+### p0036 E3
+enc_unsigned 2389859671
+---
+OK 248e725d57
+### p0040 E3
+enc_unsigned 2182281158
+---
+OK 248212f7c6
+### p0043 E3
+enc_unsigned 7100
+---
+OK 221bbc
+### p0045 E3
+enc_unsigned 65087
+---
+OK 22fe3f
+### p0047 E3
+enc_unsigned 9872
+---
+OK 222690
+### p0049 E3
+enc_unsigned 18906
+---
+OK 2249da
+### p0051 E3
+enc_unsigned 45381
+---
+OK 22b145
+### p0055 E3
+enc_enum 255
+---
+OK 91ff
+### p0056 E3
+enc_enum 256
+---
+OK 920100
+### p0057 E3
+enc_enum 65536
+---
+OK 93010000
+### p0059 E3
+enc_enum 1311651681
+---
+OK 944e2e3761
+### p0062 E3
+enc_enum 761682555
+---
+OK 942d665a7b
+### p0065 E3
+enc_enum 1501487499
+---
+OK 94597ee18b
+### p0067 G1 E3
+enc_unsigned 0 @2
+---
+OK 2100
+### p0070 G1 E3
+enc_unsigned 255 @2
+---
+OK 21ff
+### p0071 G1 E3
+enc_unsigned 255 @1
+---
+ERR
+### p0073 G1 E3
+enc_unsigned 256 @3
+---
+OK 220100
+### p0074 G1 E3
+enc_unsigned 256 @2
+---
+ERR
+### p0076 G1 E3
+enc_unsigned 65536 @4
+---
+OK 23010000
+### p0077 G1 E3
+enc_unsigned 65536 @3
+---
+ERR
+### p0081 G1 E3
+enc_enum 16777216 @4
+---
+ERR
+### p0082 E4
+enc_signed 0
+---
+OK 3100
+### p0083 E4
+enc_signed 1
+---
+OK 3101
+### p0087 E4
+enc_signed 128
+---
+OK 320080
+### p0088 E4
+enc_signed -128
+---
+OK 3180
+### p0089 E4
+enc_signed -129
+---
+OK 32ff7f
+### p0090 E4
+enc_signed 255
+---
+OK 3200ff
+### p0091 E4
+enc_signed 256
+---
+OK 320100
+### p0095 E4
+enc_signed 32768
+---
+OK 33008000
+### p0099 E4
+enc_signed 8388608
+---
+OK 3400800000
+### p0100 E4
+enc_signed -8388608
+---
+OK 33800000
+### p0107 E4
+enc_signed -877552382
+---
+OK 34cbb19d02
+### p0108 E4
+enc_signed -1350243825
+---
+OK 34af84ea0f
+### p0110 E4
+enc_signed -63560559
+---
+OK 34fc362491
+### p0111 E4
+enc_signed 671696901
+---
+OK 3428094805
+### p0112 E4
+enc_signed 605775226
+---
+OK 34241b657a
+### p0113 E4
+enc_signed -664221285
+---
+OK 34d868c99b
+### p0115 E4
+enc_signed -1843512124
+---
+OK 34921e3cc4
+### p0116 E4
+enc_signed -449927661
+---
+OK 34e52ea613
+### p0117 E4
+enc_signed -1984298086
+---
+OK 3489ba039a
+### p0122 E4
+enc_signed 1663669940
+---
+OK 34632996b4
+### p0124 E4
+enc_signed 69
+---
+OK 3145
+### p0125 E4
+enc_signed -90
+---
+OK 31a6
+### p0127 E4
+enc_signed 131
+---
+OK 320083
+### p0129 E4
+enc_signed 298
+---
+OK 32012a
+### p0131 E4
+enc_signed 9
+---
+OK 3109
+### p0133 G1 E4
+enc_signed -1 @1
+---
+ERR
+### p0135 G1 E4
+enc_signed 128 @2
+---
+ERR
+### p0137 G1 E4
+enc_signed -32769 @3
+---
+ERR
+### p0139 G1 E4
+enc_signed -2147483648 @4
+---
+ERR
+### p0140 E5
+enc_real 42900000
+---
+OK 4442900000
+### p0143 E5
+enc_real 3f800000
+---
+OK 443f800000
+### p0144 E5
+enc_real bf800000
+---
+OK 44bf800000
+### p0146 E5
+enc_real 00000001
+---
+OK 4400000001
+### p0147 E5
+enc_real 00800000
+---
+OK 4400800000
+### p0148 E5
+enc_real 7f800000
+---
+OK 447f800000
+### p0152 E5
+enc_real c8900e8e
+---
+OK 44c8900e8e
+### p0154 E5
+enc_real 49467791
+---
+OK 4449467791
+### p0156 E5
+enc_real c7575801
+---
+OK 44c7575801
+### p0158 E5
+enc_real c95caaf0
+---
+OK 44c95caaf0
+### p0159 E5a CR3nan
+enc_real 7fc00000
+---
+ERR
+### p0161 E5a CR3nan
+enc_real 7f800001
+---
+ERR
+### p0163 E5a CR3nan
+enc_real ffffffff
+---
+ERR
+### p0165 G1 E5
+enc_real 42900000 @5
+---
+OK 4442900000
+### p0166 G1 E5
+enc_real 42900000 @4
+---
+ERR
+### p0168 E6
+enc_octets -
+---
+OK 60
+### p0169 E6
+enc_octets 00
+---
+OK 6100
+### p0170 E6
+enc_octets 1234ff
+---
+OK 631234ff
+### p0171 E6
+enc_octets rep:ab:4
+---
+OK 64abababab
+### p0172 E6 G4
+enc_octets rep:ab:5
+---
+OK 6505ababababab
+### p0174 E6 G4
+enc_octets rep:ab:254
+---
+OK 65fe00feabababababababababababab..d51d44ebca21dc68/258
+### p0175 E6 G4
+enc_octets rep:ab:255
+---
+OK 65fe00ffabababababababababababab..1f79b0d4a467b158/259
+### p0176 E6 G4
+enc_octets rep:ab:65535
+---
+ERR
+### p0182 E6
+enc_octets 47a9b29498
+---
+OK 650547a9b29498
+### p0186 G1 E6
+enc_octets rep:11:4 @4
+---
+ERR
+### p0190 G1 E6
+enc_octets rep:11:253 @254
+---
+ERR
+### p0192 G1 E6
+enc_octets rep:11:254 @257
+---
+ERR
+### p0193 G1 E6
+enc_octets rep:11:65536 @65542
+---
+OK 65ff0001000011111111111111111111..b83fa960b3b731bc/65542
+### p0194 G1 E6
+enc_octets rep:11:65536 @65541
+---
+ERR
+### p0196 G1 E6
+enc_octets - @0
+---
+ERR
+### p0200 E7 G4
+enc_str 41424344
+---
+OK 75050041424344
+### p0202 E7 G4
+enc_str rep:61:253
+---
+OK 75fe00fe006161616161616161616161..c0d27c46bf0821d5/258
+### p0203 E7 G4
+enc_str rep:61:65534
+---
+ERR
+### p0205 E7
+enc_str c3a4c3b6c3bc
+---
+OK 750700c3a4c3b6c3bc
+### p0206 E7
+enc_str e282ac
+---
+OK 7400e282ac
+### p0207 E7
+enc_str f09f9880
+---
+OK 750500f09f9880
+### p0209 E7a CR3utf8
+enc_str c0af
+---
+OK 7300c0af
+### p0212 E7a CR3utf8
+enc_str e282
+---
+OK 7300e282
+### p0213 E7a CR3utf8
+enc_str 80
+---
+OK 720080
+### p0215 E7a CR3utf8
+enc_str c1bf
+---
+OK 7300c1bf
+### p0216 E7a CR3utf8
+enc_str e080af
+---
+OK 7400e080af
+### p0219 G1 E7
+enc_str 414243 @4
+---
+ERR
+### p0221 G1 E7
+enc_str 41424344 @6
+---
+ERR
+### p0222 G1 E7
+enc_str rep:61:252 @255
+---
+OK 75fd0061616161616161616161616161..10c253ed615239c3/255
+### p0225 G1 E7
+enc_str rep:61:253 @257
+---
+ERR
+### p0226 E8
+enc_bits -
+---
+OK 8100
+### p0229 E8
+enc_bits 10101
+---
+OK 8203a8
+### p0230 E8
+enc_bits 11111111
+---
+OK 8200ff
+### p0232 E8
+enc_bits 1111000011110000
+---
+OK 8300f0f0
+### p0234 E8 G4
+enc_bits rep:1:2000
+---
+OK 85fb00ffffffffffffffffffffffffff..7ed524a2e6b789f7/253
+### p0236 E8 G4
+enc_bits rep:0:2017
+---
+OK 85fe00fe070000000000000000000000..2aa8e255d516dce9/258
+### p0238 E8 G4
+enc_bits rep:1:2025
+---
+OK 85fe00ff07ffffffffffffffffffffff..a76c2d3010dce799/259
+### p0241 E8
+enc_bits 1101001001101111111
+---
+OK 8405d26fe0
+### p0242 E8
+enc_bits 1001100
+---
+OK 820198
+### p0243 E8
+enc_bits 00111110111101000
+---
+OK 84073ef400
+### p0247 E8a
+enc_bits 1019
+---
+ERR
+### p0248 E8a
+enc_bits 10101012
+---
+ERR
+### p0249 E8a
+enc_bits rep:1:100+3
+---
+ERR
+### p0250 G1 E8
+enc_bits 10101 @3
+---
+OK 8203a8
+### p0252 G1 E8
+enc_bits rep:1:16 @4
+---
+OK 8300ffff
+### p0255 G1 E8
+enc_bits - @1
+---
+ERR
+### p0256 G1 E8a
+enc_bits 1012 @0
+---
+ERR
+### p0257 E9
+enc_date 1991 1 24 4
+---
+OK a45b011804
+### p0258 E9
+enc_date 2024 2 29 4
+---
+OK a47c021d04
+### p0259 E9
+enc_date 1900 1 1 1
+---
+OK a400010101
+### p0262 E9
+enc_date 2024 13 255 255
+---
+OK a47c0dffff
+### p0264 E9
+enc_date 2024 255 33 255
+---
+OK a47cff21ff
+### p0267 E9a
+enc_date 1899 1 1 1
+---
+ERR
+### p0269 E9a
+enc_date 0 1 1 1
+---
+ERR
+### p0271 E9a
+enc_date 2024 0 1 1
+---
+ERR
+### p0273 E9a
+enc_date 2024 254 1 1
+---
+ERR
+### p0275 E9a
+enc_date 2024 1 35 1
+---
+ERR
+### p0277 E9a
+enc_date 2024 1 1 0
+---
+ERR
+### p0278 E9a
+enc_date 2024 1 1 8
+---
+ERR
+### p0280 G1 E9
+enc_date 2024 1 1 1 @5
+---
+OK a47c010101
+### p0283 E10
+enc_time 0 0 0 0
+---
+OK b400000000
+### p0284 E10
+enc_time 23 59 59 99
+---
+OK b4173b3b63
+### p0286 E10
+enc_time 12 255 255 255
+---
+OK b40cffffff
+### p0289 E10a
+enc_time 0 60 0 0
+---
+ERR
+### p0291 E10a
+enc_time 0 0 0 100
+---
+ERR
+### p0293 E10a
+enc_time 0 0 0 254
+---
+ERR
+### p0294 G1 E10
+enc_time 1 2 3 4 @4
+---
+ERR
+### p0295 E11
+enc_oid 3 15
+---
+OK c400c0000f
+### p0297 E11
+enc_oid 8 4194303
+---
+OK c4023fffff
+### p0300 E11
+enc_oid 128 12345
+---
+OK c420003039
+### p0301 E11a
+enc_oid 1024 0
+---
+ERR
+### p0304 E11a
+enc_oid 5 4294967295
+---
+ERR
+### p0305 G1 E11
+enc_oid 8 1 @4
+---
+ERR
+### p0306 E12
+enc_ctx_unsigned 0 0
+---
+OK 0900
+### p0307 E12
+enc_ctx_unsigned 0 72
+---
+OK 0948
+### p0308 E12
+enc_ctx_unsigned 0 256
+---
+OK 0a0100
+### p0311 E13
+enc_ctx_bool 0 1
+---
+OK 0901
+### p0312 E14 G5
+enc_open 0
+---
+OK 0e
+### p0314 E12
+enc_ctx_unsigned 1 0
+---
+OK 1900
+### p0315 E12
+enc_ctx_unsigned 1 72
+---
+OK 1948
+### p0318 E13
+enc_ctx_bool 1 0
+---
+OK 1900
+### p0320 E14 G5
+enc_open 1
+---
+OK 1e
+### p0322 E12
+enc_ctx_unsigned 3 0
+---
+OK 3900
+### p0326 E13
+enc_ctx_bool 3 0
+---
+OK 3900
+### p0329 E14 G5
+enc_close 3
+---
+OK 3f
+### p0330 E12
+enc_ctx_unsigned 14 0
+---
+OK e900
+### p0332 E12
+enc_ctx_unsigned 14 256
+---
+OK ea0100
+### p0335 E13
+enc_ctx_bool 14 1
+---
+OK e901
+### p0337 E14 G5
+enc_close 14
+---
+OK ef
+### p0339 E12 G3
+enc_ctx_unsigned 15 72
+---
+OK f90f48
+### p0343 E13 G3
+enc_ctx_bool 15 1
+---
+OK f90f01
+### p0344 E14 G5 G3
+enc_open 15
+---
+OK fe0f
+### p0345 E14 G5 G3
+enc_close 15
+---
+OK ff0f
+### p0347 E12 G3
+enc_ctx_unsigned 16 72
+---
+OK f91048
+### p0349 E12 G3
+enc_ctx_unsigned 16 4294967295
+---
+OK fc10ffffffff
+### p0351 E13 G3
+enc_ctx_bool 16 1
+---
+OK f91001
+### p0355 E12 G3
+enc_ctx_unsigned 32 72
+---
+OK f92048
+### p0359 E13 G3
+enc_ctx_bool 32 1
+---
+OK f92001
+### p0360 E14 G5 G3
+enc_open 32
+---
+OK fe20
+### p0361 E14 G5 G3
+enc_close 32
+---
+OK ff20
+### p0362 E12 G3
+enc_ctx_unsigned 200 0
+---
+OK f9c800
+### p0363 E12 G3
+enc_ctx_unsigned 200 72
+---
+OK f9c848
+### p0364 E12 G3
+enc_ctx_unsigned 200 256
+---
+OK fac80100
+### p0365 E12 G3
+enc_ctx_unsigned 200 4294967295
+---
+OK fcc8ffffffff
+### p0371 E12 G3
+enc_ctx_unsigned 254 72
+---
+OK f9fe48
+### p0372 E12 G3
+enc_ctx_unsigned 254 256
+---
+OK fafe0100
+### p0374 E13 G3
+enc_ctx_bool 254 0
+---
+OK f9fe00
+### p0375 E13 G3
+enc_ctx_bool 254 1
+---
+OK f9fe01
+### p0376 E14 G5 G3
+enc_open 254
+---
+OK fefe
+### p0379 G3
+enc_ctx_bool 255 1
+---
+ERR
+### p0381 G3
+enc_close 255
+---
+ERR
+### p0382 G1 E12
+enc_ctx_unsigned 3 256 @3
+---
+OK 3a0100
+### p0383 G1 E12
+enc_ctx_unsigned 3 256 @2
+---
+ERR
+### p0387 G1 E12
+enc_ctx_bool 3 1 @1
+---
+ERR
+### p0389 G1 E12
+enc_ctx_bool 20 1 @2
+---
+ERR
+### p0390 G1 E12
+enc_open 3 @1
+---
+OK 3e
+### p0391 G1 E12
+enc_open 3 @0
+---
+ERR
+### p0395 G1 E12
+enc_close 20 @1
+---
+ERR
+### p0396 D1
+dec_tag 21
+---
+OK hl=1 tag=2 app lvt=1
+### p0397 D1
+dec_tag 2148
+---
+OK hl=1 tag=2 app lvt=1
+### p0400 D1 G5
+dec_tag 0e
+---
+OK hl=1 tag=0 ctx open
+### p0402 D1 G5
+dec_tag 1e
+---
+OK hl=1 tag=1 ctx open
+### p0404 D1 G5 G3
+dec_tag ffc8
+---
+OK hl=2 tag=200 ctx close
+### p0405 D1 G3
+dec_tag fa14
+---
+OK hl=2 tag=20 ctx lvt=2
+### p0407 D1 G4
+dec_tag 65fe00fe
+---
+OK hl=4 tag=6 app lvt=254
+### p0409 D1 G3 G4
+dec_tag fd20fe0100
+---
+OK hl=5 tag=32 ctx lvt=256
+### p0410 D1
+dec_tag 10
+---
+OK hl=1 tag=1 app lvt=0
+### p0411 D1
+dec_tag 11
+---
+OK hl=1 tag=1 app lvt=1
+### p0413 D1
+dec_tag c4
+---
+OK hl=1 tag=12 app lvt=4
+### p0414 D1 G4
+dec_tag 75ff00000000
+---
+OK hl=6 tag=7 app lvt=0
+### p0420 D1b
+dec_tag 65ff00000003
+---
+OK hl=6 tag=6 app lvt=3
+### p0421 D1b
+dec_tag f10201
+---
+OK hl=2 tag=2 app lvt=1
+### p0423 D1a
+dec_tag f9
+---
+ERR
+### p0424 D1a
+dec_tag 65
+---
+ERR
+### p0425 D1a
+dec_tag 65fe00
+---
+ERR
+### p0427 D1a
+dec_tag f9ff
+---
+ERR
+### p0429 D1a
+dec_tag 27
+---
+ERR
+### p0431 D1a
+dec_tag f505
+---
+ERR
+### p0432 D1a
+dec_tag fdff
+---
+ERR
+### p0439 DV
+dec_app 2148
+---
+OK n=2 u 72
+### p0442 DV
+dec_app 24ffffffff
+---
+OK n=5 u 4294967295
+### p0443 DV
+dec_app 3180
+---
+OK n=2 i -128
+### p0444 DV
+dec_app 320080
+---
+OK n=3 i 128
+### p0449 DV
+dec_app 44ff800000
+---
+OK n=5 r ff800000
+### p0450 DV
+dec_app 60
+---
+OK n=1 oct -
+### p0451 DV
+dec_app 631234ff
+---
+OK n=4 oct 1234ff
+### p0452 DV G4
+dec_app 6505ababababab
+---
+OK n=7 oct ababababab
+### p0454 DV G4
+dec_app 65ff00010000+rep:ef:65536
+---
+OK n=65542 oct efefefefefefefefefefefefefefefef..ad79568006420383/65536
+### p0456 DV
+dec_app 751900546869732069732061204241436e657420737472696e6721
+---
+OK n=27 str cs=0 546869732069732061204241436e657420737472696e6721
+### p0457 DV
+dec_app 7400c3a4c3b6
+---
+OK n=5 str cs=0 c3a4c3
+### p0458 DV
+dec_app 8100
+---
+OK n=2 bits -
+### p0459 DV
+dec_app 8203a8
+---
+OK n=3 bits 10101
+### p0460 DV
+dec_app 8200ff
+---
+OK n=3 bits 11111111
+### p0461 DV
+dec_app 8307ffff
+---
+OK n=4 bits 111111111
+### p0464 DV
+dec_app a45b011804
+---
+OK n=5 date 1991 1 24 4
+### p0467 DV
+dec_app c400c0000f
+---
+OK n=5 oid 3 15
+### p0469 DV
+dec_app 2148ff
+---
+OK n=2 u 72
+### p0470 DV
+dec_app 00ff
+---
+OK n=1 null
+### p0471 D3
+dec_app 01
+---
+ERR
+### p0476 D3
+dec_app 1501
+---
+ERR
+### p0477 D3
+dec_app 1500
+---
+ERR
+### p0478 D3
+dec_app 17
+---
+ERR
+### p0479 D4
+dec_app 220005
+---
+OK n=3 u 5
+### p0480 D4
+dec_app 2400000005
+---
+OK n=5 u 5
+### p0482 D4
+dec_app 3400000080
+---
+OK n=5 i 128
+### p0484 D4
+dec_app 92000a
+---
+OK n=3 enum 10
+### p0488 D4
+dec_app 25050000000001
+---
+ERR
+### p0489 D4
+dec_app 3505ffffffffff
+---
+ERR
+### p0492 D5
+dec_app 44ffffffff
+---
+OK n=5 r ffffffff
+### p0493 D5
+dec_app 43000000
+---
+ERR
+### p0496 D5
+dec_app 4100
+---
+ERR
+### p0497 D7
+dec_app 7303414243
+---
+OK n=4 str cs=3 4142
+### p0500 D7
+dec_app 70
+---
+ERR
+### p0501 D7
+dec_app 750500ffffffff
+---
+OK n=7 str cs=0 ffffffff
+### p0502 D8
+dec_app 8103
+---
+ERR
+### p0504 D8
+dec_app 8208ff
+---
+ERR
+### p0506 D8
+dec_app 8101
+---
+ERR
+### p0508 D8
+dec_app 8307ff00
+---
+OK n=4 bits 111111110
+### p0512 D9
+dec_app b463636363
+---
+OK n=5 time 99 99 99 99
+### p0514 D9
+dec_app c3000000
+---
+ERR
+### p0515 D9
+dec_app c5050000000000
+---
+ERR
+### p0516 D9
+dec_app a4ff0d2308
+---
+OK n=5 date 65535 13 35 8
+### p0521 D2
+dec_app d100
+---
+ERR
+### p0523 D2
+dec_app f10f00
+---
+ERR
+### p0525 D2
+dec_app fd0f00
+---
+ERR
+### p0526 CR101
+# tag 5 (Double) was unsupported before CR-101; it now decodes
+dec_app 55080000000000000000
+---
+OK n=10 d 0000000000000000
+### p0528 D2
+dec_app 5504000000
+---
+ERR
+### p0529 D2
+dec_app 5400000000
+---
+ERR
+### p0530 D2
+dec_app -
+---
+ERR
+### p0532 D2
+dec_app 2
+---
+BADCMD
+### p0534 D2
+dec_app 6505abab
+---
+ERR
+### p0535 D2
+dec_app 65fe0100+rep:00:255
+---
+ERR
+### p0538 D2
+dec_app f1
+---
+ERR
+### p0539 D1b
+dec_app f10200
+---
+OK n=3 u 0
+### p0540 D1b
+dec_app 650300aabb
+---
+OK n=5 oct 00aabb
+### cr101-e01 CR101
+enc_double 4052000000000000
+---
+OK 55084052000000000000
+### cr101-e02 CR101
+enc_double 0000000000000000
+---
+OK 55080000000000000000
+### cr101-e03 CR101
+enc_double 8000000000000000
+---
+OK 55088000000000000000
+### cr101-e04 CR101
+enc_double bff0000000000000
+---
+OK 5508bff0000000000000
+### cr101-e05 CR101
+enc_double 0000000000000001
+---
+OK 55080000000000000001
+### cr101-e06 CR101
+enc_double 7ff0000000000000
+---
+OK 55087ff0000000000000
+### cr101-e07 CR101
+enc_double fff0000000000000
+---
+OK 5508fff0000000000000
+### cr101-e08 CR101
+enc_double 0123456789abcdef
+---
+OK 55080123456789abcdef
+### cr101-e09 CR101nan CR101
+enc_double 7ff8000000000000
+---
+ERR
+### cr101-e10 CR101nan CR101
+enc_double 7ff0000000000001
+---
+ERR
+### cr101-e11 CR101nan CR101
+enc_double ffffffffffffffff
+---
+ERR
+### cr101-e12 G1 CR101
+enc_double 4052000000000000 @10
+---
+OK 55084052000000000000
+### cr101-e13 G1 CR101
+enc_double 4052000000000000 @9
+---
+ERR
+### cr101-e14 G1 CR101
+enc_double 4052000000000000 @0
+---
+ERR
+### cr101-d01 CR101
+dec_app 55084052000000000000
+---
+OK n=10 d 4052000000000000
+### cr101-d02 CR101
+dec_app 55080123456789abcdef
+---
+OK n=10 d 0123456789abcdef
+### cr101-d03 CR101
+dec_app 5508fff8000000000001
+---
+OK n=10 d fff8000000000001
+### cr101-d04 CR101
+dec_app 55084052000000000000ff
+---
+OK n=10 d 4052000000000000
+### cr101-d05 CR101
+dec_app 55fe00084052000000000000
+---
+OK n=12 d 4052000000000000
+### cr101-d06 CR101
+dec_app 550840520000000000
+---
+ERR
+### cr101-d07 CR101
+dec_app 550740520000000000
+---
+ERR
+### cr101-d08 CR101
+dec_app 5509405200000000000000
+---
+ERR
+### cr101-d09 CR101
+dec_app 5508
+---
+ERR
+### cr101-d10 CR101
+dec_app 5d084052000000000000
+---
+ERR
+### cr101-c01 CR101
+enc_ctx_enum 0 0
+---
+OK 0900
+### cr101-c02 CR101
+enc_ctx_enum 1 72
+---
+OK 1948
+### cr101-c03 CR101
+enc_ctx_enum 9 256
+---
+OK 9a0100
+### cr101-c04 CR101
+enc_ctx_enum 14 65536
+---
+OK eb010000
+### cr101-c05 G3 CR101
+enc_ctx_enum 15 4294967295
+---
+OK fc0fffffffff
+### cr101-c06 G3 CR101
+enc_ctx_enum 254 72
+---
+OK f9fe48
+### cr101-c07 G3 CR101
+enc_ctx_enum 255 1
+---
+ERR
+### cr101-c08 G1 CR101
+enc_ctx_enum 3 256 @3
+---
+OK 3a0100
+### cr101-c09 G1 CR101
+enc_ctx_enum 3 256 @2
+---
+ERR
+### cr101-c10 G1 G3 CR101
+enc_ctx_enum 20 1 @2
+---
+ERR
+### cr101-s01 CR101
+enc_ctx_signed 0 0
+---
+OK 0900
+### cr101-s02 CR101
+enc_ctx_signed 0 -1
+---
+OK 09ff
+### cr101-s03 CR101
+enc_ctx_signed 2 72
+---
+OK 2948
+### cr101-s04 CR101
+enc_ctx_signed 2 128
+---
+OK 2a0080
+### cr101-s05 CR101
+enc_ctx_signed 3 -128
+---
+OK 3980
+### cr101-s06 CR101
+enc_ctx_signed 3 -129
+---
+OK 3aff7f
+### cr101-s07 CR101
+enc_ctx_signed 14 -8388608
+---
+OK eb800000
+### cr101-s08 G3 CR101
+enc_ctx_signed 15 2147483647
+---
+OK fc0f7fffffff
+### cr101-s09 G3 CR101
+enc_ctx_signed 20 -2147483648
+---
+OK fc1480000000
+### cr101-s10 G3 CR101
+enc_ctx_signed 255 0
+---
+ERR
+### cr101-s11 G1 G3 CR101
+enc_ctx_signed 20 128 @4
+---
+OK fa140080
+### cr101-s12 G1 G3 CR101
+enc_ctx_signed 20 128 @3
+---
+ERR

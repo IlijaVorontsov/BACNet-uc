@@ -1,0 +1,849 @@
+# Unit tests for alarm.c (same format as acceptance.vec).
+# Expected outputs were written from the behaviour documented at the top of
+# alarm.c, not copied from the implementation.
+
+### high-limit-is-strict
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 0
+s 10 30
+s 20 30.001
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@20:30.001
+### low-limit-is-strict
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 0
+s 10 10
+s 20 9.999
+---
+cfg
+NORMAL
+NORMAL
+LOW TO_LOW@20:9.999
+### delay-boundary-one-second-short
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 100 31
+s 129 31
+tick 129
+tick 130
+tick 131
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@130:31.000
+HIGH
+### delay-zero-is-immediate-both-ways
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 0
+s 5 31
+s 6 27.5
+---
+cfg
+NORMAL
+HIGH TO_HIGH@5:31.000
+NORMAL TO_NORMAL@6:27.500
+### timer-keeps-running-while-value-stays-high
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 0 31
+s 10 50
+s 20 32
+s 30 45
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:45.000
+### timer-restarts-after-dip-into-range
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 0 35
+s 25 29
+s 26 35
+tick 55
+tick 56
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@56:35.000
+### tick-drives-the-delay
+cfg high=30 low=10 deadband=2 delay=20 escalate=600
+init 1000
+s 1000 5
+tick 1019
+tick 1020
+tick 1021
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+LOW TO_LOW@1020:5.000
+LOW
+### delay-is-counted-from-first-out-of-range-sample-not-init
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+tick 100
+s 100 35
+tick 129
+tick 130
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@130:35.000
+
+### high-deadband-boundary-stays-high
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 0
+s 1 35
+s 2 29
+s 3 28
+s 4 27.99
+---
+cfg
+NORMAL
+HIGH TO_HIGH@1:35.000
+HIGH
+HIGH
+NORMAL TO_NORMAL@4:27.990
+### low-deadband-and-return-delay
+cfg high=30 low=10 deadband=2 delay=10 escalate=600
+init 0
+s 0 5
+s 10 5
+s 20 11
+s 30 12
+s 40 12.5
+s 50 12.5
+---
+cfg
+NORMAL
+NORMAL
+LOW TO_LOW@10:5.000
+LOW
+LOW
+LOW
+NORMAL TO_NORMAL@50:12.500
+### return-to-normal-timer-restarts-when-value-reenters-deadband
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 0 35
+s 30 35
+s 40 27
+s 60 29
+s 61 27
+s 90 27
+s 91 27
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000
+HIGH
+HIGH
+HIGH
+HIGH
+NORMAL TO_NORMAL@91:27.000
+### negative-deadband-treated-as-zero
+cfg high=30 low=10 deadband=-5 delay=0 escalate=600
+init 0
+s 1 32
+s 2 32
+s 3 31
+s 4 29
+---
+cfg
+NORMAL
+HIGH TO_HIGH@1:32.000
+HIGH
+HIGH
+NORMAL TO_NORMAL@4:29.000
+### nan-deadband-treated-as-zero
+cfg high=30 low=10 deadband=nan delay=0 escalate=600
+init 0
+s 1 32
+s 2 29.5
+---
+cfg
+NORMAL
+HIGH TO_HIGH@1:32.000
+NORMAL TO_NORMAL@2:29.500
+
+### high-directly-to-low
+cfg high=30 low=10 deadband=2 delay=10 escalate=600
+init 0
+s 0 40
+s 10 40
+s 20 5
+s 30 5
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@10:40.000
+HIGH
+LOW TO_LOW@30:5.000
+### low-directly-to-high
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 0
+s 1 -20
+s 2 100
+---
+cfg
+NORMAL
+LOW TO_LOW@1:-20.000
+HIGH TO_HIGH@2:100.000
+### changing-target-restarts-the-delay
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 0 40
+s 30 40
+s 40 20
+s 50 5
+s 70 5
+s 79 5
+s 80 5
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:40.000
+HIGH
+HIGH
+HIGH
+HIGH
+LOW TO_LOW@80:5.000
+### inverted-limits-do-not-oscillate
+cfg high=10 low=30 deadband=0 delay=0 escalate=600
+init 0
+s 1 20
+s 2 20
+s 3 20
+tick 100
+---
+cfg
+NORMAL
+HIGH TO_HIGH@1:20.000
+HIGH
+HIGH
+HIGH
+
+### late-sample-still-raises-alarm-that-fell-due-earlier
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 20 35
+s 60 20
+s 89 20
+s 90 20
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@60:35.000
+HIGH
+NORMAL TO_NORMAL@90:20.000
+### sample-back-in-range-exactly-at-due-time-wins
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 20 35
+s 50 20
+tick 1000
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+### same-scenario-with-extra-ticks-gives-same-states
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 20 35
+tick 30
+tick 49
+tick 50
+s 60 20
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@50:35.000
+HIGH
+
+### fault-flag-is-immediate-and-carries-value
+cfg high=30 low=10 deadband=2 delay=60 escalate=600
+init 0
+sf 10 22.5
+sf 20 23
+s 30 20
+---
+cfg
+NORMAL
+FAULT TO_FAULT@10:22.500
+FAULT
+NORMAL TO_NORMAL@30:20.000
+### nan-is-a-fault
+cfg high=30 low=10 deadband=2 delay=60 escalate=600
+init 0
+s 10 nan
+s 20 20
+---
+cfg
+NORMAL
+FAULT TO_FAULT@10:nan
+NORMAL TO_NORMAL@20:20.000
+### infinities-are-faults
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 0
+s 10 inf
+s 20 20
+s 30 -inf
+---
+cfg
+NORMAL
+FAULT TO_FAULT@10:inf
+NORMAL TO_NORMAL@20:20.000
+FAULT TO_FAULT@30:-inf
+### nan-does-not-clear-an-alarm
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 0
+s 1 40
+s 2 nan
+s 3 nan
+---
+cfg
+NORMAL
+HIGH TO_HIGH@1:40.000
+FAULT TO_FAULT@2:nan
+FAULT
+### fault-discards-pending-delay
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 0 35
+sf 20 35
+s 25 35
+tick 30
+tick 54
+tick 55
+---
+cfg
+NORMAL
+NORMAL
+FAULT TO_FAULT@20:35.000
+NORMAL TO_NORMAL@25:35.000
+NORMAL
+NORMAL
+HIGH TO_HIGH@55:35.000
+### fault-overrides-alarm-and-clears-to-normal
+cfg high=30 low=10 deadband=2 delay=0 escalate=600
+init 0
+s 1 5
+sf 2 5
+s 3 5
+---
+cfg
+NORMAL
+LOW TO_LOW@1:5.000
+FAULT TO_FAULT@2:5.000
+LOW TO_NORMAL@3:5.000 TO_LOW@3:5.000
+### fault-state-stays-without-samples
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+sf 1 0
+tick 5000
+---
+cfg
+NORMAL
+FAULT TO_FAULT@1:0.000 ESCALATE@1:0.000
+FAULT
+
+### escalation-boundary-and-once-only
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 50 31
+tick 149
+tick 150
+tick 151
+tick 100000
+---
+cfg
+NORMAL
+HIGH TO_HIGH@50:31.000
+HIGH
+HIGH ESCALATE@150:31.000
+HIGH
+HIGH
+### escalation-reports-current-value
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 0 31
+s 50 45.25
+tick 100
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:31.000
+HIGH
+HIGH ESCALATE@100:45.250
+### ack-before-deadline-prevents-escalation
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 0 31
+ack 99
+tick 100
+tick 5000
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:31.000
+HIGH
+HIGH
+HIGH
+### ack-exactly-at-deadline-prevents-escalation
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 0 31
+ack 100
+tick 200
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:31.000
+HIGH
+HIGH
+### late-ack-still-reports-overdue-escalation
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 0 31
+ack 150
+tick 300
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:31.000
+HIGH ESCALATE@150:31.000
+HIGH
+### return-to-normal-cancels-escalation
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 0 31
+s 50 20
+tick 100
+tick 1000
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:31.000
+NORMAL TO_NORMAL@50:20.000
+NORMAL
+NORMAL
+### return-due-at-same-instant-as-escalation-wins
+cfg high=30 low=10 deadband=2 delay=50 escalate=100
+init 0
+s 0 31
+s 50 31
+s 100 20
+tick 149
+tick 150
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@50:31.000
+HIGH
+HIGH
+NORMAL TO_NORMAL@150:20.000
+### escalation-before-return-when-due-earlier
+cfg high=30 low=10 deadband=2 delay=50 escalate=100
+init 0
+s 0 31
+s 50 31
+s 110 20
+tick 1000
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@50:31.000
+HIGH
+NORMAL ESCALATE@1000:20.000 TO_NORMAL@1000:20.000
+### ack-in-normal-is-noop-and-does-not-carry-over
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+ack 1
+s 2 31
+tick 102
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@2:31.000
+HIGH ESCALATE@102:31.000
+### new-occurrence-needs-new-ack
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 0 31
+ack 10
+s 20 20
+s 30 31
+tick 129
+tick 130
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:31.000
+HIGH
+NORMAL TO_NORMAL@20:20.000
+HIGH TO_HIGH@30:31.000
+HIGH
+HIGH ESCALATE@130:31.000
+### high-to-low-is-a-new-occurrence
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 0 31
+ack 10
+s 50 5
+tick 149
+tick 150
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:31.000
+HIGH
+LOW TO_LOW@50:5.000
+LOW
+LOW ESCALATE@150:5.000
+### fault-escalates-and-can-be-acked
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+sf 0 20
+tick 100
+sf 110 20
+s 120 20
+sf 130 20
+ack 140
+tick 1000
+---
+cfg
+NORMAL
+FAULT TO_FAULT@0:20.000
+FAULT ESCALATE@100:20.000
+FAULT
+NORMAL TO_NORMAL@120:20.000
+FAULT TO_FAULT@130:20.000
+FAULT
+FAULT
+### escalate-zero-escalates-immediately
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 5 31
+tick 6
+---
+cfg
+NORMAL
+HIGH TO_HIGH@5:31.000 ESCALATE@5:31.000
+HIGH
+### ack-does-not-ack-alarm-raised-in-same-call
+cfg high=30 low=10 deadband=2 delay=30 escalate=100
+init 0
+s 0 35
+ack 40
+tick 139
+tick 140
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@40:35.000
+HIGH
+HIGH ESCALATE@140:35.000
+### escalation-clock-starts-at-announcement
+cfg high=30 low=10 deadband=2 delay=30 escalate=100
+init 0
+s 0 35
+tick 60
+tick 159
+tick 160
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@60:35.000
+HIGH
+HIGH ESCALATE@160:35.000
+
+### maintenance-suppresses-but-state-is-live
+cfg high=30 low=10 deadband=2 delay=10 escalate=100
+init 0
+maint 0 on
+s 10 35
+s 20 35
+s 30 20
+s 40 20
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH
+HIGH
+NORMAL
+### alarm-raised-in-maintenance-is-announced-on-exit
+cfg high=30 low=10 deadband=2 delay=10 escalate=100
+init 0
+maint 0 on
+s 10 35
+s 20 35
+maint 50 off
+tick 149
+tick 150
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH
+HIGH TO_HIGH@50:35.000
+HIGH
+HIGH ESCALATE@150:35.000
+### alarm-that-came-and-went-in-maintenance-is-not-reported
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+maint 0 on
+s 10 35
+s 20 20
+maint 30 off
+tick 1000
+---
+cfg
+NORMAL
+NORMAL
+HIGH
+NORMAL
+NORMAL
+NORMAL
+### return-to-normal-during-maintenance-reported-on-exit
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 35
+maint 20 on
+s 30 20
+tick 200
+maint 300 off
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+NORMAL
+NORMAL
+NORMAL TO_NORMAL@300:20.000
+### unchanged-acked-alarm-no-notes-on-exit
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 35
+ack 20
+maint 30 on
+maint 500 off
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+HIGH
+HIGH
+### escalation-suppressed-in-maintenance-sent-on-exit
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 35
+maint 20 on
+tick 110
+tick 200
+maint 300 off
+tick 400
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+HIGH
+HIGH
+HIGH ESCALATE@300:35.000
+HIGH
+### ack-during-maintenance-prevents-escalation
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 35
+maint 20 on
+ack 50
+maint 300 off
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+HIGH
+HIGH
+### ack-of-unannounced-alarm-is-ignored
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+maint 0 on
+s 10 35
+ack 20
+maint 30 off
+tick 130
+---
+cfg
+NORMAL
+NORMAL
+HIGH
+HIGH
+HIGH TO_HIGH@30:35.000
+HIGH ESCALATE@130:35.000
+### new-occurrence-during-maintenance-is-reannounced
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 35
+ack 15
+maint 20 on
+s 30 20
+s 40 36
+maint 50 off
+tick 150
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+HIGH
+NORMAL
+HIGH
+HIGH TO_HIGH@50:36.000
+HIGH ESCALATE@150:36.000
+### fault-during-maintenance-reported-on-exit
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+maint 0 on
+sf 10 0
+maint 20 off
+---
+cfg
+NORMAL
+NORMAL
+FAULT
+FAULT TO_FAULT@20:0.000
+### maintenance-on-twice-and-off-when-off-are-noops
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+maint 1 off
+maint 2 on
+maint 3 on
+s 4 35
+maint 5 off
+maint 6 off
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH
+HIGH TO_HIGH@5:35.000
+HIGH
+### delayed-transition-due-before-maint-on-is-reported
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 0 35
+maint 40 on
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@40:35.000
+
+### time-wraparound
+cfg high=30 low=10 deadband=2 delay=30 escalate=100
+init 4294967280
+s 4294967290 35
+s 5 35
+tick 23
+tick 24
+tick 123
+tick 124
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@24:35.000
+HIGH
+HIGH ESCALATE@124:35.000
+### clock-going-backwards-does-not-fire-timers
+cfg high=30 low=10 deadband=2 delay=30 escalate=100
+init 1000
+s 1000 35
+s 500 35
+tick 1029
+tick 1030
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@1030:35.000
+### large-forward-step
+cfg high=30 low=10 deadband=2 delay=0 escalate=2000000000
+init 0
+s 0 35
+tick 1999999999
+tick 2000000000
+---
+cfg
+NORMAL
+HIGH TO_HIGH@0:35.000
+HIGH
+HIGH ESCALATE@2000000000:35.000
+### reinit-resets-everything
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+maint 0 on
+s 10 35
+init 20
+s 30 20
+maint 40 off
+---
+cfg
+NORMAL
+NORMAL
+HIGH
+NORMAL
+NORMAL
+NORMAL
+### nan-high-limit-disables-high-alarm
+cfg high=nan low=10 deadband=2 delay=0 escalate=100
+init 0
+s 1 1000
+s 2 5
+---
+cfg
+NORMAL
+NORMAL
+LOW TO_LOW@2:5.000

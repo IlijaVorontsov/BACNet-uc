@@ -1,0 +1,266 @@
+### high-alarm-ack-and-return 
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 10 25
+s 20 35
+s 30 35
+s 40 35
+s 50 35
+ack 60
+s 70 27
+s 80 27
+s 90 27
+s 100 27
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@50:35.000
+HIGH ACKED@60:35.000
+HIGH
+HIGH
+HIGH
+NORMAL TO_NORMAL@100:27.000
+### low-alarm-unacknowledged-escalates 
+cfg high=30 low=10 deadband=2 delay=20 escalate=300
+init 0
+s 0 5
+s 10 5
+s 20 5
+tick 200
+tick 320
+tick 400
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+LOW TO_LOW@20:5.000
+LOW
+LOW ESCALATE@320:5.000
+LOW
+### short-spikes-do-not-alarm 
+cfg high=30 low=10 deadband=2 delay=60 escalate=600
+init 0
+s 10 20
+s 20 40
+s 30 20
+s 40 40
+s 50 20
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+### cr201-short-normal-delay 
+cfg high=30 low=10 deadband=2 delay=30 delay_normal=10 escalate=0
+init 0
+s 0 35
+s 29 35
+s 30 35
+s 40 25
+s 49 25
+s 50 25
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000
+HIGH
+HIGH
+NORMAL TO_NORMAL@50:25.000
+### cr201-long-normal-delay 
+cfg high=30 low=10 deadband=2 delay=10 delay_normal=60 escalate=0
+init 0
+s 0 5
+s 10 5
+s 20 15
+tick 30
+tick 79
+tick 80
+---
+cfg
+NORMAL
+NORMAL
+LOW TO_LOW@10:5.000
+LOW
+LOW
+LOW
+NORMAL TO_NORMAL@80:15.000
+### cr201-high-low-swap-uses-time-delay 
+cfg high=30 low=10 deadband=2 delay=20 delay_normal=100 escalate=0
+init 0
+s 0 35
+s 20 35
+s 30 5
+s 50 5
+s 60 20
+tick 80
+tick 159
+tick 160
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@20:35.000
+HIGH
+LOW TO_LOW@50:5.000
+LOW
+LOW
+LOW
+NORMAL TO_NORMAL@160:20.000
+### cr201-zero-normal-delay 
+cfg high=30 low=10 deadband=2 delay=30 delay_normal=0 escalate=0
+init 0
+s 0 35
+s 30 35
+s 31 25
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000
+NORMAL TO_NORMAL@31:25.000
+### cr201-sentinel-means-same-as-delay 
+cfg high=30 low=10 deadband=2 delay=30 delay_normal=4294967295 escalate=0
+init 0
+s 0 35
+s 30 35
+s 40 25
+s 69 25
+s 70 25
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000
+HIGH
+HIGH
+NORMAL TO_NORMAL@70:25.000
+### cr202-reconfigure-then-reinit 
+cfg high=30 low=10 deadband=2 delay=10 escalate=0
+init 0
+s 0 35
+s 10 35
+cfg high=40 low=10 deadband=2 delay=10 escalate=0
+init 20
+s 20 35
+s 30 35
+s 40 45
+s 50 45
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@10:35.000
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@50:45.000
+### cr203-acked-once-with-latest-value 
+# ACKED carries the most recent sample value; a second ack emits nothing
+cfg high=30 low=10 deadband=2 delay=10 escalate=0
+init 0
+ack 0
+s 0 35
+s 10 36
+s 12 38
+ack 15
+ack 20
+s 25 37
+ack 30
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@10:36.000
+HIGH
+HIGH ACKED@15:38.000
+HIGH
+HIGH
+HIGH
+### cr203-ack-in-maintenance-is-silent 
+# ack in maintenance clears the unacknowledged status without ACKED (not deferred)
+cfg high=30 low=10 deadband=2 delay=10 escalate=600
+init 0
+s 0 5
+s 10 5
+maint 20 on
+s 25 6
+ack 30
+maint 40 off
+ack 50
+tick 700
+---
+cfg
+NORMAL
+NORMAL
+LOW TO_LOW@10:5.000
+LOW
+LOW
+LOW
+LOW
+LOW
+LOW
+### cr203-ack-after-return-to-normal 
+# returning to normal does not acknowledge the alarm (BACnet Acked_Transitions), see CR-203 item 2
+cfg high=30 low=10 deadband=2 delay=10 escalate=0
+init 0
+s 0 35
+s 10 35
+s 20 25
+s 30 25
+s 40 26
+ack 50
+ack 60
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@10:35.000
+HIGH
+NORMAL TO_NORMAL@30:25.000
+NORMAL
+NORMAL ACKED@50:26.000
+NORMAL
+### cr203-ack-after-transition-in-same-call 
+cfg high=30 low=10 deadband=2 delay=10 escalate=0
+init 0
+s 0 35
+tick 5
+ack 10
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@10:35.000 ACKED@10:35.000
+### cr203-limits-are-exclusive 
+# BACnet OUT_OF_RANGE: offnormal only when strictly above High_Limit / below Low_Limit, see CR-203 item 3
+cfg high=30 low=10 deadband=0 delay=0 escalate=0
+init 0
+s 0 30
+s 10 10
+s 20 30.001
+s 30 30
+s 40 9.999
+s 50 10
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@20:30.001
+HIGH
+LOW TO_LOW@40:9.999
+LOW

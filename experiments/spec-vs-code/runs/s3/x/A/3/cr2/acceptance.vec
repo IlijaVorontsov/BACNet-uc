@@ -1,0 +1,173 @@
+# Acceptance test: the alarm scenarios we care about.
+### high-alarm-ack-and-return
+cfg high=30 low=10 deadband=2 delay=30 escalate=600
+init 0
+s 10 25
+s 20 35
+s 30 35
+s 40 35
+s 50 35
+ack 60
+s 70 27
+s 80 27
+s 90 27
+s 100 27
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@50:35.000
+HIGH
+HIGH
+HIGH
+HIGH
+NORMAL TO_NORMAL@100:27.000
+### low-alarm-unacknowledged-escalates
+cfg high=30 low=10 deadband=2 delay=20 escalate=300
+init 0
+s 0 5
+s 10 5
+s 20 5
+tick 200
+tick 320
+tick 400
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+LOW TO_LOW@20:5.000
+LOW
+LOW ESCALATE@320:5.000
+LOW
+### short-spikes-do-not-alarm
+cfg high=30 low=10 deadband=2 delay=60 escalate=600
+init 0
+s 10 20
+s 20 40
+s 30 20
+s 40 40
+s 50 20
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+### cr201-short-normal-delay
+# CR-201: separate return-to-normal delay (Time_Delay_Normal, cfg key delay_normal).
+cfg high=30 low=10 deadband=2 delay=30 delay_normal=10 escalate=0
+init 0
+s 0 35
+s 29 35
+s 30 35
+s 40 25
+s 49 25
+s 50 25
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000
+HIGH
+HIGH
+NORMAL TO_NORMAL@50:25.000
+### cr201-long-normal-delay
+cfg high=30 low=10 deadband=2 delay=10 delay_normal=60 escalate=0
+init 0
+s 0 5
+s 10 5
+s 20 15
+tick 30
+tick 79
+tick 80
+---
+cfg
+NORMAL
+NORMAL
+LOW TO_LOW@10:5.000
+LOW
+LOW
+LOW
+NORMAL TO_NORMAL@80:15.000
+### cr201-high-low-swap-uses-time-delay
+cfg high=30 low=10 deadband=2 delay=20 delay_normal=100 escalate=0
+init 0
+s 0 35
+s 20 35
+s 30 5
+s 50 5
+s 60 20
+tick 80
+tick 159
+tick 160
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@20:35.000
+HIGH
+LOW TO_LOW@50:5.000
+LOW
+LOW
+LOW
+NORMAL TO_NORMAL@160:20.000
+### cr201-zero-normal-delay
+cfg high=30 low=10 deadband=2 delay=30 delay_normal=0 escalate=0
+init 0
+s 0 35
+s 30 35
+s 31 25
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000
+NORMAL TO_NORMAL@31:25.000
+### cr201-sentinel-means-same-as-delay
+cfg high=30 low=10 deadband=2 delay=30 delay_normal=4294967295 escalate=0
+init 0
+s 0 35
+s 30 35
+s 40 25
+s 69 25
+s 70 25
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@30:35.000
+HIGH
+HIGH
+NORMAL TO_NORMAL@70:25.000
+### cr202-reconfigure-then-reinit
+# CR-202: alarm_init keeps a pointer to the configuration instead of copying it.
+# The supported way to reconfigure a point is to update its configuration and call
+# alarm_init again; the point then starts from NORMAL with the new limits.
+cfg high=30 low=10 deadband=2 delay=10 escalate=0
+init 0
+s 0 35
+s 10 35
+cfg high=40 low=10 deadband=2 delay=10 escalate=0
+init 20
+s 20 35
+s 30 35
+s 40 45
+s 50 45
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@10:35.000
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@50:45.000

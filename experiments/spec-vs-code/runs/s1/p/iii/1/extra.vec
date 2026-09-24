@@ -1,0 +1,426 @@
+### e3-unsigned
+enc_unsigned 0
+enc_unsigned 255
+enc_unsigned 256
+enc_unsigned 65535
+enc_unsigned 65536
+enc_unsigned 16777215
+enc_unsigned 16777216
+enc_unsigned 4294967295
+enc_enum 4294967295
+---
+OK 2100
+OK 21ff
+OK 220100
+OK 22ffff
+OK 23010000
+OK 23ffffff
+OK 2401000000
+OK 24ffffffff
+OK 94ffffffff
+### e4-signed
+enc_signed 0
+enc_signed 127
+enc_signed 128
+enc_signed -128
+enc_signed -129
+enc_signed 32767
+enc_signed 32768
+enc_signed -32768
+enc_signed -32769
+enc_signed 8388607
+enc_signed 8388608
+enc_signed -8388608
+enc_signed -8388609
+enc_signed 2147483647
+enc_signed -2147483648
+enc_signed -1
+---
+OK 3100
+OK 317f
+OK 320080
+OK 3180
+OK 32ff7f
+OK 327fff
+OK 33008000
+OK 328000
+OK 33ff7fff
+OK 337fffff
+OK 3400800000
+OK 33800000
+OK 34ff7fffff
+OK 347fffffff
+OK 3480000000
+OK 31ff
+### e5-real
+enc_real 80000000
+enc_real 7f800000
+enc_real ff800000
+enc_real 7fc00000
+enc_real 7f800001
+enc_real ffffffff
+enc_real ff800001
+enc_real 00000001
+---
+OK 4480000000
+OK 447f800000
+OK 44ff800000
+ERR
+ERR
+ERR
+ERR
+OK 4400000001
+### e6-octets
+enc_octets -
+enc_octets 01020304
+enc_octets 0102030405
+enc_octets rep:aa:253
+enc_octets rep:aa:254
+enc_octets rep:aa:65535 @65539
+enc_octets rep:aa:65536 @65542
+---
+OK 60
+OK 6401020304
+OK 65050102030405
+OK 65fdaaaaaaaaaaaaaaaaaaaaaaaaaaaa..7a9063ce7a342c55/255
+OK 65fe00feaaaaaaaaaaaaaaaaaaaaaaaa..067d41560c8042e2/258
+OK 65feffffaaaaaaaaaaaaaaaaaaaaaaaa..3582c0dc0b379914/65539
+OK 65ff00010000aaaaaaaaaaaaaaaaaaaa..53fe13db105631bc/65542
+### e7-str
+enc_str -
+enc_str 414243
+enc_str 41424344
+enc_str ff00fe
+---
+OK 7100
+OK 7400414243
+OK 75050041424344
+OK 7400ff00fe
+### e8-bits
+enc_bits -
+enc_bits 1
+enc_bits 10000000
+enc_bits 100000001
+enc_bits 2
+enc_bits 11111111
+---
+OK 8100
+OK 820780
+OK 820080
+OK 83078080
+ERR
+OK 8200ff
+### e9-date
+enc_date 1900 1 1 1
+enc_date 2154 12 31 7
+enc_date 65535 255 255 255
+enc_date 1899 1 1 1
+enc_date 2155 1 1 1
+enc_date 2024 0 1 1
+enc_date 2024 13 1 1
+enc_date 2024 14 1 1
+enc_date 2024 15 1 1
+enc_date 2024 1 0 1
+enc_date 2024 1 34 1
+enc_date 2024 1 35 1
+enc_date 2024 1 1 0
+enc_date 2024 1 1 8
+enc_date 255 1 1 1
+enc_date 2024 254 1 1
+---
+OK a400010101
+OK a4fe0c1f07
+OK a4ffffffff
+ERR
+ERR
+ERR
+OK a47c0d0101
+OK a47c0e0101
+ERR
+ERR
+OK a47c012201
+ERR
+ERR
+ERR
+ERR
+ERR
+### e10-time
+enc_time 0 0 0 0
+enc_time 23 59 59 99
+enc_time 255 255 255 255
+enc_time 24 0 0 0
+enc_time 0 60 0 0
+enc_time 0 0 60 0
+enc_time 0 0 0 100
+enc_time 0 0 0 254
+---
+OK b400000000
+OK b4173b3b63
+OK b4ffffffff
+ERR
+ERR
+ERR
+ERR
+ERR
+### e11-oid
+enc_oid 1023 4194303
+enc_oid 1024 0
+enc_oid 0 4194304
+enc_oid 8 1
+---
+OK c4ffffffff
+ERR
+ERR
+OK c402000001
+### e12-ctx
+enc_ctx_unsigned 0 0
+enc_ctx_unsigned 14 5
+enc_ctx_unsigned 15 5
+enc_ctx_unsigned 254 70000
+enc_ctx_unsigned 255 5
+enc_ctx_bool 0 1
+enc_ctx_bool 3 0
+enc_ctx_bool 20 1
+enc_ctx_bool 255 1
+---
+OK 0900
+OK e905
+OK f90f05
+OK fbfe011170
+ERR
+OK 0901
+OK 3900
+OK f91401
+ERR
+### e14-open-close
+enc_open 0
+enc_close 14
+enc_open 15
+enc_close 254
+enc_open 255
+enc_close 255
+---
+OK 0e
+OK ef
+OK fe0f
+OK fffe
+ERR
+ERR
+### g1-cap
+enc_null @0
+enc_null @1
+enc_bool 0 @0
+enc_unsigned 256 @2
+enc_unsigned 256 @3
+enc_real 42900000 @4
+enc_str 41424344 @6
+enc_str 41424344 @7
+enc_octets rep:aa:254 @257
+enc_octets rep:aa:254 @258
+enc_bits 100000001 @3
+enc_bits 100000001 @4
+enc_open 15 @1
+enc_open 15 @2
+enc_ctx_unsigned 20 1 @2
+enc_ctx_bool 20 1 @2
+enc_date 2024 1 1 1 @4
+enc_oid 1024 0 @0
+enc_bits 3 @0
+---
+ERR
+OK 00
+ERR
+ERR
+OK 220100
+ERR
+ERR
+OK 75050041424344
+ERR
+OK 65fe00feaaaaaaaaaaaaaaaaaaaaaaaa..067d41560c8042e2/258
+ERR
+OK 83078080
+ERR
+OK fe0f
+ERR
+ERR
+ERR
+ERR
+ERR
+### d1-tag
+dec_tag -
+dec_tag 00
+dec_tag 0e
+dec_tag 0f
+dec_tag 06
+dec_tag 07
+dec_tag f9
+dec_tag f903
+dec_tag f9ff
+dec_tag fe0f
+dec_tag ff20
+dec_tag 65
+dec_tag 6503
+dec_tag 65fe
+dec_tag 65fe00
+dec_tag 65fe0010
+dec_tag 65ff000000
+dec_tag 65ff00000010
+dec_tag 65ffffffffff
+dec_tag 1501
+dec_tag fd2005
+dec_tag fd20fe0100
+dec_tag 2c
+---
+ERR
+OK hl=1 tag=0 app lvt=0
+OK hl=1 tag=0 ctx open
+OK hl=1 tag=0 ctx close
+ERR
+ERR
+ERR
+OK hl=2 tag=3 ctx lvt=1
+ERR
+OK hl=2 tag=15 ctx open
+OK hl=2 tag=32 ctx close
+ERR
+OK hl=2 tag=6 app lvt=3
+ERR
+ERR
+OK hl=4 tag=6 app lvt=16
+ERR
+OK hl=6 tag=6 app lvt=16
+OK hl=6 tag=6 app lvt=4294967295
+OK hl=2 tag=1 app lvt=1
+OK hl=3 tag=32 ctx lvt=5
+OK hl=5 tag=32 ctx lvt=256
+OK hl=1 tag=2 ctx lvt=4
+### d2-app
+dec_app -
+dec_app 0a0100
+dec_app 0e
+dec_app 5800000000
+dec_app d0
+dec_app e0
+dec_app f00f
+dec_app f010
+dec_app 2105
+dec_app 21
+dec_app 2205
+dec_app 00ffff
+dec_app f000
+---
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+ERR
+OK n=2 u 5
+ERR
+ERR
+OK n=1 null
+OK n=2 null
+### d3-null-bool
+dec_app 01
+dec_app 05
+dec_app 1500
+dec_app 10
+dec_app 11
+dec_app 12
+dec_app 1501
+---
+ERR
+ERR
+ERR
+OK n=1 bool 0
+OK n=1 bool 1
+ERR
+ERR
+### d4-ints
+dec_app 20
+dec_app 2500000000000001
+dec_app 220005
+dec_app 32ffff
+dec_app 3180
+dec_app 3480000000
+dec_app 347fffffff
+dec_app 33800000
+dec_app 24ffffffff
+dec_app 9100
+dec_app 9401020304
+dec_app 25010a
+---
+ERR
+ERR
+OK n=3 u 5
+OK n=3 i -1
+OK n=2 i -128
+OK n=5 i -2147483648
+OK n=5 i 2147483647
+OK n=4 i -8388608
+OK n=5 u 4294967295
+OK n=2 enum 0
+OK n=5 enum 16909060
+OK n=3 u 10
+### d5-real
+dec_app 447fc00001
+dec_app 4380000000
+dec_app 4580000000ff
+dec_app 447f800001
+---
+OK n=5 r 7fc00001
+ERR
+ERR
+OK n=5 r 7f800001
+### d6-d7-strings
+dec_app 60
+dec_app 6301020399
+dec_app 70
+dec_app 7100
+dec_app 7304414243
+dec_app 74044142
+dec_app 65fe0000
+---
+OK n=1 oct -
+OK n=4 oct 010203
+ERR
+OK n=2 str cs=0 -
+OK n=4 str cs=4 4142
+ERR
+OK n=4 oct -
+### d8-bits
+dec_app 80
+dec_app 8100
+dec_app 8101
+dec_app 8203a8
+dec_app 8208ff
+dec_app 8207ff
+dec_app 820080
+---
+ERR
+OK n=2 bits -
+ERR
+OK n=3 bits 10101
+ERR
+OK n=3 bits 1
+OK n=3 bits 10000000
+### d9
+dec_app a4ffffffff
+dec_app a4000d2000
+dec_app a3000000
+dec_app b4ff00ff63
+dec_app c4ffffffff
+dec_app c5
+dec_app c504000000
+dec_app c50400000000
+---
+OK n=5 date 65535 255 255 255
+OK n=5 date 1900 13 32 0
+ERR
+OK n=5 time 255 0 255 99
+OK n=5 oid 1023 4194303
+ERR
+ERR
+OK n=6 oid 0 0

@@ -1,0 +1,171 @@
+# Edge cases derived by hand from SPEC.md (A-rule noted per block).
+### strict-limits-deadband-direct A2-A4
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 1 30
+s 2 10
+s 3 30.5
+s 4 28
+s 5 27.9
+s 6 9
+s 7 12
+s 8 12.1
+s 9 40
+s 10 5
+s 11 50
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@3:30.500
+HIGH
+NORMAL TO_NORMAL@5:27.900
+LOW TO_LOW@6:9.000
+LOW
+NORMAL TO_NORMAL@8:12.100
+HIGH TO_HIGH@9:40.000
+LOW TO_LOW@10:5.000
+HIGH TO_HIGH@11:50.000
+### expired-but-unobserved-is-cancelled A5a
+cfg high=30 low=10 deadband=2 delay=30 escalate=0
+init 0
+s 10 35
+s 50 20
+tick 100
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+NORMAL
+### tick-fires-pending A5a
+cfg high=30 low=10 deadband=2 delay=30 escalate=0
+init 0
+s 10 35
+tick 39
+tick 40
+---
+cfg
+NORMAL
+NORMAL
+NORMAL
+HIGH TO_HIGH@40:35.000
+### fault-and-recovery A6-A6a
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 5 nan
+sf 6 20
+s 7 40
+sf 8 20
+s 9 20
+---
+cfg
+NORMAL
+FAULT TO_FAULT@5:nan
+FAULT
+HIGH TO_NORMAL@7:40.000 TO_HIGH@7:40.000
+FAULT TO_FAULT@8:20.000
+NORMAL TO_NORMAL@9:20.000
+### maintenance-catch-up-new-episode A10
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 40
+maint 20 on
+tick 200
+s 210 20
+s 220 5
+maint 230 off
+tick 329
+tick 330
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:40.000
+HIGH
+HIGH
+NORMAL
+LOW
+LOW TO_LOW@230:5.000
+LOW
+LOW ESCALATE@330:5.000
+### maintenance-off-old-episode-escalates A9-A10
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 40
+maint 20 on
+tick 200
+maint 210 on
+maint 220 off
+maint 230 off
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:40.000
+HIGH
+HIGH
+HIGH
+HIGH ESCALATE@220:40.000
+HIGH
+### late-ack-no-escalate A9
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 40
+ack 200
+tick 300
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:40.000
+HIGH
+HIGH
+### normal-keeps-unacked A8
+cfg high=30 low=10 deadband=2 delay=0 escalate=100
+init 0
+s 10 40
+s 20 20
+tick 109
+tick 110
+---
+cfg
+NORMAL
+HIGH TO_HIGH@10:40.000
+NORMAL TO_NORMAL@20:20.000
+NORMAL
+NORMAL ESCALATE@110:20.000
+### time-backwards A12
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 100
+s 50 40
+s 100 40
+s 99 5
+tick 99
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@100:40.000
+HIGH
+HIGH
+### infinities-valid A6
+cfg high=30 low=10 deadband=2 delay=0 escalate=0
+init 0
+s 1 inf
+s 2 -inf
+---
+cfg
+NORMAL
+HIGH TO_HIGH@1:inf
+LOW TO_LOW@2:-inf
+### ack-call-fires-timer-then-acks A5a-A8
+cfg high=30 low=10 deadband=2 delay=10 escalate=100
+init 0
+s 0 40
+ack 10
+tick 1000
+---
+cfg
+NORMAL
+NORMAL
+HIGH TO_HIGH@10:40.000
+HIGH
