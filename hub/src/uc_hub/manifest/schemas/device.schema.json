@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bacnet-uc.local/schemas/device.schema.json",
+  "title": "BACnet-uc device configuration (/lfs/cfg/device.json)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "device"],
+  "properties": {
+    "schema": {"const": 1},
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["instance", "name"],
+      "properties": {
+        "instance": {"type": "integer", "minimum": 0, "maximum": 4194302},
+        "name": {"type": "string", "minLength": 1, "maxLength": 63},
+        "description": {"type": "string", "maxLength": 63},
+        "location": {"type": "string", "maxLength": 63}
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dhcp": {"type": "boolean", "default": true},
+        "ipv4": {"type": "string", "format": "ipv4"},
+        "netmask": {"type": "string", "format": "ipv4"},
+        "gateway": {"type": "string", "format": "ipv4"}
+      }
+    },
+    "bacnet": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "udp_port": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 47808},
+        "apdu_timeout_ms": {"type": "integer", "minimum": 100, "maximum": 60000, "default": 3000},
+        "apdu_retries": {"type": "integer", "minimum": 0, "maximum": 10, "default": 3},
+        "foreign_device": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["bbmd"],
+          "properties": {
+            "bbmd": {"type": "string", "format": "ipv4"},
+            "port": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 47808},
+            "ttl_s": {"type": "integer", "minimum": 10, "maximum": 65535, "default": 60}
+          }
+        },
+        "static_bindings": {
+          "description": "Device-instance to address bindings used instead of (or before) Who-Is. Needed across subnets without a BBMD and for single-host simulation with distinct ports.",
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["device", "address"],
+            "properties": {
+              "device": {"type": "integer", "minimum": 0, "maximum": 4194302},
+              "address": {"type": "string", "format": "ipv4"},
+              "port": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 47808}
+            }
+          }
+        }
+      }
+    },
+    "log": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "level": {"enum": ["err", "wrn", "inf", "dbg"], "default": "inf"}
+      }
+    }
+  }
+}

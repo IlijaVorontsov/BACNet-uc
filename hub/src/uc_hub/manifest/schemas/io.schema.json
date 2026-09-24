@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bacnet-uc.local/schemas/io.schema.json",
+  "title": "BACnet-uc IO point mapping (/lfs/cfg/io.json)",
+  "description": "Binds hardware channels from the board IO catalog (devicetree node compatible \"uc,io-channels\") to BACnet objects. The firmware creates the objects at boot and on 'uc_node reload io', samples inputs into Present_Value and drives outputs from Present_Value.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "points"],
+  "properties": {
+    "schema": {"const": 1},
+    "points": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {"$ref": "#/$defs/point"}
+    }
+  },
+  "$defs": {
+    "point": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["channel", "type", "instance"],
+      "properties": {
+        "channel": {"type": "string", "maxLength": 15, "description": "Catalog channel name, e.g. di0, do1, ai0, ao0."},
+        "type": {
+          "description": "BACnet object type. di -> binary-input|multi-state-input, do -> binary-output|binary-value, ai -> analog-input, ao -> analog-output|analog-value.",
+          "enum": ["analog-input", "analog-output", "analog-value", "binary-input", "binary-output", "binary-value", "multi-state-input"]
+        },
+        "instance": {"type": "integer", "minimum": 0, "maximum": 4194302},
+        "name": {"type": "string", "maxLength": 63, "description": "Object_Name; defaults to the channel name."},
+        "description": {"type": "string", "maxLength": 63},
+        "units": {"type": "string", "maxLength": 47, "description": "BACnet engineering unit text name as used by the BACnet stack, e.g. degrees-celsius, percent, volts, no-units."},
+        "scale": {"type": "number", "default": 1.0, "description": "Analog: engineering = raw * scale + offset (ai raw = mV). ao: raw % = (PV - offset) / scale."},
+        "offset": {"type": "number", "default": 0.0},
+        "min": {"type": "number", "description": "Analog output clamp (engineering units)."},
+        "max": {"type": "number"},
+        "cov_increment": {"type": "number", "minimum": 0, "default": 0.1},
+        "sample_ms": {"type": "integer", "minimum": 10, "maximum": 3600000, "default": 100},
+        "invert": {"type": "boolean", "default": false, "description": "Binary: invert polarity on top of the devicetree GPIO flags."},
+        "debounce_ms": {"type": "integer", "minimum": 0, "maximum": 10000, "default": 20}
+      }
+    }
+  }
+}

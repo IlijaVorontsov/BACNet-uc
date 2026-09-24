@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "apps": [
+    {
+      "name": "thermostat",
+      "file": "/lfs/apps/thermostat.wasm",
+      "autostart": true,
+      "period_ms": 1000,
+      "heap_kb": 8,
+      "stack_kb": 4,
+      "perms": ["bacnet.local", "bacnet.remote"],
+      "params": [
+        {"key": "sensor_device", "value": "1001"},
+        {"key": "sensor_instance", "value": "1"},
+        {"key": "setpoint", "value": "21.5"}
+      ]
+    }
+  ]
+}
