@@ -4,10 +4,13 @@ sample:
 common:
   build_only: true
   platform_allow:
+    - nucleo_f767zi
+    - frdm_mcxn947/mcxn947/cpu0
     - nucleo_h563zi
     - native_sim/native/64
   integration_platforms:
-    - nucleo_h563zi
+    - nucleo_f767zi
+    - frdm_mcxn947/mcxn947/cpu0
   tags:
     - net
     - mqtt

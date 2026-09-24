@@ -189,16 +189,6 @@ config APP_WAIT_FOR_NETWORK
 	  up and has an IPv4 address, and drops the MQTT session when the
 	  network goes away.
 
-config APP_ETH_PHY_ADVERTISE_100FD_ONLY
-	bool "Advertise only 100BASE-TX full duplex on the Ethernet PHY"
-	default y if SOC_SERIES_STM32H5X && ETH_STM32_HAL
-	depends on DT_HAS_ETHERNET_PHY_ENABLED && PHY_GENERIC_MII
-	help
-	  Zephyr 3.7's STM32H5 Ethernet driver runs the MAC at 100 Mbit/s full
-	  duplex regardless of what the PHY negotiates. Restricting the PHY's
-	  advertisement makes a 10 Mbit/s or half-duplex partner fail visibly
-	  (no link) instead of silently dropping frames.
-
 config APP_WATCHDOG
 	bool "Reboot if the main loop stalls"
 	default y if $(dt_alias_enabled,watchdog0)

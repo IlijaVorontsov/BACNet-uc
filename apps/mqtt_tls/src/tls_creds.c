@@ -14,7 +14,6 @@
 
 #include <zephyr/logging/log.h>
 #include <zephyr/net/tls_credentials.h>
-#include <zephyr/random/random.h>
 
 #include <mbedtls/pk.h>
 #include <mbedtls/x509_crt.h>
@@ -44,13 +43,6 @@ static const unsigned char client_key[] = {
 	0x00
 #endif
 };
-
-static int csrand(void *ctx, unsigned char *buf, size_t len)
-{
-	ARG_UNUSED(ctx);
-
-	return sys_csrand_get(buf, len);
-}
 #endif /* APP_HAVE_CLIENT_CERT */
 
 static int validate_credentials(void)
@@ -84,15 +76,14 @@ static int validate_credentials(void)
 		goto out;
 	}
 
-	ret = mbedtls_pk_parse_key(&key, client_key, sizeof(client_key), NULL, 0,
-				   csrand, NULL);
+	ret = mbedtls_pk_parse_key(&key, client_key, sizeof(client_key), NULL, 0);
 	if (ret != 0) {
 		LOG_ERR("Client private key cannot be parsed (encrypted keys are not "
 			"supported): -0x%04x", (unsigned int)-ret);
 		goto out;
 	}
 
-	ret = mbedtls_pk_check_pair(&crt.pk, &key, csrand, NULL);
+	ret = mbedtls_pk_check_pair(&crt.pk, &key);
 	if (ret != 0) {
 		LOG_ERR("Client private key does not match the client certificate: -0x%04x",
 			(unsigned int)-ret);

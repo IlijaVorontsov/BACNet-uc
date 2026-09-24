@@ -82,8 +82,22 @@ int app_client_id_get(char *buf, size_t len)
 	}
 	memcpy(buf, CONFIG_APP_MQTT_CLIENT_ID_PREFIX, prefix_len);
 
-	/* The 96-bit STM32 UID becomes 20 characters. */
+	/* A 96-bit UID (STM32) becomes 20 characters, a 128-bit one 26. */
 	ret = base32_encode(id, id_len, &buf[prefix_len], len - prefix_len);
 
 	return (ret < 0) ? ret : 0;
+}
+
+void app_hwid_get(char *buf, size_t len)
+{
+	uint8_t id[16];
+	ssize_t id_len = hwinfo_get_device_id(id, sizeof(id));
+
+	if (id_len <= 0 || 2U * (size_t)id_len + 1U > len) {
+		strncpy(buf, "unknown", len - 1);
+		buf[len - 1] = '\0';
+		return;
+	}
+
+	bin2hex(id, id_len, buf, len);
 }

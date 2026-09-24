@@ -7,8 +7,10 @@
 #  1. Mutual TLS: the device verifies the broker (CA + host name) and the broker
 #     authenticates the device by its certificate. Status and info are retained;
 #     telemetry is periodic.
-#  2. Commands on .../cmd are answered on .../event. An oversized payload is
+#  2. Commands on .../cmd are answered on .../event, in plain text and JSON
+#     (with request id echo), including identify. An oversized payload is
 #     drained without desynchronising the stream (same session throughout).
+#     The retained info announces fw, hwid and caps.
 #  3. Dead peer: a frozen broker (SIGSTOP; the socket stays open) is detected
 #     by the PINGREQ/PINGRESP timeout, and the device reconnects.
 #  4. Retained commands are not replayed after a reconnect.
@@ -19,7 +21,9 @@
 #     retained status becomes "offline".
 #  8. Negative/extra TLS cases: unknown CA and wrong host name are rejected by
 #     the device, a device without certificate is rejected by the broker, an
-#     IP-address SAN is accepted, and SNI is sent.
+#     IP-address SAN is accepted, SNI is sent, and both TLS 1.2 and TLS 1.3
+#     handshakes complete (mosquitto's tls_version is only a minimum, so the
+#     broker tests above run over TLS 1.3; openssl s_server pins each version).
 #
 # Not covered: loss of the network interface (the NSOS target has no Zephyr-
 # managed interface) and the STM32 watchdog; both need the board.
@@ -213,7 +217,9 @@ OBS="${WORK}/observer.log"
 log "1. Mutual TLS, retained status/info, periodic telemetry"
 start_device good
 wait_for "${OBS}" 0 "^${DEV}/status online$" 30 || fail "device never came online"
-wait_for "${OBS}" 0 "^${DEV}/info \{\"board\":\"native_sim" 10 || fail "no info message"
+wait_for "${OBS}" 0 "^${DEV}/info \{\"fw\":\"[0-9]+\.[0-9]+\.[0-9]+\",\"board\":\"native_sim" 10 || fail "no info message"
+grep -Eq "^${DEV}/info .*\"hwid\":\"[^\"]+\".*\"caps\":\{\"cmds\":\[\"ping\",\"led\",\"identify\"\]" "${OBS}" ||
+	fail "info lacks hwid or caps"
 wait_for "${OBS}" 0 "^${DEV}/telemetry \{\"seq\":2," 15 || fail "telemetry not periodic"
 grep -Eq "New client connected .* as ${CLIENT_ID} .*u'${CLIENT_ID}'" "${BROKER_LOG}" ||
 	fail "broker did not authenticate the device by its certificate"
@@ -224,14 +230,27 @@ grep -q "Subscribed (granted QoS 1)" "${DEVICE_LOG}" || fail "no SUBACK before g
 log "2. Commands, oversized payload, stream stays in sync"
 m=$(mark "${OBS}")
 pub -t "${DEV}/cmd" -m ping
-wait_for "${OBS}" "$m" "^${DEV}/event \{\"pong\":" 10 || fail "no pong"
+wait_for "${OBS}" "$m" "^${DEV}/event \{\"ok\":true,\"pong\":" 10 || fail "no pong"
 pub -t "${DEV}/cmd" -m "self-destruct"
-wait_for "${OBS}" "$m" "^${DEV}/event \{\"error\":\"unknown command\"\}" 10 || fail "unknown command not rejected"
+wait_for "${OBS}" "$m" "^${DEV}/event \{\"ok\":false,\"error\":\"unknown command\"\}" 10 || fail "unknown command not rejected"
+pub -t "${DEV}/cmd" -m '{"id":"req-1","cmd":"led","arg":"on"}'
+wait_for "${OBS}" "$m" "^${DEV}/event \{\"id\":\"req-1\",\"ok\":true,\"led\":true\}" 10 || fail "JSON led command"
+pub -t "${DEV}/cmd" -m '{"id":"req-2","cmd":"identify","arg":"2"}'
+wait_for "${OBS}" "$m" "^${DEV}/event \{\"id\":\"req-2\",\"ok\":true,\"identify\":2\}" 10 || fail "JSON identify command"
+pub -t "${DEV}/cmd" -m "identify 0"
+wait_for "${OBS}" "$m" "^${DEV}/event \{\"ok\":true,\"identify\":0\}" 10 || fail "text identify command"
+pub -t "${DEV}/cmd" -m '{"id":"bad id!","cmd":"ping"}'
+wait_for "${OBS}" "$m" "^${DEV}/event \{\"ok\":false,\"error\":\"invalid id\"\}" 10 || fail "invalid id not rejected"
+pub -t "${DEV}/cmd" -m '{"id":"req-3"}'
+wait_for "${OBS}" "$m" "^${DEV}/event \{\"id\":\"req-3\",\"ok\":false,\"error\":\"missing cmd\"\}" 10 ||
+	fail "missing cmd not rejected"
+pub -t "${DEV}/cmd" -m '{"cmd":'
+wait_for "${OBS}" "$m" "^${DEV}/event \{\"ok\":false,\"error\":\"invalid json\"\}" 10 || fail "invalid JSON not rejected"
 pub -t "${DEV}/cmd" -m "$(head -c 600 /dev/zero | tr '\0' 'x')"
-wait_for "${OBS}" "$m" "^${DEV}/event \{\"error\":\"payload too large\"\}" 10 || fail "oversized payload not handled"
+wait_for "${OBS}" "$m" "^${DEV}/event \{\"ok\":false,\"error\":\"payload too large\"\}" 10 || fail "oversized payload not handled"
 m2=$(mark "${OBS}")
 pub -t "${DEV}/cmd" -m ping
-wait_for "${OBS}" "$m2" "^${DEV}/event \{\"pong\":" 10 || fail "no pong after oversized payload"
+wait_for "${OBS}" "$m2" "^${DEV}/event \{\"ok\":true,\"pong\":" 10 || fail "no pong after oversized payload"
 [ "$(count "${DEVICE_LOG}" "MQTT session established")" -eq 1 ] ||
 	fail "session was re-established while handling commands"
 
@@ -275,7 +294,7 @@ wait_for "${OBS}" "$mo" "^${DEV}/telemetry .*\"sessions\":3\}" 40 || fail "no re
 log "6. Broker restart -> reconnect with growing back-off"
 md=$(mark "${DEVICE_LOG}")
 stop_broker
-sleep 6
+sleep 12
 start_broker
 mo=$(mark "${OBS}")
 wait_for "${OBS}" "$mo" "^${DEV}/telemetry .*\"sessions\":4\}" 30 || fail "no reconnect after broker restart"
@@ -283,7 +302,13 @@ mapfile -t delays < <(tail -n +"$((md + 1))" "${DEVICE_LOG}" |
 	sed -n 's/.*reconnecting in \([0-9]*\) ms.*/\1/p')
 echo "back-off delays (ms): ${delays[*]}"
 ((${#delays[@]} >= 3)) || fail "expected at least 3 reconnect attempts, got ${#delays[@]}"
-((delays[1] > delays[0] && delays[2] > delays[1])) || fail "back-off does not grow"
+# The base doubles up to RECONNECT_MAX_MS (4000) and each delay is 75..125 %
+# of it: below the cap a delay is >= 1.2x the previous one, at the cap it is
+# >= 3000 ms; no delay exceeds 5000 ms.
+for ((i = 1; i < ${#delays[@]}; i++)); do
+	((delays[i] * 10 >= delays[i - 1] * 12 || delays[i] >= 3000)) ||
+		fail "back-off did not grow: ${delays[i - 1]} -> ${delays[i]} ms"
+done
 for d in "${delays[@]}"; do
 	((d <= 5000)) || fail "back-off ${d} ms exceeds the 4000 ms cap + 25 % jitter"
 done
@@ -318,7 +343,10 @@ mb=$(mark "${BROKER_LOG}")
 start_device nocert
 wait_for "${BROKER_LOG}" "$mb" "peer did not return a certificate" 15 ||
 	fail "broker did not reject for a missing certificate"
-wait_for "${DEVICE_LOG}" 0 "TLS handshake error" 5 || fail "no-cert: device saw no handshake failure"
+# TLS 1.2 fails inside the handshake; in TLS 1.3 the client finishes first and
+# gets the broker's fatal alert (-0x7780) on its first read.
+wait_for "${DEVICE_LOG}" 0 "TLS handshake error|TLS data check error: -7780" 5 ||
+	fail "no-cert: device saw no TLS failure"
 stop_device
 ! grep -q "MQTT session established" "${DEVICE_LOG}" || fail "no-cert: device connected anyway"
 
@@ -327,17 +355,26 @@ start_device ipsan
 wait_for "${DEVICE_LOG}" 0 "MQTT session established" 20 || fail "IP SAN: no session"
 stop_device
 
-log "8e. SNI is sent"
-# s_server quits when its stdin reaches EOF, so keep stdin open.
-sleep 60 | openssl s_server -accept "${SNI_PORT}" -tls1_2 -tlsextdebug -naccept 1 \
-	-cert "${P}/server.crt" -key "${P}/server.key" >"${WORK}/sserver.log" 2>&1 &
-SSERVER_PID=$!
-sleep 1
-start_device sni
-wait_for "${WORK}/sserver.log" 0 'TLS client extension "server name"' 15 || fail "no SNI in ClientHello"
-stop_device
-stop_pid "${SSERVER_PID}"
-SSERVER_PID=""
+for v in 1_2 1_3; do
+	log "8e. TLS ${v/_/.} handshake with SNI"
+	# s_server quits when its stdin reaches EOF, so keep stdin open.
+	sleep 60 | openssl s_server -accept "${SNI_PORT}" "-tls${v}" -tlsextdebug -naccept 1 \
+		-cert "${P}/server.crt" -key "${P}/server.key" >"${WORK}/sserver-${v}.log" 2>&1 &
+	SSERVER_PID=$!
+	sleep 1
+	start_device sni
+	wait_for "${WORK}/sserver-${v}.log" 0 'TLS client extension "server name"' 15 ||
+		fail "no SNI in ClientHello"
+	if [ "${v}" = 1_2 ]; then
+		expect='CIPHER is ECDHE-ECDSA-AES(128|256)-GCM-SHA(256|384)'
+	else
+		expect='CIPHER is TLS_AES_(128|256)_GCM_SHA(256|384)'
+	fi
+	wait_for "${WORK}/sserver-${v}.log" 0 "${expect}" 15 || fail "TLS ${v} handshake did not complete"
+	stop_device
+	stop_pid "${SSERVER_PID}"
+	SSERVER_PID=""
+done
 
 log "PASS"
 echo "Observer transcript (first lines):"

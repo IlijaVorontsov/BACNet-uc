@@ -16,9 +16,6 @@
 #if defined(CONFIG_NET_CONNECTION_MANAGER)
 #include <zephyr/net/conn_mgr_monitor.h>
 #endif
-#if defined(CONFIG_APP_ETH_PHY_ADVERTISE_100FD_ONLY)
-#include <zephyr/net/phy.h>
-#endif
 
 #include "app.h"
 
@@ -47,7 +44,7 @@ static void log_ipv4_address(struct net_if *iface)
 }
 
 static void l4_event_handler(struct net_mgmt_event_callback *cb,
-			     uint32_t mgmt_event, struct net_if *iface)
+			     uint64_t mgmt_event, struct net_if *iface)
 {
 	ARG_UNUSED(cb);
 
@@ -68,36 +65,8 @@ static void l4_event_handler(struct net_mgmt_event_callback *cb,
 
 #endif /* CONFIG_APP_WAIT_FOR_NETWORK */
 
-#if defined(CONFIG_APP_ETH_PHY_ADVERTISE_100FD_ONLY)
-/* On STM32H5, Zephyr 3.7's Ethernet driver configures the MAC once for
- * 100 Mbit/s full duplex and never follows the PHY's autonegotiation result.
- * If the PHY negotiated 10 Mbit/s or half duplex, the link would come up
- * but silently lose frames. Advertise only the mode the MAC runs in, so a
- * mismatching partner yields no link (a visible failure) instead.
- */
-static void restrict_phy_advertisement(void)
-{
-	const struct device *phy = DEVICE_DT_GET(DT_COMPAT_GET_ANY_STATUS_OKAY(ethernet_phy));
-	int ret;
-
-	if (!device_is_ready(phy)) {
-		LOG_WRN("PHY not ready");
-		return;
-	}
-
-	ret = phy_configure_link(phy, LINK_FULL_100BASE_T);
-	if (ret < 0) {
-		LOG_WRN("Cannot restrict PHY advertisement: %d", ret);
-	}
-}
-#endif
-
 void app_net_init(void)
 {
-#if defined(CONFIG_APP_ETH_PHY_ADVERTISE_100FD_ONLY)
-	restrict_phy_advertisement();
-#endif
-
 #if defined(CONFIG_APP_WAIT_FOR_NETWORK)
 	net_mgmt_init_event_callback(&l4_cb, l4_event_handler, L4_EVENT_MASK);
 	net_mgmt_add_event_callback(&l4_cb);

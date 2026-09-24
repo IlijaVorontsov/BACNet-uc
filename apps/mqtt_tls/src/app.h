@@ -29,6 +29,9 @@ int app_net_wait_up(k_timeout_t timeout);
  */
 int app_client_id_get(char *buf, size_t len);
 
+/** Write the MCU unique ID in hex (NUL-terminated), or "unknown". */
+void app_hwid_get(char *buf, size_t len);
+
 /* tls_creds.c --------------------------------------------------------------- */
 
 /** Security tag under which all of the application's credentials live. */
@@ -71,9 +74,18 @@ int app_mqtt_init(void);
  */
 int app_mqtt_run_session(bool *was_connected);
 
-/* main.c -------------------------------------------------------------------- */
+/* commands.c ---------------------------------------------------------------- */
 
-/** Apply a command received on the command topic. Writes a reply. */
-void app_handle_command(const char *cmd, char *reply, size_t reply_len);
+/** Set up the LED used by the led and identify commands. */
+void app_commands_init(void);
+
+/**
+ * Execute a command received on the command topic (plain text or JSON) and
+ * write the JSON reply. @p payload is NUL-terminated and modified in place.
+ */
+void app_handle_command(char *payload, char *reply, size_t reply_len);
+
+/** Write the "caps" JSON object announced in the retained info message. */
+void app_commands_caps(char *buf, size_t len);
 
 #endif /* APP_H_ */

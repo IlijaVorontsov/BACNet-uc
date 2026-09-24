@@ -10,6 +10,7 @@ target_sources(app PRIVATE
   src/net_wait.c
   src/mqtt_app.c
   src/device_id.c
+  src/commands.c
 )
 target_sources_ifdef(CONFIG_APP_WATCHDOG app PRIVATE src/watchdog.c)
 

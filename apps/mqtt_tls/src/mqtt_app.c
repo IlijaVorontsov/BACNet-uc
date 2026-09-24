@@ -25,6 +25,7 @@
 #include <zephyr/net/socket.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/version.h>
+#include <app_version.h>
 
 #include "app.h"
 
@@ -145,12 +146,33 @@ static int publish_str(const char *topic, const char *str, enum mqtt_qos qos,
 	return publish(topic, str, strlen(str), qos, retain);
 }
 
+static void link_addr_str(struct net_if *iface, char *buf, size_t len)
+{
+	struct net_linkaddr *ll = (iface != NULL) ? net_if_get_link_addr(iface) : NULL;
+
+	if (ll == NULL || ll->len != 6U) {
+		strncpy(buf, "unknown", len - 1);
+		buf[len - 1] = '\0';
+		return;
+	}
+
+	snprintk(buf, len, "%02x:%02x:%02x:%02x:%02x:%02x", ll->addr[0], ll->addr[1],
+		 ll->addr[2], ll->addr[3], ll->addr[4], ll->addr[5]);
+}
+
+/* Retained description of the device, used by the uc-hub gateway to build
+ * its point list (see README "Topics").
+ */
 static int publish_info(void)
 {
-	char payload[192];
+	static char payload[512];
 	char ip[NET_IPV4_ADDR_LEN] = "unknown";
+	char mac[18];
+	char hwid[33];
+	char caps[192];
 	struct net_if *iface = net_if_get_default();
 	struct in_addr *addr = NULL;
+	int len;
 
 	if (iface != NULL) {
 		addr = net_if_ipv4_get_global_addr(iface, NET_ADDR_PREFERRED);
@@ -158,11 +180,18 @@ static int publish_info(void)
 	if (addr != NULL) {
 		net_addr_ntop(AF_INET, addr, ip, sizeof(ip));
 	}
+	link_addr_str(iface, mac, sizeof(mac));
+	app_hwid_get(hwid, sizeof(hwid));
+	app_commands_caps(caps, sizeof(caps));
 
-	snprintk(payload, sizeof(payload),
-		 "{\"board\":\"%s\",\"zephyr\":\"%s\",\"ip\":\"%s\",\"tls\":%s}",
-		 CONFIG_BOARD, KERNEL_VERSION_STRING, ip,
-		 IS_ENABLED(CONFIG_APP_MQTT_TLS) ? "true" : "false");
+	len = snprintk(payload, sizeof(payload),
+		       "{\"fw\":\"%s\",\"board\":\"%s\",\"zephyr\":\"%s\","
+		       "\"hwid\":\"%s\",\"mac\":\"%s\",\"ip\":\"%s\",\"tls\":%s,\"caps\":%s}",
+		       APP_VERSION_STRING, CONFIG_BOARD, KERNEL_VERSION_STRING, hwid, mac, ip,
+		       IS_ENABLED(CONFIG_APP_MQTT_TLS) ? "true" : "false", caps);
+	if (len >= (int)sizeof(payload)) {
+		return -ENOMEM;
+	}
 
 	return publish_str(topic_info, payload, MQTT_QOS_1_AT_LEAST_ONCE, true);
 }
@@ -255,7 +284,7 @@ static int read_payload(const struct mqtt_publish_param *pub)
 static void handle_publish(const struct mqtt_publish_param *pub)
 {
 	const struct mqtt_utf8 *topic = &pub->message.topic.topic;
-	char reply[96];
+	char reply[128];
 	int len;
 	int ret;
 
@@ -312,10 +341,10 @@ static void handle_publish(const struct mqtt_publish_param *pub)
 	if (len == -EMSGSIZE) {
 		LOG_WRN("Command of %u bytes discarded (max %d)",
 			pub->message.payload.len, CONFIG_APP_MQTT_MAX_PAYLOAD_SIZE);
-		snprintk(reply, sizeof(reply), "{\"error\":\"payload too large\"}");
+		snprintk(reply, sizeof(reply), "{\"ok\":false,\"error\":\"payload too large\"}");
 	} else {
 		LOG_INF("Command: %s", (const char *)payload_buf);
-		app_handle_command((const char *)payload_buf, reply, sizeof(reply));
+		app_handle_command((char *)payload_buf, reply, sizeof(reply));
 	}
 
 	ret = publish_str(topic_event, reply, MQTT_QOS_1_AT_LEAST_ONCE, false);

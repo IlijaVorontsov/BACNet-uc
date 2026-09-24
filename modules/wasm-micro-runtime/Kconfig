@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Kconfig glue for the WebAssembly Micro Runtime (WAMR). WAMR's module.yml
+# declares kconfig-ext/cmake-ext, the glue lives here (module_ext_root).
+
+config ZEPHYR_WASM_MICRO_RUNTIME_MODULE
+	bool
+
+menuconfig WAMR
+	bool "WebAssembly Micro Runtime (WAMR)"
+	depends on ZEPHYR_WASM_MICRO_RUNTIME_MODULE
+	help
+	  Build the WAMR runtime library (interpreter and optionally the AOT
+	  loader) into the image.
+
+if WAMR
+
+config WAMR_BUILD_TARGET
+	string "WAMR build target"
+	default "THUMBV7EM_VFP" if CPU_CORTEX_M7 && FP_HARDABI
+	default "THUMBV7EM" if CPU_CORTEX_M7
+	default "THUMBV8M.MAIN_VFP" if CPU_CORTEX_M33 && FP_HARDABI
+	default "THUMBV8M.MAIN" if CPU_CORTEX_M33
+	default "THUMBV7EM" if CPU_CORTEX_M4
+	default "X86_64" if ARCH_POSIX && 64BIT
+	default "X86_32" if ARCH_POSIX
+	help
+	  Value passed as WAMR_BUILD_TARGET. The "_VFP" suffix selects the
+	  hard-float calling convention and must match CONFIG_FP_HARDABI. The
+	  part before the suffix, lower-cased, is the target an AOT file must
+	  have been compiled for (wamrc --target=...).
+
+config WAMR_FAST_INTERP
+	bool "Fast interpreter"
+	default y
+	help
+	  Use WAMR's fast interpreter (pre-compiled internal bytecode, roughly
+	  2x faster than the classic interpreter, ~2x more RAM per module).
+
+config WAMR_AOT
+	bool "AOT module loader"
+	help
+	  Allow loading ahead-of-time compiled modules produced by wamrc. AOT
+	  code executes from RAM, so the MPU must allow execution from the
+	  runtime heap.
+
+config WAMR_BULK_MEMORY
+	bool "Bulk memory operations"
+	default y
+	help
+	  Needed by modules built with recent clang/LLVM, which emit
+	  memory.copy/memory.fill by default.
+
+config WAMR_REF_TYPES
+	bool "Reference types"
+	default y
+	help
+	  Needed by modules built with LLVM >= 19, which enables the
+	  reference-types feature for wasm32 by default.
+
+config WAMR_LOG
+	bool "Runtime diagnostics"
+	default y
+
+endif # WAMR
