@@ -1,0 +1,49 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * native_sim/native/64 (host executable).
+ *
+ * Storage: LittleFS on the flash simulator. The simulated flash is 2 MiB
+ * with 4 KiB erase blocks and is backed by the file flash.bin in the
+ * current working directory, so /lfs survives restarts. Useful options of
+ * zephyr.exe:  --flash=<file>  (one file per simulated node),
+ *              --flash_erase   (start with an erased flash),
+ *              --flash_rm      (delete the file on exit).
+ * The board's MCUboot secondary/scratch/storage partitions are replaced by
+ * one 1580 KiB storage partition (the executable does not run from flash).
+ */
+
+#include "io/native_sim_native_64.dtsi"
+
+/delete-node/ &slot1_partition;
+/delete-node/ &scratch_partition;
+/delete-node/ &storage_partition;
+
+&flash0 {
+	partitions {
+		storage_partition: partition@75000 {
+			label = "storage";
+			reg = <0x00075000 0x0018b000>;
+		};
+	};
+};
+
+/ {
+	fstab {
+		compatible = "zephyr,fstab";
+
+		uc_lfs: lfs {
+			compatible = "zephyr,fstab,littlefs";
+			mount-point = "/lfs";
+			partition = <&storage_partition>;
+			automount;
+			/* formatting is decided by uc_storage (CONFIG_UC_STORAGE_FORMAT_ON_FAIL) */
+			no-format;
+			read-size = <16>;
+			prog-size = <16>;
+			cache-size = <256>;
+			lookahead-size = <64>;
+			block-cycles = <512>;
+		};
+	};
+};

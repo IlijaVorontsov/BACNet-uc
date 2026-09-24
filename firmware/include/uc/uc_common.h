@@ -31,6 +31,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <errno.h>
+
 #include <zephyr/sys/util.h>
 
 #include "bacnet/bacdef.h"
@@ -38,6 +40,17 @@
 
 #ifdef __cplusplus
 extern "C" {
+#endif
+
+/* EREMOTEIO is Linux-specific: glibc (native_sim) defines it, picolibc does
+ * not. picolibc reserves values from __ELASTERROR for users; 121 (the Linux
+ * value) would collide with picolibc's EDESTADDRREQ. */
+#ifndef EREMOTEIO
+#ifdef __ELASTERROR
+#define EREMOTEIO (__ELASTERROR + 1)
+#else
+#define EREMOTEIO 2001
+#endif
 #endif
 
 #define UC_NAME_MAX      64 /* object names, descriptions (incl. NUL) */

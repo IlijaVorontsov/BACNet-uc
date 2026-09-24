@@ -1,0 +1,76 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * NUCLEO-F767ZI
+ *
+ * Storage: external SPI NOR flash, Winbond W25Q128JV (16 MiB, 4 KiB
+ * sectors, 3.3 V), on SPI1 of the ST Zio connector CN7:
+ *
+ *   flash   MCU   connector
+ *   CLK     PA5   CN7-10  (D13)
+ *   DO      PA6   CN7-12  (D12)
+ *   DI      PB5   CN7-13  (D22)   not PA7 (D11): PA7 is RMII CRS_DV of
+ *                                 the on-board Ethernet PHY
+ *   /CS     PD14  CN7-16  (D10)
+ *   VCC     3V3   CN8-7,  GND  CN8-11
+ *   /WP and /HOLD tied to 3V3 (on most W25Q breakout modules already)
+ *
+ * The internal flash is not used for data: without MCUboot the application
+ * is linked at flash offset 0 and overlaps the board's storage_partition at
+ * 0x10000 (the image is larger than 64 KiB).
+ *
+ * Network: on-board RMII Ethernet (LAN8742A); the MAC address is derived
+ * from the MCU unique ID (stable across reboots).
+ */
+
+#include "io/nucleo_f767zi.dtsi"
+
+&spi1 {
+	pinctrl-0 = <&spi1_sck_pa5 &spi1_miso_pa6 &spi1_mosi_pb5>;
+	pinctrl-names = "default";
+	cs-gpios = <&gpiod 14 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+	status = "okay";
+
+	uc_nor: w25q128jv@0 {
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+		spi-max-frequency = <DT_FREQ_M(24)>;
+		jedec-id = [ef 40 18];
+		size = <DT_SIZE_M(128)>; /* bits */
+		has-dpd;
+		t-enter-dpd = <3000>;
+		t-exit-dpd = <3000>;
+		status = "okay";
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			uc_storage_partition: partition@0 {
+				label = "uc-storage";
+				reg = <0x00000000 DT_SIZE_M(16)>;
+			};
+		};
+	};
+};
+
+/ {
+	fstab {
+		compatible = "zephyr,fstab";
+
+		uc_lfs: lfs {
+			compatible = "zephyr,fstab,littlefs";
+			mount-point = "/lfs";
+			partition = <&uc_storage_partition>;
+			automount;
+			/* formatting is decided by uc_storage (CONFIG_UC_STORAGE_FORMAT_ON_FAIL) */
+			no-format;
+			read-size = <16>;
+			prog-size = <16>;
+			cache-size = <256>;
+			lookahead-size = <256>;
+			block-cycles = <512>;
+		};
+	};
+};
