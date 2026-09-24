@@ -1,27 +1,65 @@
-# West manifest for the BACNet-uc firmware workspace (T2 topology: this repo is
-# the manifest repository, Zephyr and its modules are fetched next to it).
+# SPDX-License-Identifier: Apache-2.0
 #
-#   west init -l BACNet-uc   # from the directory that contains this repo
-#   west update
+# West manifest for the BACnet-uc workspace (T2 "star" topology: this
+# repository is the manifest repository, everything else is imported).
 #
-# Only the modules the STM32 applications need are imported, which keeps
-# `west update` at a few hundred MB instead of several GB.
+#   west init -l BACNet-uc      # run from the directory that should become
+#   west update                 # the workspace top directory
+#
+# Revisions are pinned so the firmware, the WASM SDK and the MCP harness are
+# always built against the same stack. Bump them together and re-run CI.
+
 manifest:
-  version: "0.13"
+  version: "1.2"
 
   remotes:
     - name: zephyrproject-rtos
       url-base: https://github.com/zephyrproject-rtos
+    - name: bacnet-stack
+      url-base: https://github.com/bacnet-stack
+    - name: bytecodealliance
+      url-base: https://github.com/bytecodealliance
 
   projects:
     - name: zephyr
       remote: zephyrproject-rtos
-      revision: v3.7.2
+      revision: v4.4.2
+      west-commands: scripts/west-commands.yml
       import:
+        # Only the modules the two target boards and native_sim need.
         name-allowlist:
           - cmsis
+          - cmsis_6
           - hal_stm32
+          - hal_nxp
+          - littlefs
           - mbedtls
+          - mcuboot
+          - picolibc
+          - segger
+          - tf-psa-crypto
+          - zcbor
+
+    # Zephyr integration of the BACnet Stack (Kconfig + CMake glue, basic
+    # object implementations, settings/storage helpers).
+    - name: bacnet-stack-zephyr
+      remote: bacnet-stack
+      path: modules/lib/bacnet
+      revision: 4c4a94e21ae8a2ab4b5c525e7d5518da853c5285
+
+    # The protocol stack itself. bacnet-stack-zephyr expects it at
+    # <module>/stack.
+    - name: bacnet-stack
+      remote: bacnet-stack
+      path: modules/lib/bacnet/stack
+      revision: 54544d02e42777ec4755479267f5f624f9a10b78
+
+    # WebAssembly Micro Runtime (interpreter + AOT loader) used to run
+    # user applications uploaded through the management interface.
+    - name: wasm-micro-runtime
+      remote: bytecodealliance
+      path: modules/lib/wamr
+      revision: WAMR-2.4.5
 
   self:
     path: BACNet-uc
