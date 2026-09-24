@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * Last line of defence for an unattended device: a task watchdog channel,
- * backed by the STM32 independent watchdog (IWDG), reboots the MCU if the
+ * backed by the hardware watchdog (STM32 IWDG, NXP WWDT), reboots the MCU if the
  * main loop stops making progress. Every blocking call in the application
  * is bounded well below the channel timeout, so a reboot only happens on a
  * genuine wedge.
@@ -43,7 +43,7 @@ int app_wdt_init(void)
 	}
 
 	LOG_INF("Watchdog armed (%d s%s)", CONFIG_APP_WATCHDOG_TIMEOUT_SEC,
-		hw_wdt != NULL ? ", IWDG fallback" : "");
+		hw_wdt != NULL ? ", hardware fallback" : "");
 
 	return 0;
 }

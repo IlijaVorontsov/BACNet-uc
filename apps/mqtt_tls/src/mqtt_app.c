@@ -8,8 +8,9 @@
  * mqtt_evt_handler() from inside mqtt_input()/mqtt_connect(), so no locking
  * is needed around the session state.
  *
- * No call in here may block without bound: connect() and the TLS handshake
- * are limited by CONFIG_NET_SOCKETS_CONNECT_TIMEOUT, every other socket read
+ * No call in here may block without bound: connect() is limited by
+ * CONFIG_NET_SOCKETS_CONNECT_TIMEOUT, the TLS handshake by
+ * CONFIG_NET_SOCKETS_TLS_CONNECT_TIMEOUT, every other socket read
  * and write by SO_RCVTIMEO/SO_SNDTIMEO (see set_socket_timeouts()), and the
  * watchdog is fed on every loop iteration as a backstop.
  */
@@ -25,7 +26,7 @@
 #include <zephyr/net/socket.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/version.h>
-#include <app_version.h>
+#include <zephyr/app_version.h>
 
 #include "app.h"
 
@@ -63,7 +64,7 @@ static uint8_t tx_buffer[CONFIG_APP_MQTT_BUFFER_SIZE];
 static uint8_t payload_buf[CONFIG_APP_MQTT_MAX_PAYLOAD_SIZE + 1];
 
 static struct mqtt_client client;
-static struct sockaddr_storage broker;
+static struct net_sockaddr_storage broker;
 
 static char client_id[CLIENT_ID_LEN];
 static char topic_status[TOPIC_LEN];
@@ -171,14 +172,14 @@ static int publish_info(void)
 	char hwid[33];
 	char caps[192];
 	struct net_if *iface = net_if_get_default();
-	struct in_addr *addr = NULL;
+	struct net_in_addr *addr = NULL;
 	int len;
 
 	if (iface != NULL) {
 		addr = net_if_ipv4_get_global_addr(iface, NET_ADDR_PREFERRED);
 	}
 	if (addr != NULL) {
-		net_addr_ntop(AF_INET, addr, ip, sizeof(ip));
+		net_addr_ntop(NET_AF_INET, addr, ip, sizeof(ip));
 	}
 	link_addr_str(iface, mac, sizeof(mac));
 	app_hwid_get(hwid, sizeof(hwid));
@@ -453,8 +454,8 @@ static void mqtt_evt_handler(struct mqtt_client *const c,
 static int resolve_broker(void)
 {
 	static const struct zsock_addrinfo hints = {
-		.ai_family = AF_INET,
-		.ai_socktype = SOCK_STREAM,
+		.ai_family = NET_AF_INET,
+		.ai_socktype = NET_SOCK_STREAM,
 	};
 	struct zsock_addrinfo *res = NULL;
 	char port[6];
@@ -474,7 +475,7 @@ static int resolve_broker(void)
 	zsock_freeaddrinfo(res);
 
 	LOG_INF("Broker %s -> %s:%d", CONFIG_APP_MQTT_BROKER_HOSTNAME,
-		net_addr_ntop(AF_INET, &net_sin((struct sockaddr *)&broker)->sin_addr,
+		net_addr_ntop(NET_AF_INET, &net_sin(net_sad(&broker))->sin_addr,
 			      addr_str, sizeof(addr_str)),
 		CONFIG_APP_MQTT_BROKER_PORT);
 
@@ -514,8 +515,8 @@ static void client_setup(void)
 
 	client.transport.type = MQTT_TRANSPORT_SECURE;
 	tls->peer_verify = IS_ENABLED(CONFIG_APP_MQTT_TLS_PEER_VERIFY)
-				   ? TLS_PEER_VERIFY_REQUIRED
-				   : TLS_PEER_VERIFY_NONE;
+				   ? ZSOCK_TLS_PEER_VERIFY_REQUIRED
+				   : ZSOCK_TLS_PEER_VERIFY_NONE;
 	tls->cipher_list = NULL;
 	tls->cipher_count = 0U;
 	tls->sec_tag_list = sec_tags;
@@ -524,7 +525,7 @@ static void client_setup(void)
 	tls->hostname = (sizeof(CONFIG_APP_MQTT_TLS_HOSTNAME) > 1)
 				? CONFIG_APP_MQTT_TLS_HOSTNAME
 				: CONFIG_APP_MQTT_BROKER_HOSTNAME;
-	tls->cert_nocopy = TLS_CERT_NOCOPY_NONE;
+	tls->cert_nocopy = ZSOCK_TLS_CERT_NOCOPY_NONE;
 #else
 	client.transport.type = MQTT_TRANSPORT_NON_SECURE;
 #endif
@@ -541,8 +542,8 @@ static int set_socket_timeouts(void)
 		.tv_usec = (SOCKET_IO_TIMEOUT_MS % MSEC_PER_SEC) * USEC_PER_MSEC,
 	};
 
-	if (zsock_setsockopt(mqtt_sock(), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0 ||
-	    zsock_setsockopt(mqtt_sock(), SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) < 0) {
+	if (zsock_setsockopt(mqtt_sock(), ZSOCK_SOL_SOCKET, ZSOCK_SO_RCVTIMEO, &tv, sizeof(tv)) < 0 ||
+	    zsock_setsockopt(mqtt_sock(), ZSOCK_SOL_SOCKET, ZSOCK_SO_SNDTIMEO, &tv, sizeof(tv)) < 0) {
 		LOG_ERR("Cannot set socket timeouts: %d", -errno);
 		return -errno;
 	}
@@ -814,9 +815,9 @@ int app_mqtt_run_session(bool *was_connected)
 		CONFIG_APP_MQTT_BROKER_PORT,
 		IS_ENABLED(CONFIG_APP_MQTT_TLS) ? "TLS" : "plain TCP");
 
-	/* Blocks for the TCP connect and then the full TLS handshake, each
-	 * bounded by CONFIG_NET_SOCKETS_CONNECT_TIMEOUT. The handshake bound
-	 * includes the certificate and ECDHE computations.
+	/* Blocks for the TCP connect (CONFIG_NET_SOCKETS_CONNECT_TIMEOUT) and
+	 * then the full TLS handshake (CONFIG_NET_SOCKETS_TLS_CONNECT_TIMEOUT),
+	 * whose bound includes the certificate and ECDHE computations.
 	 */
 	app_wdt_feed();
 	t0 = k_uptime_get();

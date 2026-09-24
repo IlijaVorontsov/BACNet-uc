@@ -24,6 +24,10 @@
 #     IP-address SAN is accepted, SNI is sent, and both TLS 1.2 and TLS 1.3
 #     handshakes complete (mosquitto's tls_version is only a minimum, so the
 #     broker tests above run over TLS 1.3; openssl s_server pins each version).
+#  9. RSA: an RSA client key in PKCS#8 form passes the boot-time check and
+#     authenticates over mutual TLS, an RSA broker certificate works over
+#     TLS 1.3 (RSA-PSS), and overlay-tls12-rsa.conf reaches a TLS-1.2-only RSA
+#     broker.
 #
 # Not covered: loss of the network interface (the NSOS target has no Zephyr-
 # managed interface) and the STM32 watchdog; both need the board.
@@ -33,8 +37,8 @@
 #
 #   apps/mqtt_tls/scripts/e2e_native_sim.sh [WORK_DIR]
 #
-# TLS_PORT, PLAIN_PORT and SNI_PORT select the local ports (defaults 18883,
-# 18884, 18885).
+# TLS_PORT, PLAIN_PORT, SNI_PORT and RSA_PORT select the local ports (defaults
+# 18883, 18884, 18885, 18886).
 
 set -euo pipefail
 
@@ -44,6 +48,7 @@ BOARD="native_sim/native/64"
 TLS_PORT="${TLS_PORT:-18883}"
 PLAIN_PORT="${PLAIN_PORT:-18884}"
 SNI_PORT="${SNI_PORT:-18885}"
+RSA_PORT="${RSA_PORT:-18886}"
 CLIENT_ID="e2e-device"
 ROOT="e2e"
 DEV="${ROOT}/${CLIENT_ID}"
@@ -174,6 +179,7 @@ log "Work directory: ${WORK}"
 log "Generating PKI"
 CLIENT_CN="${CLIENT_ID}" "${APP_DIR}/scripts/gen_dev_certs.sh" "${WORK}/pki" >/dev/null 2>&1
 "${APP_DIR}/scripts/gen_dev_certs.sh" "${WORK}/rogue" >/dev/null 2>&1 # unrelated CA
+KEY_TYPE=rsa CLIENT_CN="${CLIENT_ID}" "${APP_DIR}/scripts/gen_dev_certs.sh" "${WORK}/pki-rsa" >/dev/null 2>&1
 
 # mosquitto drops root privileges before it reads its key unless told not to.
 {
@@ -192,12 +198,20 @@ require_certificate true
 use_identity_as_username true
 allow_anonymous false
 
+listener ${RSA_PORT} 127.0.0.1
+cafile ${WORK}/pki-rsa/ca.crt
+certfile ${WORK}/pki-rsa/server.crt
+keyfile ${WORK}/pki-rsa/server.key
+require_certificate true
+use_identity_as_username true
+allow_anonymous false
+
 listener ${PLAIN_PORT} 127.0.0.1
 allow_anonymous true
 EOF
 } >"${WORK}/mosquitto.conf"
 
-log "Building 6 variants (${BOARD})"
+log "Building 9 variants (${BOARD})"
 P="${WORK}/pki"
 write_conf "${WORK}/good.conf" "${TLS_PORT}" localhost "${P}/ca.crt" "${P}/client.crt" "${P}/client.key"
 write_conf "${WORK}/ipsan.conf" "${TLS_PORT}" "" "${P}/ca.crt" "${P}/client.crt" "${P}/client.key"
@@ -205,9 +219,14 @@ write_conf "${WORK}/rogue.conf" "${TLS_PORT}" localhost "${WORK}/rogue/ca.crt" "
 write_conf "${WORK}/wronghost.conf" "${TLS_PORT}" wrong.example.com "${P}/ca.crt" "${P}/client.crt" "${P}/client.key"
 write_conf "${WORK}/nocert.conf" "${TLS_PORT}" localhost "${P}/ca.crt"
 write_conf "${WORK}/sni.conf" "${SNI_PORT}" localhost "${P}/ca.crt"
-for b in good ipsan rogue wronghost nocert sni; do
+R="${WORK}/pki-rsa"
+write_conf "${WORK}/rsaclient.conf" "${RSA_PORT}" localhost "${R}/ca.crt" "${R}/client.crt" "${R}/client.key"
+write_conf "${WORK}/rsasrv.conf" "${SNI_PORT}" localhost "${R}/ca.crt"
+write_conf "${WORK}/rsa12.conf" "${SNI_PORT}" localhost "${R}/ca.crt"
+for b in good ipsan rogue wronghost nocert sni rsaclient rsasrv; do
 	build "${b}" "${WORK}/${b}.conf"
 done
+build rsa12 "${APP_DIR}/overlay-tls12-rsa.conf;${WORK}/rsa12.conf"
 
 log "Starting broker"
 : >"${WORK}/observer.log"
@@ -355,26 +374,41 @@ start_device ipsan
 wait_for "${DEVICE_LOG}" 0 "MQTT session established" 20 || fail "IP SAN: no session"
 stop_device
 
-for v in 1_2 1_3; do
-	log "8e. TLS ${v/_/.} handshake with SNI"
+# s_server_check NAME VERSION CERT_DIR BUILD EXPECTED_CIPHER_REGEX
+s_server_check() {
 	# s_server quits when its stdin reaches EOF, so keep stdin open.
-	sleep 60 | openssl s_server -accept "${SNI_PORT}" "-tls${v}" -tlsextdebug -naccept 1 \
-		-cert "${P}/server.crt" -key "${P}/server.key" >"${WORK}/sserver-${v}.log" 2>&1 &
+	sleep 60 | openssl s_server -accept "${SNI_PORT}" "-tls$2" -tlsextdebug -naccept 1 \
+		-cert "$3/server.crt" -key "$3/server.key" >"${WORK}/sserver-$1.log" 2>&1 &
 	SSERVER_PID=$!
 	sleep 1
-	start_device sni
-	wait_for "${WORK}/sserver-${v}.log" 0 'TLS client extension "server name"' 15 ||
-		fail "no SNI in ClientHello"
-	if [ "${v}" = 1_2 ]; then
-		expect='CIPHER is ECDHE-ECDSA-AES(128|256)-GCM-SHA(256|384)'
-	else
-		expect='CIPHER is TLS_AES_(128|256)_GCM_SHA(256|384)'
-	fi
-	wait_for "${WORK}/sserver-${v}.log" 0 "${expect}" 15 || fail "TLS ${v} handshake did not complete"
+	start_device "$4"
+	wait_for "${WORK}/sserver-$1.log" 0 'TLS client extension "server name"' 15 ||
+		fail "$1: no SNI in ClientHello"
+	wait_for "${WORK}/sserver-$1.log" 0 "CIPHER is $5" 15 || fail "$1: handshake did not complete"
 	stop_device
 	stop_pid "${SSERVER_PID}"
 	SSERVER_PID=""
-done
+}
+
+log "8e. TLS 1.2 handshake with SNI"
+s_server_check tls12 1_2 "${P}" sni 'ECDHE-ECDSA-AES(128|256)-GCM-SHA(256|384)'
+log "8f. TLS 1.3 handshake with SNI"
+s_server_check tls13 1_3 "${P}" sni 'TLS_AES_(128|256)_GCM_SHA(256|384)'
+
+log "9a. RSA client key (PKCS#8) over mutual TLS"
+mb=$(mark "${BROKER_LOG}")
+start_device rsaclient
+wait_for "${DEVICE_LOG}" 0 "MQTT session established" 20 || fail "RSA client: no session"
+wait_for "${BROKER_LOG}" "$mb" "New client connected .* as ${CLIENT_ID} .*u'${CLIENT_ID}'" 5 ||
+	fail "RSA client: broker did not authenticate the RSA certificate"
+! grep -q "does not match\|cannot be parsed" "${DEVICE_LOG}" || fail "RSA client: boot check rejected the key"
+stop_device
+
+log "9b. RSA broker certificate over TLS 1.3 (RSA-PSS)"
+s_server_check rsa13 1_3 "${R}" rsasrv 'TLS_AES_(128|256)_GCM_SHA(256|384)'
+
+log "9c. TLS-1.2-only RSA broker with overlay-tls12-rsa.conf"
+s_server_check rsa12 1_2 "${R}" rsa12 'ECDHE-RSA-AES(128|256)-GCM-SHA(256|384)'
 
 log "PASS"
 echo "Observer transcript (first lines):"

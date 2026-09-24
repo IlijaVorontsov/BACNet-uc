@@ -27,7 +27,7 @@ user (STM32F767ZI and MCXN947), so both apps build in one workspace.
 | App layout | `apps/mqtt_tls/` | Doesn't overlap `firmware/`, `harness/`, `hub/`, `web/`. |
 | Protocol | MQTT 3.1.1 over TLS 1.3 / 1.2 (Mbed TLS 4), port 8883, optional client certificate | MQTT 5 is still experimental in 4.4. |
 
-Status: builds without warnings for all four targets (F767ZI 245 KB flash / 142 KB RAM, MCXN947 245 / 141 KB). The native_sim end-to-end suite passes (`apps/mqtt_tls/scripts/e2e_native_sim.sh`, about 2.5 min).
+Status: builds without warnings for all four targets, with `NET_NAMESPACE_COMPAT_MODE=n` (F767ZI 247 KB flash / 142 KB RAM, MCXN947 249 / 147 KB). The native_sim end-to-end suite passes (`apps/mqtt_tls/scripts/e2e_native_sim.sh`, 9 builds + 20 checks, about 8 min). Nothing has run on hardware yet.
 
 ## Zephyr 4.4 porting lessons (3.7 -> 4.4.2)
 
@@ -38,6 +38,14 @@ Status: builds without warnings for all four targets (F767ZI 245 KB flash / 142 
 - `CONFIG_ETH_NATIVE_POSIX` became `CONFIG_ETH_NATIVE_TAP`.
 - Entropy is fine on both user boards: F767ZI uses `entropy_stm32` (`rng`), and MCXN947 uses `CONFIG_ENTROPY_NXP_ELS_TRNG` (`trng`, chosen `zephyr,entropy`). No `TEST_RANDOM_GENERATOR` is needed.
 - **TLS 1.3 changes where a rejected client certificate shows up.** The client finishes its handshake first, and the broker's fatal alert arrives on the first read (`TLS data check error: -7780`, i.e. MBEDTLS_ERR_SSL_FATAL_ALERT_MESSAGE) instead of failing `connect()`. Tests have to accept both forms.
+- **The TLS handshake has its own timeout in 4.4:** `CONFIG_NET_SOCKETS_TLS_CONNECT_TIMEOUT` (default 10 s). `CONFIG_NET_SOCKETS_CONNECT_TIMEOUT` now only bounds the TCP connect.
+- **TLS 1.3 + RSA certificates need `CONFIG_MBEDTLS_X509_RSASSA_PSS_SUPPORT=y` (+ `PSA_WANT_ALG_RSA_OAEP`).** Without it, an RSA broker or RSA client key fails over TLS 1.3 ("no suitable signature algorithm"). With it, Mbed TLS 4.1's TLS 1.2 client rejects the PSS signature a TLS-1.2-only RSA server picks (alert 47). The MQTT app defaults to TLS 1.3 + PSS and ships `overlay-tls12-rsa.conf` for legacy brokers. BACnet/SC (TLS 1.3) will hit the same trade-off.
+- **TF-PSA-Crypto 1.1 bug:** for a PKCS#8 RSA key ("BEGIN PRIVATE KEY", the `openssl genpkey` default), `mbedtls_pk_parse_key()` doesn't fill in the public half, so `mbedtls_pk_check_pair()` fails with PSA_ERROR_INVALID_ARGUMENT for a valid pair. The TLS stack itself is unaffected. Fall back to a sign-and-verify check (see `apps/mqtt_tls/src/tls_creds.c`).
+- **Networking namespace:** 4.4 uses `net_sockaddr_storage`, `net_in_addr`, `NET_AF_INET`, `NET_SOCK_STREAM`, `ZSOCK_SOL_SOCKET`, `ZSOCK_SO_RCVTIMEO` and `ZSOCK_TLS_PEER_VERIFY_*`. The POSIX-style names only work through `CONFIG_NET_NAMESPACE_COMPAT_MODE` (default y, slated for removal). The MQTT app builds with it set to `n`. `TLS_CREDENTIAL_SERVER_CERTIFICATE` became `TLS_CREDENTIAL_PUBLIC_CERTIFICATE`, and `<app_version.h>` moved to `<zephyr/app_version.h>`.
+- `CONFIG_ZVFS_OPEN_MAX` is computed automatically now. Setting it by hand only produces a CMake note.
+- **NUCLEO-F767ZI:** I- and D-cache are off unless `CONFIG_CACHE_MANAGEMENT=y` (no F7 default), and ART doesn't cover AXIM code fetches. Ethernet DMA sits in DTCM, so enabling the caches is safe. SPI1 MOSI shares PA7 with RMII CRS_DV, so disable `&spi1` if SPI is ever enabled.
+- **FRDM-MCXN947:** the board uses `zephyr,random-mac-address`, which gives a new MAC every boot (it falls back to `k_cycle_get_32()` if the TRNG isn't ready). Delete that property and set `nxp,unique-mac` for a stable UID-based MAC. The ENET QoS driver permanently reserves one RX net_buf per descriptor. hwinfo gives a 16-byte UID.
+- **task_wdt hardware window:** the default `TASK_WDT_MIN_TIMEOUT` + `HW_FALLBACK_DELAY` of 100 + 20 ms is shorter than the 100 ms feed period if the IWDG's LSI runs fast (up to 40 kHz). Use 1000 + 1000. This works on the IWDG and on the MCXN WWDT.
 - **mosquitto's `tls_version` is a minimum, not a pin.** With `tlsv1.2`, mosquitto 2.0 still negotiates TLS 1.3. To test one version, use `openssl s_server -tls1_2` / `-tls1_3`.
 
 ## Pitfalls / lessons (container and tooling)

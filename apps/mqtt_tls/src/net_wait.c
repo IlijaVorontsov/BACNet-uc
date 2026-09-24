@@ -34,12 +34,12 @@ static struct net_mgmt_event_callback l4_cb;
 static void log_ipv4_address(struct net_if *iface)
 {
 	char buf[NET_IPV4_ADDR_LEN];
-	struct in_addr *addr;
+	struct net_in_addr *addr;
 
 	addr = net_if_ipv4_get_global_addr(iface, NET_ADDR_PREFERRED);
 	if (addr != NULL) {
 		LOG_INF("IPv4 address: %s",
-			net_addr_ntop(AF_INET, addr, buf, sizeof(buf)));
+			net_addr_ntop(NET_AF_INET, addr, buf, sizeof(buf)));
 	}
 }
 

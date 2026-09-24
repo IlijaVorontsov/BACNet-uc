@@ -17,10 +17,15 @@
 
 #include <mbedtls/pk.h>
 #include <mbedtls/x509_crt.h>
+#include <psa/crypto.h>
 
 #include "app.h"
 
 LOG_MODULE_DECLARE(app, CONFIG_APP_LOG_LEVEL);
+
+/* TLS keys are only as good as the random source behind them. */
+BUILD_ASSERT(IS_ENABLED(CONFIG_CSPRNG_ENABLED) && !IS_ENABLED(CONFIG_TEST_RANDOM_GENERATOR),
+	     "TLS needs a hardware entropy source; TEST_RANDOM_GENERATOR is insecure");
 
 static const unsigned char ca_cert[] = {
 #include "ca_cert.inc"
@@ -43,6 +48,30 @@ static const unsigned char client_key[] = {
 	0x00
 #endif
 };
+#endif /* APP_HAVE_CLIENT_CERT */
+
+#if defined(APP_HAVE_CLIENT_CERT)
+/* TF-PSA-Crypto 1.1 parses an unencrypted PKCS#8 RSA key ("BEGIN PRIVATE
+ * KEY", the default output of `openssl genpkey`) without its public half, so
+ * mbedtls_pk_check_pair() fails with PSA_ERROR_INVALID_ARGUMENT for a valid
+ * pair. Prove the pair by signing with the key and verifying with the
+ * certificate instead.
+ */
+static int check_pair_by_signature(mbedtls_pk_context *pub, mbedtls_pk_context *prv)
+{
+	static const unsigned char hash[32] = { 0x42 };
+	unsigned char sig[MBEDTLS_PK_SIGNATURE_MAX_SIZE];
+	size_t sig_len;
+	int ret;
+
+	ret = mbedtls_pk_sign(prv, MBEDTLS_MD_SHA256, hash, sizeof(hash), sig, sizeof(sig),
+			      &sig_len);
+	if (ret == 0) {
+		ret = mbedtls_pk_verify(pub, MBEDTLS_MD_SHA256, hash, sizeof(hash), sig, sig_len);
+	}
+
+	return ret;
+}
 #endif /* APP_HAVE_CLIENT_CERT */
 
 static int validate_credentials(void)
@@ -84,6 +113,9 @@ static int validate_credentials(void)
 	}
 
 	ret = mbedtls_pk_check_pair(&crt.pk, &key);
+	if (ret == PSA_ERROR_INVALID_ARGUMENT) {
+		ret = check_pair_by_signature(&crt.pk, &key);
+	}
 	if (ret != 0) {
 		LOG_ERR("Client private key does not match the client certificate: -0x%04x",
 			(unsigned int)-ret);
@@ -117,11 +149,8 @@ int app_tls_creds_register(void)
 	}
 
 #if defined(APP_HAVE_CLIENT_CERT)
-	/* Zephyr uses the "server certificate" slot for the local end's own
-	 * certificate, whether it acts as TLS server or client.
-	 */
 	ret = tls_credential_add(APP_TLS_SEC_TAG,
-				 TLS_CREDENTIAL_SERVER_CERTIFICATE,
+				 TLS_CREDENTIAL_PUBLIC_CERTIFICATE,
 				 client_cert, sizeof(client_cert));
 	if (ret < 0) {
 		LOG_ERR("Failed to register client certificate: %d", ret);

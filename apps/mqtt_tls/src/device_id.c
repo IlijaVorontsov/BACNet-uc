@@ -10,9 +10,18 @@
 #include <zephyr/random/random.h>
 #include <zephyr/sys/util.h>
 
+#if defined(CONFIG_PSA_WANT_ALG_SHA_256)
+#include <psa/crypto.h>
+#endif
+
 #include "app.h"
 
 LOG_MODULE_DECLARE(app, CONFIG_APP_LOG_LEVEL);
+
+/* 96 bits encode to 20 base32 characters, which leaves room for a short
+ * prefix within the 23 characters every MQTT 3.1.1 broker must accept.
+ */
+#define CLIENT_ID_BYTES 12
 
 /* Lower-case base32hex (RFC 4648, section 7): alphanumeric only, so the
  * result stays inside the character set every MQTT 3.1.1 broker must accept.
@@ -76,13 +85,36 @@ int app_client_id_get(char *buf, size_t len)
 		sys_rand_get(id, id_len);
 	}
 
+	if (id_len > CLIENT_ID_BYTES) {
+		/* Longer UIDs (128 bits on NXP MCX) are condensed to 96 bits:
+		 * with SHA-256 where available, else by XOR-folding.
+		 */
+		uint8_t folded[CLIENT_ID_BYTES] = { 0 };
+#if defined(CONFIG_PSA_WANT_ALG_SHA_256)
+		uint8_t digest[32];
+		size_t digest_len;
+
+		if (psa_crypto_init() == PSA_SUCCESS &&
+		    psa_hash_compute(PSA_ALG_SHA_256, id, id_len, digest, sizeof(digest),
+				     &digest_len) == PSA_SUCCESS) {
+			memcpy(folded, digest, sizeof(folded));
+		} else
+#endif
+		{
+			for (ssize_t i = 0; i < id_len; i++) {
+				folded[i % CLIENT_ID_BYTES] ^= id[i];
+			}
+		}
+		memcpy(id, folded, sizeof(folded));
+		id_len = CLIENT_ID_BYTES;
+	}
+
 	prefix_len = strlen(CONFIG_APP_MQTT_CLIENT_ID_PREFIX);
 	if (prefix_len >= len) {
 		return -ENOSPC;
 	}
 	memcpy(buf, CONFIG_APP_MQTT_CLIENT_ID_PREFIX, prefix_len);
 
-	/* A 96-bit UID (STM32) becomes 20 characters, a 128-bit one 26. */
 	ret = base32_encode(id, id_len, &buf[prefix_len], len - prefix_len);
 
 	return (ret < 0) ? ret : 0;

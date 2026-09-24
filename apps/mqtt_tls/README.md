@@ -7,7 +7,7 @@ same Zephyr version, boards and west workspace.
 | Board | MCU | Ethernet | Entropy for TLS | Watchdog |
 |---|---|---|---|---|
 | `nucleo_f767zi` | STM32F767 (Cortex-M7) | on-chip MAC + LAN8742A | STM32 RNG | IWDG |
-| `frdm_mcxn947/mcxn947/cpu0` | MCX N947 (Cortex-M33) | ENET QoS + PHY | ELS TRNG | see below |
+| `frdm_mcxn947/mcxn947/cpu0` | MCX N947 (Cortex-M33) | ENET QoS + PHY | ELS TRNG | WWDT |
 | `nucleo_h563zi` | STM32H563 (Cortex-M33) | on-chip MAC + LAN8742A | STM32 RNG | IWDG |
 | `native_sim/native/64` | host (tests) | host sockets (NSOS) | host | – |
 
@@ -28,8 +28,9 @@ client certificate (mutual TLS). It then:
 ## Topics
 
 `<root>` is `CONFIG_APP_MQTT_TOPIC_ROOT` (default `bacnet-uc`). `<id>` is the
-client ID. If `CONFIG_APP_MQTT_CLIENT_ID` is empty, the ID is `z` followed by the
-MCU's unique ID in base32. For the 96-bit STM32 UID that is 20 characters, so
+client ID. If `CONFIG_APP_MQTT_CLIENT_ID` is empty, the ID is `z` followed by 20
+base32 characters derived from the MCU's unique ID. The 96-bit STM32 UID is used
+as is; the 128-bit MCX N UID is condensed to 96 bits with SHA-256. Either way
 the ID stays within the 23 alphanumeric characters every MQTT 3.1.1 broker must
 accept.
 
@@ -134,13 +135,21 @@ you address the broker by IP address, set `CONFIG_APP_MQTT_TLS_HOSTNAME` to the
 name in its certificate. Otherwise the IP literal is sent as SNI, which
 multi-tenant cloud brokers reject.
 
+Brokers that speak **only TLS 1.2 and use an RSA key** need
+`-DEXTRA_CONF_FILE=overlay-tls12-rsa.conf` (you can list it together with your
+broker file, separated by `;`). The default build supports TLS 1.3, which
+requires RSA-PSS for RSA certificates. With PSS enabled, Mbed TLS 4.1's TLS 1.2
+client rejects the PSS signature such a broker picks. ECDSA brokers, and RSA
+brokers that support TLS 1.3, work with the default build.
+
 SHA-1 is not built in, so CA roots that are self-signed with SHA-1 cannot be
 loaded. "DigiCert Global Root CA" is one example. Use a SHA-256 root, such as
 DigiCert Global Root G2, ISRG Root X1 or Amazon Root CA 1, or use the
 SHA-256-signed intermediate as the trust anchor.
 
 `scripts/gen_dev_certs.sh [out_dir] [broker names...]` creates a throw-away CA
-with a broker certificate and a device certificate, for a local broker. It
+with a broker certificate and a device certificate, for a local broker (ECDSA P-256 keys, or
+RSA-2048 with `KEY_TYPE=rsa`). It
 writes to `certs/dev/`, which is git-ignored, and the default client
 certificate and key paths point there. `*.key` files are git-ignored
 everywhere in the app. The build directory contains the embedded key
@@ -183,7 +192,9 @@ The test covers:
 - rejection of an unknown CA, of a wrong host name, and of a device without a
   certificate;
 - acceptance of an IP-address SAN;
-- SNI, and complete TLS 1.2 and TLS 1.3 handshakes.
+- SNI, and complete TLS 1.2 and TLS 1.3 handshakes;
+- RSA: a PKCS#8 RSA client key over mutual TLS, an RSA broker certificate over
+  TLS 1.3 (RSA-PSS), and a TLS-1.2-only RSA broker with the overlay.
 
 Two things are not covered on the host: loss of the network interface (the
 offloaded-socket target has no Zephyr-managed interface) and the hardware
@@ -193,9 +204,10 @@ watchdog. Both need the board.
 
 | Board | Flash | RAM |
 |---|---|---|
-| `nucleo_f767zi` | 245 KB | 142 KB of 384 KB |
-| `frdm_mcxn947/mcxn947/cpu0` | 245 KB | 141 KB of 320 KB |
-| `nucleo_h563zi` | 249 KB | 154 KB of 256 KB |
+| `nucleo_f767zi` | 247 KB | 142 KB of 384 KB |
+| `frdm_mcxn947/mcxn947/cpu0` | 249 KB | 147 KB of 320 KB |
+| `nucleo_h563zi` | 250 KB | 154 KB of 256 KB |
+| `frdm_mcxn947/mcxn947/cpu0`, plain (`FILE_SUFFIX=plain`) | 135 KB | 64 KB |
 
 The figures include a 64 KB Mbed TLS heap, sized for full 16 KB TLS records,
 and an 8 KB main stack for the TLS handshake. They also include 96 network RX
@@ -204,9 +216,10 @@ explains each choice.
 
 ## Robustness
 
-- **Bounded blocking.** The TCP connect and the TLS handshake are each limited
-  to 15 s (`CONFIG_NET_SOCKETS_CONNECT_TIMEOUT`). That limit includes the
-  software ECC and certificate checks, not just the SYN-ACK. Every socket read
+- **Bounded blocking.** The TCP connect (`CONFIG_NET_SOCKETS_CONNECT_TIMEOUT`)
+  and the TLS handshake (`CONFIG_NET_SOCKETS_TLS_CONNECT_TIMEOUT`) are each
+  limited to 15 s. The handshake limit includes the software ECC and
+  certificate checks. Every socket read
   and write in a session is limited by `SO_RCVTIMEO`/`SO_SNDTIMEO`. Zephyr's TLS
   sockets otherwise wait forever.
 - **Dead-peer detection.** If nothing has been received for a keep-alive
@@ -219,7 +232,23 @@ explains each choice.
   reboots the board if the main loop makes no progress for 120 s
   (`CONFIG_APP_WATCHDOG_TIMEOUT_SEC`). It is armed only after the configuration
   and credentials have been checked, so a misconfigured device logs its error
-  instead of reboot-looping.
+  instead of reboot-looping. The hardware window is 2 s, fed every second,
+  which tolerates the watchdog oscillator's inaccuracy.
+
+## Board notes
+
+- **NUCLEO-F767ZI:** `boards/nucleo_f767zi.conf` enables the Cortex-M7 caches
+  (`CONFIG_CACHE_MANAGEMENT`), which Zephyr 4.4 leaves off on F7. Without them
+  the TLS handshake runs from uncached flash. The Ethernet DMA buffers live in
+  DTCM, so caching is safe. The overlay disables SPI1, whose MOSI pin (PA7) is
+  the RMII CRS_DV line. The MAC address is derived from the UID and stays the
+  same for a given chip.
+- **FRDM-MCXN947:** the overlay replaces the board's random MAC, which would be
+  new on every boot and cause a new DHCP lease after each watchdog reset, with
+  the stable UID-based MAC (`nxp,unique-mac`). The ENET QoS RX ring is enlarged
+  to 48 descriptors (`CONFIG_NET_BUF_RX_COUNT=128`), because the driver
+  permanently reserves one network buffer per descriptor.
+- Both boards' Ethernet drivers follow the PHY's negotiated speed and duplex.
 
 ## Security notes
 

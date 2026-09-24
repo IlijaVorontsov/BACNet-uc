@@ -1,0 +1,6 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+
+/* PA7 is RMII CRS_DV; the board DTS also enables SPI1 with MOSI on PA7. */
+&spi1 {
+	status = "disabled";
+};

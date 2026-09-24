@@ -1,0 +1,10 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+
+/* Stable per-chip MAC (NXP OUI with the locally administered bit, plus the
+ * CRC-24 of the 128-bit UID) instead of a new random MAC on every boot, which
+ * would also mean a new DHCP lease after every watchdog reset.
+ */
+&enet_mac {
+	/delete-property/ zephyr,random-mac-address;
+	nxp,unique-mac;
+};

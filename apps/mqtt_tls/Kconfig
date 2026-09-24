@@ -22,9 +22,10 @@ config APP_MQTT_CLIENT_ID
 	default ""
 	help
 	  Leave empty to derive a stable identifier from the MCU's unique
-	  device ID (APP_MQTT_CLIENT_ID_PREFIX followed by the 96-bit STM32
-	  UID in 20 base32 characters), so every board gets its own id
-	  without per-device configuration. Must not contain '+', '#' or
+	  device ID: APP_MQTT_CLIENT_ID_PREFIX followed by 20 base32
+	  characters (the 96-bit STM32 UID as is; longer UIDs, such as the
+	  128-bit NXP MCX UID, condensed to 96 bits with SHA-256), so every
+	  board gets its own id without per-device configuration. Must not contain '+', '#' or
 	  '/', since it is also a topic level.
 
 config APP_MQTT_CLIENT_ID_PREFIX
@@ -85,7 +86,8 @@ config APP_MQTT_CONNACK_TIMEOUT_MS
 	help
 	  Applies after the TCP/TLS connection is up. The TCP connect and the
 	  TLS handshake are bounded separately by
-	  CONFIG_NET_SOCKETS_CONNECT_TIMEOUT.
+	  CONFIG_NET_SOCKETS_CONNECT_TIMEOUT and
+	  CONFIG_NET_SOCKETS_TLS_CONNECT_TIMEOUT.
 
 config APP_MQTT_RECONNECT_MIN_MS
 	int "Initial reconnect back-off (ms)"
