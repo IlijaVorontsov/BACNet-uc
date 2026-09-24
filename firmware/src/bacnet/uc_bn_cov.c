@@ -379,7 +379,11 @@ bool uc_bn_cov_confirmed_result_locked(uint8_t invoke_id, const BACNET_ADDRESS *
 		if (s->sub_invoke == invoke_id) {
 			found = true;
 			s->sub_invoke = 0;
-			if (err == 0) {
+			if (s->state == COV_CANCEL) {
+				/* unsubscribed meanwhile: only remember that the
+				 * device holds a subscription to cancel */
+				s->confirmed = s->confirmed || (err == 0);
+			} else if (err == 0) {
 				if (s->state != COV_SUBSCRIBED) {
 					LOG_DBG("sub %d: SubscribeCOV accepted by %u", cov_id(s),
 						s->device);

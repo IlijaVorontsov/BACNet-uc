@@ -1,2 +1,236 @@
-/* SPDX-License-Identifier: Apache-2.0 */
-/* Placeholder: IO channel catalog for nucleo_f767zi (owned by fw-io). */
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * IO channel catalog: NUCLEO-F767ZI (included by nucleo_f767zi.overlay).
+ *
+ *   name  kind  hw    MCU pin  connector          notes
+ *   di0   di    gpio  PC13     B1 USER button     pressed = 1
+ *   di1   di    gpio  PF15     Arduino D2         pull-up, contact to GND = 1
+ *   di2   di    gpio  PF14     Arduino D4         pull-up, contact to GND = 1
+ *   do0   do    gpio  PB0      LD1 green LED
+ *   do1   do    gpio  PB7      LD2 blue LED
+ *   do2   do    gpio  PB14     LD3 red LED
+ *   do3   do    gpio  PF13     Arduino D7         push-pull, 1 = high
+ *   do4   do    gpio  PF12     Arduino D8         push-pull, 1 = high
+ *   ai0   ai    adc   PA3      Arduino A0         ADC1_IN3,  0..3300 mV
+ *   ai1   ai    adc   PC0      Arduino A1         ADC1_IN10, 0..3300 mV
+ *   ai2   ai    adc   PC3      Arduino A2         ADC1_IN13, 0..3300 mV
+ *   ai3   ai    adc   PF3      Arduino A3         ADC3_IN9,  0..3300 mV
+ *   ai4   ai    adc   PF5      Arduino A4         ADC3_IN15, 0..3300 mV
+ *   ai5   ai    adc   PF10     Arduino A5         ADC3_IN8,  0..3300 mV
+ *   ao0   ao    pwm   PE9      Arduino D6         TIM1_CH1, 1 kHz, 0..100 %
+ *   ao1   ao    pwm   PE11     Arduino D5         TIM1_CH2, 1 kHz, 0..100 %
+ *   ao2   ao    pwm   PE13     Arduino D3         TIM1_CH3, 1 kHz, 0..100 %
+ *
+ * Pins deliberately not used: the RMII Ethernet pins (PA1, PA2, PA7, PB13,
+ * PC1, PC4, PC5, PG11, PG13), the SPI1 NOR flash of the storage overlay
+ * (PA5, PA6, PB5, PD14 = D13/D12/D10), USART3 console (PD8/PD9), USART6
+ * (D0/D1), I2C1 (D14/D15).
+ *
+ * The board DTS declares B1 as GPIO_ACTIVE_LOW; on the Nucleo-144 (MB1137)
+ * B1 pulls PC13 high when pressed (like the other Nucleo-144 board files),
+ * so the catalog uses GPIO_ACTIVE_HIGH.
+ */
+
+#include <zephyr/dt-bindings/adc/adc.h>
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/pwm/pwm.h>
+
+/*
+ * ADC1 (A0..A2) and ADC3 (A3..A5): 12 bit, reference VREF+ = VDDA = 3.3 V
+ * (vref-mv default of st,stm32-adc), 144 cycles sampling time for sources
+ * up to some 10 kOhm. The ADC clock prescaler is common to all ADCs of the
+ * F7 and is raised from the board's PCLK2/2 (54 MHz, above the 36 MHz
+ * limit) to PCLK2/4 = 27 MHz on both instances.
+ */
+&adc1 {
+	pinctrl-0 = <&adc1_in3_pa3 &adc1_in10_pc0 &adc1_in13_pc3>;
+	pinctrl-names = "default";
+	st,adc-prescaler = <4>;
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	channel@3 {
+		reg = <3>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 144)>;
+		zephyr,resolution = <12>;
+	};
+
+	channel@a {
+		reg = <10>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 144)>;
+		zephyr,resolution = <12>;
+	};
+
+	channel@d {
+		reg = <13>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 144)>;
+		zephyr,resolution = <12>;
+	};
+};
+
+&adc3 {
+	pinctrl-0 = <&adc3_in9_pf3 &adc3_in15_pf5 &adc3_in8_pf10>;
+	pinctrl-names = "default";
+	st,adc-clock-source = "SYNC";
+	st,adc-prescaler = <4>;
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	channel@8 {
+		reg = <8>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 144)>;
+		zephyr,resolution = <12>;
+	};
+
+	channel@9 {
+		reg = <9>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 144)>;
+		zephyr,resolution = <12>;
+	};
+
+	channel@f {
+		reg = <15>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 144)>;
+		zephyr,resolution = <12>;
+	};
+};
+
+/*
+ * TIM1 (advanced timer, 216 MHz kernel clock): prescaler 10 -> 21.6 MHz,
+ * so a 1 ms period has 21600 steps (the board default prescaler of 10001
+ * leaves 21). CH1..CH3 on Arduino D6/D5/D3.
+ */
+&timers1 {
+	st,prescaler = <9>;
+	status = "okay";
+
+	pwm1: pwm {
+		pinctrl-0 = <&tim1_ch1_pe9 &tim1_ch2_pe11 &tim1_ch3_pe13>;
+		pinctrl-names = "default";
+		status = "okay";
+	};
+};
+
+/ {
+	uc_io: uc-io {
+		compatible = "uc,io-channels";
+		board-name = "nucleo_f767zi";
+
+		di0 {
+			kind = "di";
+			gpios = <&gpioc 13 GPIO_ACTIVE_HIGH>;
+			description = "B1 user button (PC13)";
+		};
+
+		di1 {
+			kind = "di";
+			gpios = <&gpiof 15 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+			description = "Arduino D2 (PF15), contact to GND";
+		};
+
+		di2 {
+			kind = "di";
+			gpios = <&gpiof 14 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+			description = "Arduino D4 (PF14), contact to GND";
+		};
+
+		do0 {
+			kind = "do";
+			gpios = <&gpiob 0 GPIO_ACTIVE_HIGH>;
+			description = "LD1 green LED (PB0)";
+		};
+
+		do1 {
+			kind = "do";
+			gpios = <&gpiob 7 GPIO_ACTIVE_HIGH>;
+			description = "LD2 blue LED (PB7)";
+		};
+
+		do2 {
+			kind = "do";
+			gpios = <&gpiob 14 GPIO_ACTIVE_HIGH>;
+			description = "LD3 red LED (PB14)";
+		};
+
+		do3 {
+			kind = "do";
+			gpios = <&gpiof 13 GPIO_ACTIVE_HIGH>;
+			description = "Arduino D7 (PF13)";
+		};
+
+		do4 {
+			kind = "do";
+			gpios = <&gpiof 12 GPIO_ACTIVE_HIGH>;
+			description = "Arduino D8 (PF12)";
+		};
+
+		ai0 {
+			kind = "ai";
+			io-channels = <&adc1 3>;
+			description = "Arduino A0 (PA3, ADC1_IN3)";
+		};
+
+		ai1 {
+			kind = "ai";
+			io-channels = <&adc1 10>;
+			description = "Arduino A1 (PC0, ADC1_IN10)";
+		};
+
+		ai2 {
+			kind = "ai";
+			io-channels = <&adc1 13>;
+			description = "Arduino A2 (PC3, ADC1_IN13)";
+		};
+
+		ai3 {
+			kind = "ai";
+			io-channels = <&adc3 9>;
+			description = "Arduino A3 (PF3, ADC3_IN9)";
+		};
+
+		ai4 {
+			kind = "ai";
+			io-channels = <&adc3 15>;
+			description = "Arduino A4 (PF5, ADC3_IN15)";
+		};
+
+		ai5 {
+			kind = "ai";
+			io-channels = <&adc3 8>;
+			description = "Arduino A5 (PF10, ADC3_IN8)";
+		};
+
+		ao0 {
+			kind = "ao";
+			pwms = <&pwm1 1 PWM_MSEC(1) PWM_POLARITY_NORMAL>;
+			description = "Arduino D6 (PE9, TIM1_CH1) PWM 1 kHz";
+		};
+
+		ao1 {
+			kind = "ao";
+			pwms = <&pwm1 2 PWM_MSEC(1) PWM_POLARITY_NORMAL>;
+			description = "Arduino D5 (PE11, TIM1_CH2) PWM 1 kHz";
+		};
+
+		ao2 {
+			kind = "ao";
+			pwms = <&pwm1 3 PWM_MSEC(1) PWM_POLARITY_NORMAL>;
+			description = "Arduino D3 (PE13, TIM1_CH3) PWM 1 kHz";
+		};
+	};
+};

@@ -1,2 +1,222 @@
-/* SPDX-License-Identifier: Apache-2.0 */
-/* Placeholder: IO channel catalog for frdm_mcxn947_mcxn947_cpu0 (owned by fw-io). */
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * IO channel catalog: FRDM-MCXN947 cpu0 (included by
+ * frdm_mcxn947_mcxn947_cpu0.overlay).
+ *
+ *   name  kind  hw    MCU pin  connector            notes
+ *   di0   di    gpio  P0_23    SW2 user button      pressed = 1 (also Arduino A5)
+ *   di1   di    gpio  P0_6     SW3 ISP button       pressed = 1
+ *   di2   di    gpio  P0_29    Arduino D2           pull-up, contact to GND = 1
+ *   di3   di    gpio  P0_30    Arduino D4           pull-up, contact to GND = 1
+ *   do0   do    gpio  P0_10    RGB LED red          1 = on (also Arduino D9)
+ *   do1   do    gpio  P0_27    RGB LED green        1 = on (also Arduino D10)
+ *   do2   do    gpio  P1_2     RGB LED blue         1 = on (also Arduino D6)
+ *   do3   do    gpio  P0_31    Arduino D7           push-pull, 1 = high
+ *   do4   do    gpio  P0_28    Arduino D8           push-pull, 1 = high
+ *   ai0   ai    adc   P0_14    Arduino A2           ADC0_B14, 0..1800 mV
+ *   ai1   ai    adc   P0_22    Arduino A3           ADC0_A14, 0..1800 mV
+ *   ai2   ai    adc   P0_15    Arduino A4           ADC0_B15, 0..1800 mV
+ *   ao0   ao    pwm   P2_6     J3-15                FlexPWM1 SM0 A (pwm-0), 1 kHz
+ *   ao1   ao    pwm   P2_7     J3-13                FlexPWM1 SM0 B (pwm-0), 1 kHz
+ *   ao2   ao    pwm   P1_23    Arduino D3 (J1-8)    SCTimer0 OUT5 (pwm-1), 1 kHz
+ *
+ * Notes:
+ * - LPADC0 uses the SoC VREF regulator at 1.8 V as reference (nxp,references
+ *   of the SoC dtsi, voltage-ref 1); inputs above 1.8 V read as full scale.
+ * - Arduino A0/A1 are not listed in the board's Arduino GPIO map and A5
+ *   (P0_23) is SW2, so the catalog uses A2..A4.
+ * - The RGB LED shares pins with Arduino D6/D9/D10 (P0_27 is also the LPSPI1
+ *   chip select FC1_P3; LPSPI1 is not used by the firmware). Configuring the
+ *   GPIO switches the pin mux to GPIO.
+ * - Arduino D5 (P1_21) is ENET MDIO and is not used.
+ * - FlexPWM1 SM0 pins P2_6/P2_7 are shared with SDHC0 D3/D2 and SAI0; the
+ *   firmware enables neither.
+ * - The DACs (DAC0 on Arduino D1 = P4_2, shared with LPUART2 TX; 14-bit DAC2
+ *   on J3-2) are not in the catalog: the uc,io-channels binding has no DAC
+ *   property.
+ */
+
+#include <zephyr/dt-bindings/adc/adc.h>
+#include <zephyr/dt-bindings/adc/mcux-lpadc.h>
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/pwm/pwm.h>
+#include <nxp/mcx/MCXN947VDF-pinctrl.h>
+
+&pinctrl {
+	uc_pinmux_lpadc0: uc_pinmux_lpadc0 {
+		group0 {
+			pinmux = <ADC0_B14_PIO0_14>,
+				 <ADC0_A14_PIO0_22>,
+				 <ADC0_B15_PIO0_15>;
+			slew-rate = "fast";
+			drive-strength = "low";
+		};
+	};
+
+	uc_pinmux_sctimer: uc_pinmux_sctimer {
+		group0 {
+			pinmux = <SCT0_OUT5_PIO1_23>;
+			slew-rate = "fast";
+			drive-strength = "low";
+		};
+	};
+};
+
+/*
+ * LPADC0: single ended, 12 bit, reference VREFO (1.8 V), 131 ADC clocks
+ * sampling time. channel@N is the LPADC command slot N, input-positive the
+ * analog channel (side A/B) of the pin.
+ */
+&lpadc0 {
+	pinctrl-0 = <&uc_pinmux_lpadc0>;
+	pinctrl-names = "default";
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	channel@0 {
+		reg = <0>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_EXTERNAL1";
+		zephyr,vref-mv = <1800>;
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 131)>;
+		zephyr,resolution = <12>;
+		zephyr,input-positive = <MCUX_LPADC_CH14B>;
+	};
+
+	channel@1 {
+		reg = <1>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_EXTERNAL1";
+		zephyr,vref-mv = <1800>;
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 131)>;
+		zephyr,resolution = <12>;
+		zephyr,input-positive = <MCUX_LPADC_CH14A>;
+	};
+
+	channel@2 {
+		reg = <2>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_EXTERNAL1";
+		zephyr,vref-mv = <1800>;
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 131)>;
+		zephyr,resolution = <12>;
+		zephyr,input-positive = <MCUX_LPADC_CH15B>;
+	};
+};
+
+&vref {
+	status = "okay";
+};
+
+/* FlexPWM1 submodule 0 (alias pwm-0), board pinctrl P2_6 (A) / P2_7 (B). */
+&flexpwm1_pwm0 {
+	status = "okay";
+};
+
+/* SCTimer0 (alias pwm-1): only OUT5 on Arduino D3 instead of the board's
+ * OUT0 on P2_2.
+ */
+&sc_timer {
+	pinctrl-0 = <&uc_pinmux_sctimer>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+/ {
+	uc_io: uc-io {
+		compatible = "uc,io-channels";
+		board-name = "frdm_mcxn947";
+
+		di0 {
+			kind = "di";
+			gpios = <&gpio0 23 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+			description = "SW2 user button (P0_23)";
+		};
+
+		di1 {
+			kind = "di";
+			gpios = <&gpio0 6 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+			description = "SW3 ISP button (P0_6)";
+		};
+
+		di2 {
+			kind = "di";
+			gpios = <&gpio0 29 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+			description = "Arduino D2 (P0_29), contact to GND";
+		};
+
+		di3 {
+			kind = "di";
+			gpios = <&gpio0 30 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+			description = "Arduino D4 (P0_30), contact to GND";
+		};
+
+		do0 {
+			kind = "do";
+			gpios = <&gpio0 10 GPIO_ACTIVE_LOW>;
+			description = "RGB LED red (P0_10)";
+		};
+
+		do1 {
+			kind = "do";
+			gpios = <&gpio0 27 GPIO_ACTIVE_LOW>;
+			description = "RGB LED green (P0_27)";
+		};
+
+		do2 {
+			kind = "do";
+			gpios = <&gpio1 2 GPIO_ACTIVE_LOW>;
+			description = "RGB LED blue (P1_2)";
+		};
+
+		do3 {
+			kind = "do";
+			gpios = <&gpio0 31 GPIO_ACTIVE_HIGH>;
+			description = "Arduino D7 (P0_31)";
+		};
+
+		do4 {
+			kind = "do";
+			gpios = <&gpio0 28 GPIO_ACTIVE_HIGH>;
+			description = "Arduino D8 (P0_28)";
+		};
+
+		ai0 {
+			kind = "ai";
+			io-channels = <&lpadc0 0>;
+			description = "Arduino A2 (P0_14, ADC0_B14) 0..1.8 V";
+		};
+
+		ai1 {
+			kind = "ai";
+			io-channels = <&lpadc0 1>;
+			description = "Arduino A3 (P0_22, ADC0_A14) 0..1.8 V";
+		};
+
+		ai2 {
+			kind = "ai";
+			io-channels = <&lpadc0 2>;
+			description = "Arduino A4 (P0_15, ADC0_B15) 0..1.8 V";
+		};
+
+		ao0 {
+			kind = "ao";
+			pwms = <&flexpwm1_pwm0 0 PWM_MSEC(1) PWM_POLARITY_NORMAL>;
+			description = "J3-15 (P2_6, FlexPWM1 A0) PWM 1 kHz";
+		};
+
+		ao1 {
+			kind = "ao";
+			pwms = <&flexpwm1_pwm0 1 PWM_MSEC(1) PWM_POLARITY_NORMAL>;
+			description = "J3-13 (P2_7, FlexPWM1 B0) PWM 1 kHz";
+		};
+
+		ao2 {
+			kind = "ao";
+			pwms = <&sc_timer 5 PWM_MSEC(1) PWM_POLARITY_NORMAL>;
+			description = "Arduino D3 (P1_23, SCT0_OUT5) PWM 1 kHz";
+		};
+	};
+};

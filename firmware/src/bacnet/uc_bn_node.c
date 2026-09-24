@@ -668,7 +668,7 @@ static void bn_apply_cfg_locked(void *arg)
 
 	if (bn_device_strings_apply(&bn_new_cfg)) {
 		Device_Inc_Database_Revision();
-		LOG_INF("device name '%s'", bn_dev_name);
+		LOG_INF("device name/description/location updated ('%s')", bn_dev_name);
 	}
 	bn_apdu_options_apply(&bn_new_cfg);
 	/* the stack keeps the device instance from boot */

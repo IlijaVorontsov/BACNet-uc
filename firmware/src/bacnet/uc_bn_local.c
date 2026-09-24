@@ -637,14 +637,21 @@ int uc_bn_input_pv_set_locked(uint16_t type, uint32_t instance, double value)
 		return -ENOENT;
 	}
 
+	/* Out_Of_Service decouples Present_Value from the physical input: a
+	 * client may then write it (test/override); the scan must not. */
 	switch (type) {
 #if defined(CONFIG_BACNET_BASIC_OBJECT_ANALOG_INPUT)
 	case OBJECT_ANALOG_INPUT:
-		Analog_Input_Present_Value_Set(instance, (float)value);
+		if (!Analog_Input_Out_Of_Service(instance)) {
+			Analog_Input_Present_Value_Set(instance, (float)value);
+		}
 		return 0;
 #endif
 #if defined(CONFIG_BACNET_BASIC_OBJECT_BINARY_INPUT)
 	case OBJECT_BINARY_INPUT:
+		if (Binary_Input_Out_Of_Service(instance)) {
+			return 0;
+		}
 		return Binary_Input_Present_Value_Set(instance, (value != 0.0) ? BINARY_ACTIVE
 									   : BINARY_INACTIVE)
 			       ? 0
@@ -654,6 +661,9 @@ int uc_bn_input_pv_set_locked(uint16_t type, uint32_t instance, double value)
 	case OBJECT_MULTI_STATE_INPUT:
 		if ((value < 1.0) || (value > (double)UINT32_MAX)) {
 			return -EINVAL;
+		}
+		if (Multistate_Input_Out_Of_Service(instance)) {
+			return 0;
 		}
 		return Multistate_Input_Present_Value_Set(instance, (uint32_t)value) ? 0 : -EINVAL;
 #endif

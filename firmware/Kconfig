@@ -84,8 +84,9 @@ config UC_APPS
 	default y
 	select WAMR
 
-if UC_APPS
-
+# Table sizes are used by the configuration module even without the
+# runtime (apps.json is still parsed and served), so they live outside
+# "if UC_APPS".
 config UC_APPS_MAX
 	int "Installed applications"
 	range 1 8
@@ -94,6 +95,8 @@ config UC_APPS_MAX
 config UC_APP_PARAMS_MAX
 	int "Parameters per application"
 	default 16
+
+if UC_APPS
 
 config UC_APP_POOL_SIZE
 	int "WAMR memory pool (bytes)"

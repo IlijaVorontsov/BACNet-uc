@@ -1,2 +1,76 @@
-/* SPDX-License-Identifier: Apache-2.0 */
-/* Placeholder: IO channel catalog for native_sim_native_64 (owned by fw-io). */
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * IO channel catalog: native_sim/native/64 (included by
+ * native_sim_native_64.overlay).
+ *
+ * Every channel is simulated: its value lives in RAM. Inputs are set with
+ * "uc_io force" (SMP group 65) or "uc io force" (shell); outputs follow
+ * their BACnet object or "uc_io write" and can be read back.
+ *
+ *   name  kind  initial value
+ *   di0   di    0
+ *   di1   di    0
+ *   do0   do    0
+ *   do1   do    0
+ *   ai0   ai    2000 mV
+ *   ai1   ai    0 mV
+ *   ao0   ao    0 %
+ *   ao1   ao    0 %
+ */
+
+/ {
+	uc_io: uc-io {
+		compatible = "uc,io-channels";
+		board-name = "native_sim";
+
+		di0 {
+			kind = "di";
+			simulated;
+			description = "Simulated digital input 0";
+		};
+
+		di1 {
+			kind = "di";
+			simulated;
+			description = "Simulated digital input 1";
+		};
+
+		do0 {
+			kind = "do";
+			simulated;
+			description = "Simulated digital output 0";
+		};
+
+		do1 {
+			kind = "do";
+			simulated;
+			description = "Simulated digital output 1";
+		};
+
+		ai0 {
+			kind = "ai";
+			simulated;
+			initial-value = <2000>;
+			description = "Simulated analog input 0 (mV)";
+		};
+
+		ai1 {
+			kind = "ai";
+			simulated;
+			description = "Simulated analog input 1 (mV)";
+		};
+
+		ao0 {
+			kind = "ao";
+			simulated;
+			description = "Simulated analog output 0 (%)";
+		};
+
+		ao1 {
+			kind = "ao";
+			simulated;
+			description = "Simulated analog output 1 (%)";
+		};
+	};
+};
