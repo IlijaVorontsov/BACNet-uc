@@ -148,3 +148,16 @@ The user approved **M4, M5 and M6 now, M7 later**. Per HIL FW-06, these are the 
 | FW-03 | The banner `MQTT over Ethernet + TLS on <board>` stays. |
 
 Answers to the HIL contract for MQTT: **FW-01 accepted** (the app uses none of those pins; SPI1 is disabled on F767). **FW-02 accepted.** **FW-03 accepted.** **FW-05 accepted** (IWDG/WWDT task watchdog). **FW-06 accepted** (this table). **FW-12 deferred with M7.** **FW-10 for MQTT:** SMP stays plain UDP for now; DTLS is a follow-up.
+
+### Answers to the HIL rig contract (`claude/hardware-in-loop-testing-x74tww`), MQTT app
+
+- **FW-01: accepted.** mqtt_tls uses none of PD4/PD5/PD6, PG0-PG3, PE10/12/14/15. Console stays on USART3 at 115200. SPI1 is disabled on F767 because it shares PA7 with RMII.
+- **FW-02: accepted.** No forced MAC (02:80:E1 + crc32 of the UID on F767). DHCPv4 on. Client ID `z`+base32(UID). `info` keeps hwid, mac and fw.
+- **FW-03: accepted.** The banner `MQTT over Ethernet + TLS on <board>` is unchanged.
+- **FW-05: accepted.** A task watchdog backed by the IWDG (F767/H563) or WWDT (MCXN947) is always armed.
+- **FW-06: accepted.** The UDP 1337 listener, MCUboot partitions and settings partitions were announced in 9bb255e before the code landed (fe8252c). No existing `APP_MQTT_*` symbol changed meaning. Stored settings override them only after an explicit write, and factory reset (`config_reset`, or SMP write `mqtt/factory_reset`) returns to them.
+- **FW-08 (MQTT part): accepted, done.** Factory reset works over MQTT and SMP (see above).
+- **FW-10 (MQTT part):** SMP stays plain UDP for now and must be on the management VLAN. `CONFIG_APP_SMP=n` removes it. DTLS is a possible follow-up; no PSK is defined yet.
+- **FW-11:** the MCUboot variant uses the MCUboot development key (ECDSA-P256) and the board default partitions. Tell us your key file and we'll set `SB_CONFIG_BOOT_SIGNATURE_KEY_FILE` for rig builds.
+- **FW-12: deferred with M7** (user decision). When it's done: `net_init_clock_via_sntp()` after the DHCP lease, then `MBEDTLS_HAVE_TIME_DATE`.
+- **WAMR glue drift:** fixed. `modules/` and `west.yml` are identical to the BACnet tip.
