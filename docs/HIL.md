@@ -936,6 +936,7 @@ New risks:
 | 47 | Software DE may fail Tpostdrive or Tturnaround at 76800/115200 while BACnet/IP and apps run | This is a product finding the rig reports (MSTP-04/05), not a rig fault; the D47 spike gives an early answer; roadmap 3.2 (cpu1) is the product's mitigation |
 | 48 | Stimulus unpowered, halted or hung with the DUT on: clamped stimulus pins load DUT lines, and RESET_B could sit in the undefined band | Q3 gate-sense (D50); FET gate pull-downs; ≤ 1.3 mA per line; PWR-02 asserts reachability, uptime and a steady LA `nrst`; W2 DMM check of RESET_B with the stimulus unpowered |
 | 49 | Host-timed `usb_port` cuts (PERS-02) have millisecond jitter plus P5V0/LDO hold-up, so power-loss coverage is statistical | LA time stamp of the real loss (`pers` profile); offsets binned; OTA-04 stays stimulus-timed on `mcu_rail`; stimulus-timed VBUS switch as an It3 option |
+| 50 | **The repository is public (2026-09-25).** A fork pull request can bring a workflow that targets the bench runner's labels, and the bench jobs run as root. GitHub recommends self-hosted runners only for private repositories. | Require approval for all external contributors' fork workflows; hil.yml stays push-only; unique runner labels; an ephemeral runner, or a private mirror for the bench (hil/host/README-host.md §7). Hosted CI minutes are free for public repositories, which removes the minutes argument of D27. |
 
 ---
 

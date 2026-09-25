@@ -57,7 +57,7 @@ The loop: Claude proposes a step, the helper does the physical part and confirms
    sudo apt update && sudo apt full-upgrade -y && sudo rpi-eeprom-update -a
    sudo apt install -y git python3-venv python3-dev build-essential sigrok-cli \
        sigrok-firmware-fx2lafw uhubctl gpiod python3-libgpiod minicom chrony
-   git clone https://github.com/IlijaVorontsov/BACNet-uc.git ~/BACNet-uc   # needs repo access
+   git clone https://github.com/IlijaVorontsov/BACNet-uc.git ~/BACNet-uc   # public repository
    cd ~/BACNet-uc && git checkout claude/hardware-in-loop-testing-x74tww
    python3 -m venv ~/.venvs/hil && ~/.venvs/hil/bin/pip install -e 'hil[dev]'
    ~/.venvs/hil/bin/pytest -q hil/tests/unit            # expect pass; namespace tests skip without root

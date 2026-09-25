@@ -245,12 +245,22 @@ west twister --list-tests -T <bacnet checkout>/firmware --alt-config-root /tmp/l
 ## 7. Security notes (R19)
 
 - The bench jobs run as root through run-hil, and the tests that run are the pushed ones.
-  Anyone who can push to the HIL branch can therefore run code as root on this host. The
-  mitigations are:
-  - a private repository with owner-only pushes;
-  - no fork workflows and no secrets in jobs;
-  - the push token only in the `hil` user's gh login;
-  - `lan-a` never bridged to the uplink.
+  Anyone who can push to the HIL branch can therefore run code as root on this host.
+- **The repository is public (since 2026-09-25).** GitHub recommends self-hosted runners only
+  for private repositories: a pull request from a fork can carry its own workflow file that
+  asks for this runner's labels. Before registering the runner, do all of the following:
+  - Settings → Actions → General: set "Fork pull request workflows from outside
+    collaborators" to **Require approval for all external contributors**, and never approve
+    a fork run that touches `.github/workflows/`;
+  - keep hil.yml on `push` to the named branches only (no `pull_request` or
+    `pull_request_target` trigger), as the template does;
+  - give the runner unique labels (`hil`, `bench1`) that no public workflow uses;
+  - register it with `--ephemeral` or clean `_work` in the job-started hook, and give the
+    `hil` user no credentials beyond the push token.
+  - The safer alternative is a private mirror that runs the bench, with hosted CI (free for
+    public repositories) on this repository.
+- Other mitigations: owner-only pushes, no secrets in jobs, the push token only in the `hil`
+  user's gh login, and `lan-a` never bridged to the uplink.
 - run-hil, pre-flash.sh, nightly and the hook are installed root-owned. sudo resets the
   environment, and run-hil builds its own environment from `/etc/hil/hil.env`. It accepts
   run directories only directly under `/opt/hil/out`, and args files only in the gen.py
