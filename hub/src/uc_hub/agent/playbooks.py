@@ -64,7 +64,7 @@ PLAYBOOKS: dict[str, Playbook] = {p.id: p for p in (
 )}
 
 
-def playbook(playbook_id: str | None) -> Playbook | None:
+def get_playbook(playbook_id: str | None) -> Playbook | None:
     """The playbook with this id (None for None); ``InvalidRequest`` for an unknown id."""
     if playbook_id is None:
         return None

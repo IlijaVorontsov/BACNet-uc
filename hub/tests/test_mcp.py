@@ -13,6 +13,7 @@ import pytest
 from mcp import Client
 from support.site import Hub, start_hub
 
+from uc_hub.core.errors import Conflict
 from uc_hub.mcp_server import HubMcpServer
 
 
@@ -67,6 +68,8 @@ async def test_calls_run_in_a_session_and_wait_for_approvals(hub: Hub) -> None:
         assert wrong.is_error and body(wrong)["error"] == "invalid"
 
     session = await server.session()
+    with pytest.raises(Conflict, match="MCP session"):
+        await hub.services.runs.post_message(session, user="dev", roles={"admin"}, message="hello")
     run = await hub.services.store.get_run(session)
     assert run is not None and (run["title"], run["created_by"], run["state"]) == ("MCP session (claude)", "claude",
                                                                                    "idle")

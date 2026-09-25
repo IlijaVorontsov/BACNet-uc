@@ -183,7 +183,7 @@ async def start_demo(
                            else "MQTT is switched off")
             _drop_mqtt(site)
         _copy_site(demo_dir, workdir, site)
-        (workdir / "hub.yaml").write_text(yaml.safe_dump(_hub_doc(hub, demo_dir, site, nodes, ahus, broker, llm),
+        (workdir / "hub.yaml").write_text(yaml.safe_dump(_hub_doc(hub, demo_dir, nodes, ahus, broker, llm),
                                                          sort_keys=False))
         config = load_config(workdir / "hub.yaml", overrides=overrides)
         await _provision(workdir, site, config, [n for n in nodes if n not in EMPTY_NODES])
@@ -252,8 +252,9 @@ def _copy_site(demo_dir: Path, workdir: Path, site: dict[str, Any]) -> None:
         shutil.copytree(demo_dir / "apps", workdir / "apps", dirs_exist_ok=True)
 
 
-def _hub_doc(hub: dict[str, Any], demo_dir: Path, site: dict[str, Any], nodes: dict[str, SimNode],
-             ahus: dict[str, SimBacnetIpDevice], broker: Mosquitto | None, llm: str) -> dict[str, Any]:
+def _hub_doc(hub: dict[str, Any], demo_dir: Path, nodes: dict[str, SimNode], ahus: dict[str, SimBacnetIpDevice],
+             broker: Mosquitto | None, llm: str) -> dict[str, Any]:
+    """The demo's hub.yaml with what depends on the simulation filled in."""
     doc = copy.deepcopy(hub)
     doc["site_file"] = "site.yaml"
     doc["data_dir"] = "data"

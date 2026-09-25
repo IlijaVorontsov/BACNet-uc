@@ -62,7 +62,7 @@ async def test_a_turn_streams_into_events_and_history(agent_hub: AgentHub) -> No
 async def test_the_model_sees_the_prompt_the_playbook_and_its_tools(agent_hub: AgentHub) -> None:
     hub = await agent_hub(rules(({"always": True}, {"text": "ok"})))
     llm = hub.services.llm
-    run_id = await start(hub, "Check the IO of r204-ctl", playbook_id="io-checkout")
+    run_id = await start(hub, "Check the IO of r204-ctl", playbook="io-checkout")
     await state(hub, run_id, "idle")
     run = await hub.services.store.get_run(run_id)
     assert run is not None and run["title"] == "IO checkout"
@@ -78,7 +78,7 @@ async def test_the_model_sees_the_prompt_the_playbook_and_its_tools(agent_hub: A
     tiers = {hub.services.registry.get(t.name).tier for t in tools}  # type: ignore[union-attr]
     assert tiers == {"R"}
     with pytest.raises(InvalidRequest, match="unknown playbook"):
-        await start(hub, "hi", playbook_id="golf")
+        await start(hub, "hi", playbook="golf")
     with pytest.raises(InvalidRequest):
         await start(hub, "   ")
 
@@ -450,5 +450,6 @@ async def test_the_site_status_opens_every_turn(agent_hub: AgentHub) -> None:
     assert [m["role"] for m in history] == ["system", "user", "assistant", "system", "user", "assistant"]
     status = history[3]["content"]
     assert "Site hq (Agent test site): 0 devices" in status and "Manifest: live revision 1." in status
+    assert "The next message is from dev (roles: admin)" in status
     assert len(status) < 8000
 

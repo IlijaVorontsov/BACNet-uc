@@ -10,10 +10,11 @@ from fastapi import APIRouter, Depends, Query, Request
 from .. import __version__
 from ..core.errors import HubError, NotFound, error_for
 from ..core.types import DeviceDescription, ProtocolName
+from ..policy.policy import ranked_roles
 from ..runtime.config import Identity
 from ..runtime.services import Services
 from . import bodies
-from .auth import Auth, ranked, require
+from .auth import Auth, require
 
 #: How long ``GET /api/devices/{name}`` waits for a device that was never described.
 DESCRIBE_TIMEOUT_S = 15.0
@@ -37,7 +38,7 @@ def json_routes(services: Services, auth: Auth) -> APIRouter:
 
     @router.get("/me")
     async def me(who: Identity = caller) -> dict[str, Any]:
-        return {"user": who.user, "roles": ranked(who.roles)}
+        return {"user": who.user, "roles": ranked_roles(who.roles)}
 
     @router.get("/site")
     async def site(who: Identity = caller) -> dict[str, Any]:
@@ -132,7 +133,7 @@ def json_routes(services: Services, auth: Auth) -> APIRouter:
     async def create_run(request: Request, who: Identity = caller) -> dict[str, Any]:
         body = await bodies.parse(request, bodies.CreateRun)
         return await services.runs.create_run(user=who.user, roles=who.roles, message=body.message,
-                                              playbook_id=body.playbook)
+                                              playbook=body.playbook)
 
     @router.get("/runs/{run_id}")
     async def run(run_id: str, who: Identity = caller) -> dict[str, Any]:

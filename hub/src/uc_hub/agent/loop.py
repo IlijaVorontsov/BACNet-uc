@@ -52,7 +52,7 @@ from ..tools import Prepared, ToolResult
 from ..tools.session import answer_result
 from .approvals import Decision
 from .context import llm_messages, site_status
-from .playbooks import Playbook, playbook
+from .playbooks import Playbook, get_playbook
 from .prompts import system_prompt
 
 if TYPE_CHECKING:
@@ -157,9 +157,10 @@ class RunManager:
 
     # -- runs -----------------------------------------------------------------------------------
     async def create_run(self, *, user: str, roles: set[str] | frozenset[str], message: str,
-                         playbook_id: str | None = None) -> dict[str, Any]:
-        """Start a run with its first message; returns the ``RunSummary``."""
-        book = playbook(playbook_id)
+                         playbook: str | None = None) -> dict[str, Any]:
+        """Start a run with its first message (and a playbook id); returns
+        the ``RunSummary``."""
+        book = get_playbook(playbook)
         text = _message(message)
         run_id = await self._create(AGENT, user, roles, _title(text, book), self.services.llm.model, book)
         run = self._runs[run_id]
@@ -258,7 +259,7 @@ class RunManager:
         run.user, run.roles = user, frozenset(roles)
         run.calls, run.waited_s, run.last_failure = 0, 0.0, None
         run.started = time.monotonic()
-        run.messages += [{"role": "system", "content": await site_status(self.services)},
+        run.messages += [{"role": "system", "content": await site_status(self.services, user, roles)},
                          {"role": "user", "content": text}]
         await self.services.store.save_messages(run.id, run.messages)
         await self.services.store.update_run(run.id, meta=run.meta())
@@ -538,7 +539,7 @@ class RunManager:
         grant = meta.get("grant")
         messages = await self.services.store.load_messages(run_id)
         try:
-            book = playbook(meta.get("playbook"))
+            book = get_playbook(meta.get("playbook"))
         except InvalidRequest:
             book = None
         run = _Run(

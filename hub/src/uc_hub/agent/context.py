@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import datetime as dt
 import time
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
 from ..core.errors import HubError
+from ..policy.policy import ranked_roles
 
 if TYPE_CHECKING:
     from ..runtime.services import Services
@@ -27,8 +29,8 @@ _MAX_SPACES = 60
 _MAX_NAMES = 20
 
 
-async def site_status(services: Services) -> str:
-    """The status message of a new turn."""
+async def site_status(services: Services, user: str, roles: Iterable[str]) -> str:
+    """The status message of a new turn, for a message from ``user``."""
     site = services.site
     overview = site.overview()
     summary = overview["summary"]
@@ -36,7 +38,9 @@ async def site_status(services: Services) -> str:
     protocols = ", ".join(f"{p} {n}" for p, n in overview["protocols"].items()) or "none"
     description = f" ({site.manifest.description})" if site.manifest.description else ""
     out = [
-        f"Site status at {stamp} (refreshed for every user message).",
+        f"Site status at {stamp} (refreshed for every user message). The next message is from {user} "
+        f"(roles: {', '.join(ranked_roles(roles)) or 'none'}); its tier L and C calls wait for an approval by an operator (L) or "
+        "a commissioner (C).",
         f"Site {site.name}{description}: {summary['devices']} devices, {summary['online']} online, "
         f"{summary['points']} points; protocols: {protocols}.",
     ]

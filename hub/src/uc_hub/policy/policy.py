@@ -112,6 +112,11 @@ def role_rank(roles: Iterable[str]) -> int:
     return max((_RANK[r] for r in roles if r in _RANK), default=-1)
 
 
+def ranked_roles(roles: Iterable[str]) -> list[str]:
+    """The known roles among ``roles``, in increasing order of authority."""
+    return sorted(set(roles) & _RANK.keys(), key=_RANK.__getitem__)
+
+
 class Policy:
     """The site's rules for the agent. Build with ``from_site`` from the site
     manifest (its ``policy`` and ``safety`` sections); ``configure`` swaps in a

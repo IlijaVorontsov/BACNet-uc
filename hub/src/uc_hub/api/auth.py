@@ -10,7 +10,6 @@ tokens do not end up in URLs without need.
 from __future__ import annotations
 
 import hmac
-from collections.abc import Iterable
 
 from fastapi import Request
 
@@ -55,11 +54,6 @@ class Auth:
         if found is None:
             raise Unauthorized("a valid bearer token is required (Authorization: Bearer <token>)")
         return found
-
-
-def ranked(roles: Iterable[str]) -> list[str]:
-    """Roles in increasing order of authority."""
-    return sorted(set(roles) & set(ROLES), key=ROLES.index)
 
 
 def require(caller: Identity, least: str) -> None:
