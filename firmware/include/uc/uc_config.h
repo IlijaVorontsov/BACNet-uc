@@ -47,6 +47,9 @@ struct uc_device_cfg {
 	uint16_t fd_ttl_s;
 	size_t binding_count;
 	struct uc_static_binding bindings[CONFIG_UC_BACNET_STATIC_BINDINGS_MAX];
+	/* bacnet.password: DeviceCommunicationControl / ReinitializeDevice
+	 * password, 1..20 characters; "" = not configured (no password check) */
+	char bacnet_password[21];
 	/* log */
 	uint8_t log_level;      /* LOG_LEVEL_ERR..LOG_LEVEL_DBG */
 };
@@ -121,11 +124,35 @@ int uc_config_parse_apps(char *json, size_t len, struct uc_apps_cfg *out);
 int uc_config_encode_apps(const struct uc_apps_cfg *cfg, char *buf,
 			  size_t buf_len);
 
-/** Load all documents from /lfs/cfg into the cache (defaults on error). */
+/** Suffix of a staged document, e.g. /lfs/cfg/io.json.new. */
+#define UC_CFG_STAGED_SUFFIX ".new"
+
+/** Load all documents from /lfs/cfg into the cache (defaults for missing or
+ *  rejected documents) and apply device.json "log.level"
+ *  (uc_config_apply_log_level()). A staged document <path>.new is activated
+ *  first, as by uc_config_reload(). Returns 0 or the first error. */
 int uc_config_init(void);
 
-/** Re-read the given documents (bitmask of enum uc_cfg_doc) from disk. */
+/** Re-read the given documents (bitmask of enum uc_cfg_doc) from disk.
+ *
+ *  Staged documents: if <path>.new exists it is read and validated first.
+ *  Valid: it is renamed over <path> (atomic) and becomes the active
+ *  configuration. Invalid (syntax, schema, table limits, too large): it is
+ *  deleted, the active configuration stays and -EINVAL is returned.
+ *  Without a staged document <path> itself is re-read; a rejected <path>
+ *  also keeps the active configuration (-EINVAL / -ENOSPC).
+ *
+ *  After a successful device.json reload the log level is applied
+ *  (uc_config_apply_log_level()). Every document is processed even if an
+ *  earlier one fails; the first error is returned. */
 int uc_config_reload(uint32_t docs);
+
+/** Apply the cached device.json "log.level" as runtime filter of every log
+ *  source and backend (CONFIG_LOG_RUNTIME_FILTERING; sources compiled with
+ *  a lower level keep it). Called by uc_config_init() and
+ *  uc_config_reload(); exported for callers that change the level in other
+ *  ways. */
+void uc_config_apply_log_level(void);
 
 /* Thread-safe copies of the cached configuration. */
 void uc_config_get_device(struct uc_device_cfg *out);

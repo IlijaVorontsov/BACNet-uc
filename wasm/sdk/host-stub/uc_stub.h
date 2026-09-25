@@ -7,7 +7,8 @@
  * uc_stub.c implements every "bacnet_uc" import of bacnet_uc.h as a plain C
  * function (bacnet_uc.h maps UC_IMPORT/UC_EXPORT to nothing when __wasm__
  * is not defined), backed by:
- *   - an in-memory table of local objects with priority arrays,
+ *   - an in-memory table of local objects (priority arrays for AO, BO,
+ *     MSO; the value objects AV, BV, MSV have none, as in the firmware),
  *   - scripted remote points (values, errors, COV support),
  *   - COV subscriptions (initial notification, change detection),
  *   - a controllable clock and the firmware's tick/event scheduling,
@@ -144,16 +145,19 @@ uint32_t uc_stub_events_dropped(void);
 /* Local objects                                                           */
 /* ---------------------------------------------------------------------- */
 
-/** Add an object owned by the IO configuration (not the app). For
- *  commandable types (AO, BO, MSO, AV, BV, MSV) value becomes the
- *  relinquish default. Returns 0, -1 (full) or -2 (exists). */
+/** Add an object owned by the IO configuration (not the app). For the
+ *  commandable types (AO, BO, MSO) value becomes the relinquish default.
+ *  As in the firmware, the value objects (AV, BV, MSV) have no priority
+ *  array: writes ignore the priority, a relinquish succeeds and changes
+ *  nothing. Returns 0, -1 (full) or -2 (exists). */
 int uc_stub_obj_add(uint32_t type, uint32_t instance, const char *name, double value);
 bool uc_stub_obj_exists(uint32_t type, uint32_t instance);
 bool uc_stub_obj_app_owned(uint32_t type, uint32_t instance);
 const char *uc_stub_obj_name(uint32_t type, uint32_t instance);
 /** Effective Present_Value; NAN if the object does not exist. */
 double uc_stub_obj_pv(uint32_t type, uint32_t instance);
-/** Priority array slot 1..16: true and *value if set. */
+/** Priority array slot 1..16 of a commandable object: true and *value if
+ *  set. */
 bool uc_stub_obj_prio(uint32_t type, uint32_t instance, uint32_t priority, double *value);
 /** Numeric non-PV property stored by the app; NAN if never written. */
 double uc_stub_obj_prop(uint32_t type, uint32_t instance, uint32_t prop);

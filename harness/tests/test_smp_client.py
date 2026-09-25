@@ -376,40 +376,104 @@ async def test_node_reload_io_and_objects(
 async def test_prop_read_write(smp_client: SmpClient, fake_node: FakeNode) -> None:
     fake_node.add_object("analog-value", 5, "Setpoint", pv=20.0)
     fake_node.add_object("binary-value", 2, "Enable")
+    fake_node.add_object("analog-output", 1, "Valve", pv=10.0)
     assert await smp_client.prop_read("analog-value", 5) == 20.0
     assert await smp_client.prop_read("av", 5, "object-name") == "Setpoint"
     assert await smp_client.prop_read(2, 5, 85) == 20.0
+    # commandable output: priority array
+    await smp_client.prop_write("analog-output", 1, "present-value", 22.5, priority=8)
+    assert await smp_client.prop_read("analog-output", 1) == 22.5
+    assert await smp_client.prop_read("analog-output", 1, "priority-array", index=8) == 22.5
+    assert await smp_client.prop_read("analog-output", 1, "priority-array", index=0) == 16
+    pa = await smp_client.prop_read("analog-output", 1, "priority-array")
+    assert pa == [None] * 7 + [22.5] + [None] * 8
+    await smp_client.prop_write("analog-output", 1, "present-value", None, priority=8)
+    assert await smp_client.prop_read("analog-output", 1) == 10.0
+    # value object: no priority array, the last write wins, NULL does nothing
     await smp_client.prop_write("analog-value", 5, "present-value", 22.5, priority=8)
-    assert await smp_client.prop_read("analog-value", 5) == 22.5
-    assert await smp_client.prop_read("analog-value", 5, "priority-array", index=8) == 22.5
-    assert await smp_client.prop_read("analog-value", 5, "priority-array", index=0) == 16
+    await smp_client.prop_write("analog-value", 5, "present-value", 23.0)
     await smp_client.prop_write("analog-value", 5, "present-value", None, priority=8)
-    assert await smp_client.prop_read("analog-value", 5) == 20.0
+    assert await smp_client.prop_read("analog-value", 5) == 23.0
+    with pytest.raises(SmpError) as exc:
+        await smp_client.prop_read("analog-value", 5, "priority-array")
+    assert exc.value.rc_name == "NOT_FOUND"
     await smp_client.prop_write("binary-value", 2, "present-value", 1)
     assert await smp_client.prop_read("binary-value", 2) == 1
+    await smp_client.prop_write("binary-value", 2, "present-value", False)
+    assert await smp_client.prop_read("binary-value", 2) == 0
     await smp_client.prop_write("analog-value", 5, "description", "room")
     assert await smp_client.prop_read("analog-value", 5, "description") == "room"
-    # like the firmware: an array read without index yields its first element
-    assert await smp_client.prop_read("device", 1001, "object-list") == "(analog-value, 5)"
-    assert await smp_client.prop_read("device", 1001, "object-list", index=0) == 4
-    assert await smp_client.prop_read("device", 1001, "object-list", index=3) == "(device, 1001)"
+    # arrays and lists without index come back whole
+    assert await smp_client.prop_read("device", 1001, "object-list") == [
+        "(analog-output, 1)", "(analog-value, 5)", "(binary-value, 2)", "(device, 1001)",
+        "(network-port, 1)"]
+    assert await smp_client.prop_read("device", 1001, "object-list", index=0) == 5
+    assert await smp_client.prop_read("device", 1001, "object-list", index=4) == "(device, 1001)"
+    assert await smp_client.prop_read("device", 1001, "device-address-binding") == []
     assert await smp_client.prop_read("analog-value", 5, "status-flags") == (
         "{false,false,false,false}"
     )
     with pytest.raises(SmpError) as exc:
         await smp_client.prop_read("analog-value", 99)
     assert (exc.value.group, exc.value.rc_name) == (66, "NOT_FOUND")
-    with pytest.raises(SmpError) as exc:
-        await smp_client.prop_write("analog-value", 5, "present-value", "text")
-    assert exc.value.rc_name == "INVALID"
-    with pytest.raises(SmpError) as exc:
-        await smp_client.prop_write("analog-value", 5, "object-type", 1)
-    assert exc.value.rc_name == "PERM"
-    with pytest.raises(SmpError) as exc:
-        await smp_client.prop_write("binary-value", 2, "present-value", 2)
-    assert exc.value.rc_name == "INVALID"
     with pytest.raises(HarnessError):
         await smp_client.prop_read("no-such-type", 1)
+
+
+@pytest.mark.parametrize(
+    ("obj", "prop", "value", "priority", "index", "rc_name"),
+    [
+        ("analog-value:5", "present-value", "text", None, None, "INVALID"),
+        ("analog-value:5", "present-value", float("nan"), None, None, "INVALID"),
+        ("analog-value:5", "present-value", float("inf"), None, None, "INVALID"),
+        ("analog-value:5", "present-value", 1e39, None, None, "INVALID"),
+        ("analog-value:5", "present-value", 1, 6, None, "PERM"),
+        ("analog-value:5", "present-value", 1, None, 1, "INVALID"),
+        ("analog-value:5", "object-type", 1, None, None, "PERM"),
+        ("analog-value:5", "units", 1.5, None, None, "INVALID"),
+        ("analog-value:5", "units", -1, None, None, "INVALID"),
+        ("analog-value:5", "description", "x" * 64, None, None, "INVALID"),
+        ("binary-value:2", "present-value", 2, None, None, "INVALID"),
+        ("binary-value:2", "present-value", 0.5, None, None, "INVALID"),
+        ("binary-output:1", "present-value", -1, 8, None, "INVALID"),
+        ("binary-output:1", "relinquish-default", 3, None, None, "INVALID"),
+        ("analog-output:1", "present-value", 1, 6, None, "PERM"),
+        ("analog-input:1", "present-value", 1, None, None, "PERM"),
+    ],
+)
+async def test_prop_write_rejected(
+    smp_client: SmpClient,
+    fake_node: FakeNode,
+    obj: str,
+    prop: str,
+    value: object,
+    priority: int | None,
+    index: int | None,
+    rc_name: str,
+) -> None:
+    """The conversions of docs/management-protocol.md "prop_write"."""
+    fake_node.add_object("analog-value", 5)
+    fake_node.add_object("binary-value", 2)
+    fake_node.add_object("binary-output", 1)
+    fake_node.add_object("analog-output", 1)
+    fake_node.add_object("analog-input", 1)
+    t, _, i = obj.partition(":")
+    with pytest.raises(SmpError) as exc:
+        await smp_client.prop_write(t, int(i), prop, value, priority, index)
+    assert (exc.value.group, exc.value.rc_name) == (66, rc_name)
+
+
+async def test_prop_read_limit(smp_client: SmpClient, fake_node: FakeNode) -> None:
+    """An array that does not fit one response is rc LIMIT (read it by index)."""
+    for i in range(60):
+        fake_node.add_object("binary-value", i)
+    with pytest.raises(SmpError) as exc:
+        await smp_client.prop_read("device", 1001, "object-list")
+    assert exc.value.rc_name == "LIMIT"
+    assert await smp_client.prop_read("device", 1001, "object-list", index=0) == 62
+    with pytest.raises(SmpError) as exc:
+        await smp_client.prop_read("binary-value", 1, "present-value", index=0)
+    assert exc.value.rc_name == "INVALID"  # index on a property that is not an array
 
 
 async def test_img_group(smp_client: SmpClient, fake_node: FakeNode) -> None:

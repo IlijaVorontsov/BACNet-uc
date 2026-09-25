@@ -14,7 +14,10 @@
  *   uc_app_on_write in the app.
  * - A watchdog terminates a callback that runs longer than
  *   CONFIG_UC_APP_WATCHDOG_MS (wasm_runtime_terminate); the app enters
- *   the "failed" state.
+ *   the "failed" state. Blocking host calls do not count. On native_sim
+ *   the timer cannot interrupt a busy loop (simulated time stands still);
+ *   an instruction budget per call (CONFIG_WAMR_INSTRUCTION_LIMIT) stops
+ *   it there.
  */
 #ifndef UC_APPS_H_
 #define UC_APPS_H_
@@ -75,10 +78,21 @@ size_t uc_apps_running(void);
 int uc_apps_status(size_t index, struct uc_app_status *out);
 int uc_apps_status_by_name(const char *name, struct uc_app_status *out);
 
+/** Name of the installed app that owns objects of owner id owner
+ *  (UC_OWNER_APP_BASE + slot, see uc_common.h) into buf (NUL-terminated).
+ *  Returns 0, -EINVAL (buf NULL or size 0), -ENOENT (not an app owner id,
+ *  or no app bound to that slot; buf is "") or -ENOSPC (truncated). The
+ *  slot index is not the uc_apps_status() index. Takes the manager lock:
+ *  not from the BACnet thread (a manager call may hold it while an app
+ *  thread waits for the BACnet executor). */
+int uc_apps_owner_name(uint8_t owner, char *buf, size_t size);
+
 struct uc_wasm_info {
 	bool interp;
+	/* AOT files load: CONFIG_WAMR_AOT=y and the pool is executable
+	 * (see CONFIG_WAMR_AOT, CONFIG_WAMR_AOT_MPU_EXEC) */
 	bool aot;
-	const char *aot_target; /* e.g. "thumbv7em", "" without AOT */
+	const char *aot_target; /* e.g. "thumbv7em", "" when aot is false */
 	uint32_t pool_total;
 	uint32_t pool_free;
 };

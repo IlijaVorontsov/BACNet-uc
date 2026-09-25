@@ -262,3 +262,41 @@ def test_default_backend(monkeypatch: pytest.MonkeyPatch) -> None:
             sim.default_backend()
     else:
         assert isinstance(sim.default_backend(), sim.Pyroute2Backend)
+
+
+async def test_rebooter_falls_back_to_smp(tmp_path: Path, fake_exe: Path,
+                                          monkeypatch: pytest.MonkeyPatch) -> None:
+    """Simulated nodes are restarted by the manager when it may (root for
+    netns), otherwise rebooted over SMP (the firmware restarts in place)."""
+    from bacnet_uc_harness.mcp_server import HarnessContext
+
+    caps = {"ok": True}
+    monkeypatch.setattr(sim, "_has_caps", lambda *c: caps["ok"])
+    s = m.load_system(EXAMPLES / "sim-demo.yaml")
+    ctx = HarnessContext(tmp_path)
+    mgr = sim.SimManager(ctx.state_dir() / "sim" / s.name, "netns", backend=FakeBackend())
+    mgr.start(s, fake_exe, startup_wait=0.1)
+    ctx.sims[s.name] = mgr
+    calls: list[str] = []
+
+    class FakeNodeConn:
+        async def reboot(self) -> None:
+            calls.append("smp reset")
+
+    async def node(name: str) -> Any:
+        return FakeNodeConn()
+
+    ctx.node = node  # type: ignore[method-assign]
+    try:
+        assert mgr.can_restart()
+        pid = mgr.state.nodes["sim-a"].pid if mgr.state else None
+        await ctx.rebooter(s)("sim-a")
+        assert mgr.state is not None and mgr.state.nodes["sim-a"].pid != pid and not calls
+        caps["ok"] = False
+        assert not mgr.can_restart()
+        await ctx.rebooter(s)("sim-a")
+        assert calls == ["smp reset"]
+    finally:
+        caps["ok"] = True
+        mgr.stop()
+        await ctx.close()

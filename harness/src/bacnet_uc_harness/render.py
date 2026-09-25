@@ -53,6 +53,10 @@ APPS_DIR = "/lfs/apps"
 LOG_DIR = "/lfs/log"
 #: CONFIG_UC_CONFIG_DOC_MAX default (bytes a configuration document may have)
 DOC_MAX = 8192
+#: staged document: ``uc_node reload`` activates ``<doc>.json.new`` (management-protocol.md)
+STAGED_SUFFIX = ".new"
+#: app heap of the generated uc-link instances (it does not allocate)
+LINK_HEAP_KB = 0
 STATIC_BINDINGS_MAX = 16
 PERM_ORDER = ("bacnet.local", "bacnet.remote", "io", "kv")
 SIM_SUBNET = "10.47.0"
@@ -212,7 +216,10 @@ def link_apps(system: System, node: str) -> list[AppSpec]:
             params[f"l{i}"] = link_line(system, lk)
         out.append(AppSpec(
             name=name, node=node, source=source, wasm=None, aot=False, autostart=True,
-            period_ms=max(100, min(lk.period_ms for lk in chunk)), heap_kb=8, stack_kb=4,
+            # uc-link does not allocate: no app heap (the WAMR heap must be a
+            # multiple of 4 KiB, uc-link/README.md)
+            period_ms=max(100, min(lk.period_ms for lk in chunk)), heap_kb=LINK_HEAP_KB,
+            stack_kb=4,
             perms=["bacnet.local", "bacnet.remote"], params=params, kind="uc-link",
             generated=True,
         ))

@@ -7,6 +7,7 @@
  */
 
 #include <errno.h>
+#include <float.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -454,11 +455,23 @@ static int numeric_property_tag(uint16_t object_type, uint32_t property)
 	}
 }
 
+static bool is_integral(double v)
+{
+	return trunc(v) == v;
+}
+
+/* Properties that carry the present value of a binary object (0/1 only). */
+static bool is_binary_pv(uint16_t object_type, uint32_t property)
+{
+	return uc_obj_type_is_binary(object_type) &&
+	       (property == PROP_PRESENT_VALUE || property == PROP_RELINQUISH_DEFAULT ||
+		property == PROP_PRIORITY_ARRAY);
+}
+
 int uc_value_from_double(uint16_t object_type, uint32_t property, double in,
 			 BACNET_APPLICATION_DATA_VALUE *out)
 {
 	int tag;
-	double t;
 
 	if (out == NULL) {
 		return -EINVAL;
@@ -471,11 +484,41 @@ int uc_value_from_double(uint16_t object_type, uint32_t property, double in,
 	}
 
 	memset(out, 0, sizeof(*out));
-	t = trunc(in);
 
 	switch (tag) {
 #if defined(BACAPP_REAL)
 	case BACNET_APPLICATION_TAG_REAL:
+#endif
+#if defined(BACAPP_DOUBLE)
+	case BACNET_APPLICATION_TAG_DOUBLE:
+#endif
+#if defined(BACAPP_UNSIGNED)
+	case BACNET_APPLICATION_TAG_UNSIGNED_INT:
+#endif
+#if defined(BACAPP_SIGNED)
+	case BACNET_APPLICATION_TAG_SIGNED_INT:
+#endif
+#if defined(BACAPP_ENUMERATED)
+	case BACNET_APPLICATION_TAG_ENUMERATED:
+#endif
+#if defined(BACAPP_BOOLEAN)
+	case BACNET_APPLICATION_TAG_BOOLEAN:
+#endif
+		/* numeric datatype: NaN and +-Inf are never valid values */
+		if (!isfinite(in)) {
+			return -EINVAL;
+		}
+		break;
+	default:
+		return -EBADMSG;
+	}
+
+	switch (tag) {
+#if defined(BACAPP_REAL)
+	case BACNET_APPLICATION_TAG_REAL:
+		if (fabs(in) > (double)FLT_MAX) {
+			return -EINVAL;
+		}
 		out->tag = BACNET_APPLICATION_TAG_REAL;
 		out->type.Real = (float)in;
 		return 0;
@@ -488,47 +531,47 @@ int uc_value_from_double(uint16_t object_type, uint32_t property, double in,
 #endif
 #if defined(BACAPP_UNSIGNED)
 	case BACNET_APPLICATION_TAG_UNSIGNED_INT:
-		if (isnan(in) || t < 0.0 || t > (double)UINT32_MAX) {
+		if (!is_integral(in) || in < 0.0 || in > (double)UINT32_MAX) {
 			return -EINVAL;
 		}
 		out->tag = BACNET_APPLICATION_TAG_UNSIGNED_INT;
-		out->type.Unsigned_Int = (BACNET_UNSIGNED_INTEGER)t;
+		out->type.Unsigned_Int = (BACNET_UNSIGNED_INTEGER)in;
 		return 0;
 #endif
 #if defined(BACAPP_SIGNED)
 	case BACNET_APPLICATION_TAG_SIGNED_INT:
-		if (isnan(in) || t < (double)INT32_MIN || t > (double)INT32_MAX) {
+		if (!is_integral(in) || in < (double)INT32_MIN || in > (double)INT32_MAX) {
 			return -EINVAL;
 		}
 		out->tag = BACNET_APPLICATION_TAG_SIGNED_INT;
-		out->type.Signed_Int = (int32_t)t;
+		out->type.Signed_Int = (int32_t)in;
 		return 0;
 #endif
 #if defined(BACAPP_ENUMERATED)
 	case BACNET_APPLICATION_TAG_ENUMERATED:
-		if (isnan(in)) {
+		if (is_binary_pv(object_type, property)) {
+			/* binary PV: exactly 0.0 inactive or 1.0 active */
+			if (in != 0.0 && in != 1.0) {
+				return -EINVAL;
+			}
+			out->tag = BACNET_APPLICATION_TAG_ENUMERATED;
+			out->type.Enumerated = (in == 1.0) ? BINARY_ACTIVE : BINARY_INACTIVE;
+			return 0;
+		}
+		if (!is_integral(in) || in < 0.0 || in > (double)UINT32_MAX) {
 			return -EINVAL;
 		}
 		out->tag = BACNET_APPLICATION_TAG_ENUMERATED;
-		if (property == PROP_PRESENT_VALUE || property == PROP_RELINQUISH_DEFAULT ||
-		    property == PROP_PRIORITY_ARRAY) {
-			/* binary PV: 0.0 inactive, anything else active */
-			out->type.Enumerated = (in != 0.0) ? BINARY_ACTIVE : BINARY_INACTIVE;
-			return 0;
-		}
-		if (t < 0.0 || t > (double)UINT32_MAX) {
-			return -EINVAL;
-		}
-		out->type.Enumerated = (uint32_t)t;
+		out->type.Enumerated = (uint32_t)in;
 		return 0;
 #endif
 #if defined(BACAPP_BOOLEAN)
 	case BACNET_APPLICATION_TAG_BOOLEAN:
-		if (isnan(in)) {
+		if (in != 0.0 && in != 1.0) {
 			return -EINVAL;
 		}
 		out->tag = BACNET_APPLICATION_TAG_BOOLEAN;
-		out->type.Boolean = (in != 0.0);
+		out->type.Boolean = (in == 1.0);
 		return 0;
 #endif
 	default:

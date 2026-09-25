@@ -10,9 +10,22 @@
  * Network: ENET QOS with the on-board PHY (RMII). The board default
  * zephyr,random-mac-address is replaced by a MAC derived from the silicon
  * unique ID so that the node keeps its DHCP lease across reboots.
+ *
+ * RAM: the firmware does not use cpu1, so cpu0 gets SRAM A-G (384 KiB at
+ * 0x20000000, the split suggested by the board's cpu0 dtsi) instead of the
+ * default 320 KiB; SRAM H (32 KiB, shared memory) stays unused. The WAMR
+ * pool (CONFIG_UC_APP_POOL_SIZE) fills SRAMX (96 KiB, chosen "uc,app-pool").
+ * Budget: frdm_mcxn947_mcxn947_cpu0.conf.
  */
 
 #include "io/frdm_mcxn947_mcxn947_cpu0.dtsi"
+
+&sram0 {
+	reg = <0x20000000 DT_SIZE_K(384)>;
+};
+
+/* cpu1's RAM (SRAM G) is now part of sram0 */
+/delete-node/ &sramg;
 
 &enet_mac {
 	/delete-property/ zephyr,random-mac-address;
@@ -20,6 +33,10 @@
 };
 
 / {
+	chosen {
+		uc,app-pool = &sramx;
+	};
+
 	fstab {
 		compatible = "zephyr,fstab";
 

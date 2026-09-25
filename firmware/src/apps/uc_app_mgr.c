@@ -39,6 +39,19 @@
  *   endless loops end there. Host calls that block on the network or the
  *   file system pause the timer (uc_app_wd_pause/resume): only execution
  *   time counts.
+ *   native_sim: simulated time advances only while the simulated CPU is
+ *   idle, so the timer cannot expire during a callback that never blocks
+ *   (a busy loop would hang the node). There every call gets an
+ *   instruction budget instead (CONFIG_WAMR_INSTRUCTION_LIMIT, WAMR
+ *   instruction metering, interpreter only).
+ *
+ * AOT (CONFIG_WAMR_AOT)
+ *   AOT code runs from the pool. uc_apps_init() makes the pool executable
+ *   or checks that it is (wamr_zephyr_exec_enable(): mprotect() on
+ *   native_sim, MPU check on the boards, XN cleared only with
+ *   CONFIG_WAMR_AOT_MPU_EXEC); otherwise AOT files are refused (-ENOTSUP).
+ *   WAMR's os_mmap() blocks are 16-byte aligned (wamr_zephyr_mmap_align_init())
+ *   for the section alignment AOT code expects.
  *
  * Events
  *   COV notifications (uc_app_host_api.c) and writes to objects owned by an
@@ -62,6 +75,9 @@
 #include <zephyr/sys/util.h>
 
 #include <wasm_export.h>
+#if defined(CONFIG_WAMR_AOT)
+#include <wamr_zephyr.h>
+#endif
 
 #include "uc/uc_apps.h"
 #include "uc/uc_bacnet.h"
@@ -122,7 +138,14 @@ BUILD_ASSERT(UC_OWNER_APP_BASE + CONFIG_UC_APPS_MAX <= UINT8_MAX, "owner ids are
 #define APP_POOL_REGION  "RAM"
 #endif
 
-static uint8_t __aligned(8) wamr_pool[CONFIG_UC_APP_POOL_SIZE] APP_POOL_SECTION;
+/* native_sim with AOT: whole host pages, made executable with mprotect() */
+#if defined(CONFIG_ARCH_POSIX) && defined(CONFIG_WAMR_AOT)
+#define APP_POOL_ALIGN 4096
+#else
+#define APP_POOL_ALIGN 8
+#endif
+
+static uint8_t __aligned(APP_POOL_ALIGN) wamr_pool[CONFIG_UC_APP_POOL_SIZE] APP_POOL_SECTION;
 
 K_THREAD_STACK_ARRAY_DEFINE(app_stacks, CONFIG_UC_APPS_MAX, CONFIG_UC_APP_THREAD_STACK_SIZE);
 
@@ -141,6 +164,8 @@ static struct k_spinlock state_lock;
 
 static bool wamr_ready;
 static char aot_target[24];
+/* AOT files can run: CONFIG_WAMR_AOT and an executable pool */
+static bool aot_ok;
 
 /* Exports looked up in every instance. */
 enum app_export {
@@ -397,7 +422,7 @@ static int module_check_header(const uint8_t hdr[8])
 		return (memcmp(hdr, wasm_hdr, sizeof(wasm_hdr)) == 0) ? 0 : -EILSEQ;
 	}
 	if (memcmp(hdr, aot_magic, sizeof(aot_magic)) == 0) {
-		return IS_ENABLED(CONFIG_WAMR_AOT) ? 0 : -ENOTSUP;
+		return aot_ok ? 0 : -ENOTSUP;
 	}
 
 	return -EILSEQ;
@@ -622,7 +647,9 @@ static int app_load(struct uc_app_slot *s, struct app_rt *rt)
 	rc = module_check_header(rt->image);
 	if (rc < 0) {
 		slot_error(s, "%s: %s", s->cfg.file,
-			   (rc == -ENOTSUP) ? "AOT modules not supported" : "not a WASM module");
+			   (rc != -ENOTSUP)                ? "not a WASM module"
+			   : IS_ENABLED(CONFIG_WAMR_AOT) ? "AOT: WAMR pool not executable"
+							 : "AOT modules not supported");
 		return rc;
 	}
 
@@ -656,6 +683,10 @@ static int app_load(struct uc_app_slot *s, struct app_rt *rt)
 		return -ENOMEM;
 	}
 	wasm_runtime_set_user_data(rt->env, s);
+#if defined(CONFIG_WAMR_INSTRUCTION_LIMIT) && (CONFIG_WAMR_INSTRUCTION_LIMIT > 0)
+	/* per call; see "Watchdog" above */
+	wasm_runtime_set_instruction_count_limit(rt->env, CONFIG_WAMR_INSTRUCTION_LIMIT);
+#endif
 
 	rc = check_exports(s, rt);
 	if (rc < 0) {
@@ -1313,6 +1344,10 @@ int uc_apps_init(void)
 	args.native_symbols = uc_app_host_natives(&n_natives);
 	args.n_native_symbols = n_natives;
 	args.max_thread_num = 1;
+#if defined(CONFIG_WAMR_AOT)
+	/* every os_mmap() block 16-byte aligned (AOT section alignment) */
+	wamr_zephyr_mmap_align_init();
+#endif
 	wamr_ready = wasm_runtime_full_init(&args);
 	if (!wamr_ready) {
 		LOG_ERR("WAMR init failed (pool %u bytes)", (unsigned int)sizeof(wamr_pool));
@@ -1320,6 +1355,20 @@ int uc_apps_init(void)
 	}
 
 	aot_target_init();
+#if defined(CONFIG_WAMR_AOT)
+	if (wamr_ready) {
+		int err = wamr_zephyr_exec_enable(wamr_pool, sizeof(wamr_pool),
+						  IS_ENABLED(CONFIG_WAMR_AOT_MPU_EXEC));
+
+		aot_ok = (err == 0);
+		if (!aot_ok) {
+			LOG_WRN("AOT files refused: WAMR pool not executable (%d)%s", err,
+				IS_ENABLED(CONFIG_WAMR_AOT_MPU_EXEC)
+					? ""
+					: ", see CONFIG_WAMR_AOT_MPU_EXEC");
+		}
+	}
+#endif
 	for (size_t i = 0; i < ARRAY_SIZE(slots); i++) {
 		slot_init(&slots[i], (uint8_t)i);
 	}
@@ -1359,7 +1408,7 @@ int uc_apps_init(void)
 
 	LOG_INF("WAMR %s interpreter%s, pool %u bytes (%s), %u apps installed",
 		IS_ENABLED(CONFIG_WAMR_FAST_INTERP) ? "fast" : "classic",
-		IS_ENABLED(CONFIG_WAMR_AOT) ? " + AOT" : "", (unsigned int)sizeof(wamr_pool),
+		aot_ok ? " + AOT" : "", (unsigned int)sizeof(wamr_pool),
 		APP_POOL_REGION, (unsigned int)n_installed);
 
 	return rc;
@@ -1762,8 +1811,9 @@ void uc_apps_wasm_info(struct uc_wasm_info *out)
 
 	memset(out, 0, sizeof(*out));
 	out->interp = true;
-	out->aot = IS_ENABLED(CONFIG_WAMR_AOT);
-	out->aot_target = aot_target;
+	/* false when AOT is built in but the pool is not executable */
+	out->aot = aot_ok;
+	out->aot_target = aot_ok ? aot_target : "";
 	out->pool_total = sizeof(wamr_pool);
 
 	if (wamr_ready && wasm_runtime_get_mem_alloc_info(&mi)) {

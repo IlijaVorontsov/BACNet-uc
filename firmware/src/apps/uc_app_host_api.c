@@ -6,7 +6,9 @@
  * Every function runs in the calling application's thread; the slot comes
  * from the exec env's user data. Permissions are those of the app's
  * apps.json entry. Errors are returned as UC_ERR_* (uc_err_to_api()) and
- * counted in the app status.
+ * counted in the app status ("errors"), except UC_ERR_NOT_FOUND of the
+ * lookups uc_param_get, uc_param_get_number and uc_kv_get: a missing key
+ * is how an app learns to use its default.
  *
  * Pointers
  *   Pointer arguments are declared as plain i32 ("i") in the WAMR
@@ -106,6 +108,13 @@ static int32_t ret_api(struct uc_app_slot *s, int32_t rc)
 static int32_t ret_errno(struct uc_app_slot *s, int err)
 {
 	return ret_api(s, (int32_t)uc_err_to_api(err));
+}
+
+/* Result of a lookup (uc_param_get*, uc_kv_get): a missing key is an
+ * answer the app expects (defaults), not a failure, and is not counted. */
+static int32_t ret_lookup(struct uc_app_slot *s, int32_t rc)
+{
+	return (rc == UC_ERR_NOT_FOUND) ? rc : ret_api(s, rc);
 }
 
 static bool has_perm(const struct uc_app_slot *s, uint32_t perm)
@@ -305,7 +314,7 @@ static int32_t h_param_get(wasm_exec_env_t env, uint32_t key_off, uint32_t key_l
 	}
 	value = param_lookup(env, key_off, key_len, &err);
 	if (value == NULL) {
-		return ret_api(s, err);
+		return ret_lookup(s, err);
 	}
 
 	vlen = strlen(value);
@@ -337,7 +346,7 @@ static int32_t h_param_get_number(wasm_exec_env_t env, uint32_t key_off, uint32_
 	}
 	value = param_lookup(env, key_off, key_len, &err);
 	if (value == NULL) {
-		return ret_api(s, err);
+		return ret_lookup(s, err);
 	}
 
 	d = strtod(value, &end);
@@ -904,8 +913,12 @@ static int32_t h_kv_get(wasm_exec_env_t env, uint32_t key_off, uint32_t key_len,
 	if (rc == -EISDIR) {
 		rc = -ENOENT;
 	}
+	if (rc == -ENOENT) {
+		/* never stored: not counted as an error */
+		return ret_lookup(s, (int32_t)uc_err_to_api(rc));
+	}
 	if (rc < 0) {
-		return ret_errno(s, (rc == -ENOENT) ? rc : -EIO);
+		return ret_errno(s, -EIO);
 	}
 
 	return (int32_t)size;

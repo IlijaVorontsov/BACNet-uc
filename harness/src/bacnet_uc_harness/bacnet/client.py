@@ -471,6 +471,40 @@ class BacnetClient:
             raise HarnessError(str(exc)) from None
         await self.confirmed_request(address, enums.SERVICE_CONFIRMED_WRITE_PROPERTY, data)
 
+    async def device_communication_control(
+        self,
+        address: Address | str,
+        enable: str | int = "enable",
+        duration_min: int | None = None,
+        password: str | None = None,
+    ) -> None:
+        """DeviceCommunicationControl (``enable``, ``disable``,
+        ``disable-initiation``). BACnet-uc nodes require the ``bacnet.password``
+        of their device.json (security/password-failure otherwise)."""
+        state = _choice(enable, enums.DCC_ENABLE_DISABLE, "enable-disable")
+        data = codec.device_communication_control_request_data(state, duration_min, password)
+        await self.confirmed_request(
+            address, enums.SERVICE_CONFIRMED_DEVICE_COMMUNICATION_CONTROL, data
+        )
+
+    async def reinitialize_device(
+        self, address: Address | str, state: str | int = "warmstart", password: str | None = None
+    ) -> None:
+        """ReinitializeDevice (``coldstart``, ``warmstart``, ...); needs the
+        node's ``bacnet.password``. The node restarts after the SimpleACK."""
+        st = _choice(state, enums.REINITIALIZED_STATES, "reinitialized state")
+        data = codec.reinitialize_device_request_data(st, password)
+        await self.confirmed_request(address, enums.SERVICE_CONFIRMED_REINITIALIZE_DEVICE, data)
+
+
+def _choice(value: str | int, table: dict[str, int], what: str) -> int:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    try:
+        return table[str(value).lower()]
+    except KeyError:
+        raise HarnessError(f"unknown {what} {value!r} (one of {', '.join(table)})") from None
+
 
 _ENUM_TEXT_TABLES: dict[str, dict[str, int]] = {
     "units": enums.UNITS,

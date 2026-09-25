@@ -8,11 +8,24 @@
 #          control, local output, remote sensor on sim-a) and the uc-link
 #          instance for the two links
 #
+# The netns mode needs root (CAP_NET_ADMIN + CAP_SYS_ADMIN) for sim up and
+# sim down, and system apply restarts the nodes inside their namespaces after
+# the first device.json (new instance and address): run these with sudo from
+# the same directory (the state lives in ./.bacnet-uc), or everything as root.
+# (Without root, apply reboots the nodes over SMP instead: the native_sim
+# firmware restarts its process in place.) system test only talks to
+# 10.47.0.x over the bridge bnuc0.
+#
 #   bacnet-uc firmware build native_sim/native/64
-#   sudo bacnet-uc sim up harness/examples/systems/sim-demo.yaml      # netns, root
-#   bacnet-uc system apply harness/examples/systems/sim-demo.yaml --no-dry-run --reboot
+#   sudo bacnet-uc sim up harness/examples/systems/sim-demo.yaml
+#   sudo bacnet-uc system apply harness/examples/systems/sim-demo.yaml --no-dry-run
 #   bacnet-uc system test harness/examples/systems/sim-demo.yaml
 #   sudo bacnet-uc sim down harness/examples/systems/sim-demo.yaml
+#
+# apply reboots the nodes that need it by default (--no-reboot skips that);
+# sim up --apply does up and apply in one step.
+# Both nodes get a BACnet password (bacnet.password): the firmware refuses
+# DeviceCommunicationControl and ReinitializeDevice without one.
 apiVersion: bacnet-uc/v1
 kind: System
 metadata:
@@ -24,6 +37,7 @@ nodes:
     board: native_sim/native/64
     transport: {kind: sim}
     device: {instance: 2001, name: sim-a}
+    bacnet: {password: sim-demo-pw}      # DM-DCC-B / DM-RD-B password
     io:
       - {channel: ai0, type: analog-input, instance: 1, name: Room Temperature,
          units: degrees-celsius, scale: 0.01, cov_increment: 0.1, sample_ms: 100}
@@ -33,6 +47,7 @@ nodes:
     board: native_sim/native/64
     transport: {kind: sim}
     device: {instance: 2002, name: sim-b}
+    bacnet: {password: "{{ nodes.sim-a.bacnet.password }}"}
     io:
       - {channel: ao0, type: analog-output, instance: 1, name: Valve, units: percent,
          min: 0, max: 100}
@@ -55,14 +70,19 @@ apps:
       poll_ms: 1000
 
 links:
+  # binary-output:1 is commandable: uc-link writes it at priority 12
   - from: sim-a/binary-input:1
     to: sim-b/binary-output:1
     mode: cov
     period_ms: 500
+    priority: 12
+  # analog-value:20 (created by uc-link) is a value object without priority
+  # array: priority 0
   - from: sim-a/analog-input:1
     to: sim-b/analog-value:20
     mode: poll
     period_ms: 500
+    priority: 0
 
 tests:
   - name: switch-drives-lamp

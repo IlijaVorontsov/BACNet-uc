@@ -284,20 +284,23 @@ class SerialTransport(SmpTransport):
     ``device`` may also be a pyserial URL (``socket://host:port``,
     ``rfc2217://...``).
 
-    ``line_delay`` paces the lines of a multi-line packet: the node holds
-    every received line in one of ``CONFIG_MCUMGR_TRANSPORT_SHELL_RX_BUF_COUNT``
-    (default 2) buffers until the shell thread has processed it, and drops
-    lines ("smp_shell: Failed to alloc SMP buf") when they arrive faster.
-    Measured on native_sim: 0 s loses the third line of a 3-line packet,
-    10 ms and more work; the default is 20 ms.
+    ``mtu`` is the largest request frame (the client also limits it to the
+    node's ``buf_size``, 1152). The node holds every received line in one of
+    ``CONFIG_MCUMGR_TRANSPORT_SHELL_RX_BUF_COUNT`` buffers until the shell
+    thread has processed it and drops lines ("smp_shell: Failed to alloc SMP
+    buf") when all are in use. The firmware has 16 (prj.conf), a full
+    1152-byte request is 13 lines, so no pacing is needed (verified on
+    native_sim over the console pty at MTU 512, 1024 and 1152). For firmware
+    built with the Zephyr default of 2 buffers use ``mtu=256`` and a
+    ``line_delay`` of 0.02 s (pause between the lines of a packet).
     """
 
     def __init__(
         self,
         device: str,
         baud: int = 115200,
-        mtu: int = 256,
-        line_delay: float = 0.02,
+        mtu: int = 1152,
+        line_delay: float = 0.0,
         on_console: Callable[[str], None] | None = None,
     ) -> None:
         self.device = device

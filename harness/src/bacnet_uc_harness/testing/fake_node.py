@@ -9,31 +9,62 @@
   canned commands) and the custom groups ``uc_app`` (64), ``uc_io`` (65) and
   ``uc_node`` (66) with the documented keys and rc values;
 - BACnet/IP: Who-Is -> I-Am (unicast to the requester by default),
-  ReadProperty and WriteProperty on the in-memory :attr:`FakeNode.objects`
-  (priority arrays for commandable objects), Error/Reject/Abort like a
-  bacnet-stack device.
+  ReadProperty, WriteProperty, DeviceCommunicationControl and
+  ReinitializeDevice on the in-memory :attr:`FakeNode.objects`,
+  Error/Reject/Abort like a bacnet-stack device.
 
 The IO model follows ``firmware/src/io/uc_io.c``: a default catalog like
 native_sim (di0, di1, do0, do1, ai0, ai1, ao0, ao1, all simulated),
 ``uc_node reload io`` binds channels to BACnet objects from
 ``/lfs/cfg/io.json``, inputs update the Present_Value of their object (unless
 Out_Of_Service), outputs follow the Present_Value of their object, and
-forcing overrides a channel until released. WebAssembly apps are not
-executed: install/start/stop/remove only track the documented state.
+forcing overrides a channel until released (io.md section 5). WebAssembly
+apps are not executed: install/start/stop/remove only track the documented
+state.
 
 Behaviour copied from the firmware as observed on native_sim (Zephyr
-4.4.2): objects are listed by type and instance and include
-``network-port:1``; ``prop_read`` of an array without index returns the first
-element; values without a natural CBOR type are rendered as text
-(``"(analog-input, 1)"``, ``"{false,false,false,false}"``); ``io catalog``
-and ``app list`` answer with ``total`` and accept ``offset``/``count``; shell
-output uses ``\r\n`` line ends.
+4.4.2, the integration build):
+
+- configuration documents are validated in two stages like
+  ``uc_config.c`` + ``uc_io.c``: a *parse* stage (JSON syntax, schema
+  version, field types and ranges, table limits, duplicate objects,
+  ``bacnet.password`` 1..20 printable ASCII) whose failure rejects the whole
+  document (rc ``INVALID``), and an *apply* stage in which an ``io.json``
+  point on an unknown channel, of the wrong kind, on a channel or object that
+  is already bound, or an ``ao`` point with ``scale`` 0 is skipped (the
+  reload still succeeds);
+- staged documents: ``reload`` activates ``<doc>.json.new`` when it passes
+  the parse stage and deletes it otherwise (see :meth:`FakeNode._reload`);
+- ``uc_app list``, ``uc_io catalog`` and ``uc_node objects`` answer with
+  ``total``, accept ``offset``/``count`` and stop early when the response
+  (at most 1016 bytes of CBOR, the UDP MTU minus the SMP header) is full;
+  ``objects`` returns 8 entries by default;
+- objects are listed by type and instance and include ``network-port:1``;
+  analog/binary/multi-state *output* objects are commandable (priority
+  array, Relinquish_Default, priority 6 rejected), *value* objects are not:
+  a write sets Present_Value whatever the priority, a NULL write succeeds
+  without effect, analog-value rejects priority 6, and reading their
+  Priority_Array/Relinquish_Default is ``unknown-property`` (rc
+  ``NOT_FOUND``);
+- ``prop_read`` without ``index`` returns an array or list property whole
+  (a CBOR array, rc ``LIMIT`` when it does not fit one response); ``index``
+  on any other property is ``INVALID``, index 0 is the array size; values
+  without a natural CBOR type are rendered as text (``"(analog-input, 1)"``,
+  ``"{false,false,false,false}"``);
+- ``prop_write`` rejects NaN/infinity, fractions and negative numbers for
+  integer datatypes, anything but 0/1 for binary present values, text for
+  numeric properties and text longer than 63 bytes (rc ``INVALID``);
+- ``bacnet.password`` of ``device.json`` guards DeviceCommunicationControl
+  and ReinitializeDevice (``CONFIG_UC_BACNET_REQUIRE_PASSWORD=y``: without a
+  password both are refused with security/password-failure);
+- shell output uses ``\r\n`` line ends.
 
 Deliberate simplifications: no WASM runtime (a module only needs a valid
 header; ``ticks`` are derived from the uptime and ``period_ms``), outputs
 follow Present_Value immediately (the firmware scans every 100 ms), no COV,
-no ReadPropertyMultiple, stricter range checks on prop_write than the
-firmware, no network change on reboot.
+no ReadPropertyMultiple, no CreateObject/DeleteObject (like the default
+firmware: Reject unrecognized-service), DeviceCommunicationControl is only
+recorded (:attr:`FakeNode.dcc_state`), no network change on reboot.
 """
 
 from __future__ import annotations
@@ -42,11 +73,14 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import re
 import time
 import zlib
 from dataclasses import dataclass
 from typing import Any
+
+import cbor2
 
 from bacnet_uc_harness.bacnet import codec, enums
 from bacnet_uc_harness.bacnet.codec import BitString, Double, Enumerated, ObjectId
@@ -63,10 +97,22 @@ FS_DL_CHUNK = 512
 SMP_BUF_SIZE = 1152  # CONFIG_MCUMGR_TRANSPORT_NETBUF_SIZE in prj.conf
 SMP_BUF_COUNT = 2  # native_sim build
 OBJECTS_COUNT_DEFAULT = 8
+#: UC_MGMT_RSP_MAX: CBOR payload of one response (UDP MTU 1024 - 8 byte header)
+RSP_MAX = 1024 - 8
+#: UC_MGMT_RSP_RESERVE: bytes a list response keeps free after its last element
+RSP_RESERVE = 8
+IO_POINTS_MAX = 32  # CONFIG_UC_IO_POINTS_MAX
+CONFIG_DOC_MAX = 8192  # CONFIG_UC_CONFIG_DOC_MAX
+INSTANCE_MAX = 4194302
+PASSWORD_MAX = 20
+TEXT_WRITE_MAX = 63  # CharacterString bytes accepted by prop_write
+LOG_LEVELS = ("err", "wrn", "inf", "dbg")
 
 CFG_DEVICE = "/lfs/cfg/device.json"
 CFG_IO = "/lfs/cfg/io.json"
 CFG_APPS = "/lfs/cfg/apps.json"
+#: staged configuration document: ``uc_node reload`` activates ``<doc>.json.new``
+STAGED_SUFFIX = ".new"
 
 PERMS = ("bacnet.local", "bacnet.remote", "io", "kv")
 _APP_NAME_RE = re.compile(r"^[a-z0-9_-]{1,23}$")
@@ -95,12 +141,27 @@ _KIND_TYPES = {
     "ao": ("analog-output", "analog-value"),
 }
 
+# io.schema.json "type" enum (uc_config.c io_type_allowed)
+_IO_TYPES = (
+    "analog-input",
+    "analog-output",
+    "analog-value",
+    "binary-input",
+    "binary-output",
+    "binary-value",
+    "multi-state-input",
+)
+
+# commandable (priority array) in the pinned bacnet-stack; the value objects
+# AV/BV/MSV have no priority array there
 _COMMANDABLE = {
     enums.OBJECT_ANALOG_OUTPUT,
-    enums.OBJECT_ANALOG_VALUE,
     enums.OBJECT_BINARY_OUTPUT,
-    enums.OBJECT_BINARY_VALUE,
     enums.OBJECT_MULTI_STATE_OUTPUT,
+}
+_VALUE_OBJECTS = {
+    enums.OBJECT_ANALOG_VALUE,
+    enums.OBJECT_BINARY_VALUE,
     enums.OBJECT_MULTI_STATE_VALUE,
 }
 _INPUTS = {enums.OBJECT_ANALOG_INPUT, enums.OBJECT_BINARY_INPUT, enums.OBJECT_MULTI_STATE_INPUT}
@@ -113,6 +174,30 @@ _MULTISTATE = {
 _ANALOG = {enums.OBJECT_ANALOG_INPUT, enums.OBJECT_ANALOG_OUTPUT, enums.OBJECT_ANALOG_VALUE}
 
 P = enums.PROPERTIES
+
+# BACnetLIST properties (whole reads only: an index is INVALID); the other
+# members of ARRAY_OR_LIST_PROPERTIES are BACnetARRAYs
+_LISTS = frozenset(
+    P[n]
+    for n in (
+        "active-cov-subscriptions",
+        "alarm-values",
+        "date-list",
+        "device-address-binding",
+        "fault-values",
+        "list-of-group-members",
+        "list-of-object-property-references",
+        "log-buffer",
+        "manual-slave-address-binding",
+        "recipient-list",
+        "slave-address-binding",
+        "time-synchronization-recipients",
+        "utc-time-synchronization-recipients",
+    )
+    if n in P
+)
+_ARRAYS = codec.ARRAY_OR_LIST_PROPERTIES - _LISTS
+
 _WRITABLE = {
     P["present-value"],
     P["out-of-service"],
@@ -251,6 +336,7 @@ class FakeNode:
         catalog: tuple[tuple[str, str, float, str], ...] = DEFAULT_CATALOG,
         iam_broadcast: tuple[str, int] | None = None,
         wasm_aot: bool = False,
+        require_password: bool = True,
     ) -> None:
         self.device_instance = device_instance
         self.device_name = device_name
@@ -261,6 +347,17 @@ class FakeNode:
         self.fw = fw
         self.vendor_id = vendor_id
         self.wasm_aot = wasm_aot
+        #: CONFIG_UC_BACNET_REQUIRE_PASSWORD: refuse DCC/ReinitializeDevice
+        #: while device.json has no bacnet.password
+        self.require_password = require_password
+        #: bacnet.password of the active device.json ("" = none)
+        self.bacnet_password = ""
+        #: last accepted DeviceCommunicationControl: "enable", "disable", ...
+        self.dcc_state = "enable"
+        #: accepted ReinitializeDevice requests (state names)
+        self.reinitialized: list[str] = []
+        #: log.level of the active device.json
+        self.log_level = "inf"
         #: I-Am broadcast destination, e.g. ("255.255.255.255", 47808); None =
         #: unicast I-Am to the Who-Is sender
         self.iam_broadcast = iam_broadcast
@@ -297,6 +394,7 @@ class FakeNode:
         self._img_sha = b""
         self._boot_time = time.monotonic()
         self._device_cfg: dict[str, Any] = {}
+        self._boot_device_cfg: dict[str, Any] = {}
         self._smp: tuple[asyncio.DatagramTransport, _SmpProtocol] | None = None
         self._bn: tuple[asyncio.DatagramTransport, _BacnetProtocol] | None = None
         self._create_device_object()
@@ -430,7 +528,9 @@ class FakeNode:
         number_of_states: int = 2,
     ) -> dict[int, Any]:
         """Create a standard object (analog, binary or multi-state) and return
-        its property map. Commandable types get a priority array."""
+        its property map. Commandable types (analog/binary/multi-state
+        output) get a priority array and Relinquish_Default; ``pv`` is their
+        Relinquish_Default, else the Present_Value."""
         t = enums.object_type_number(obj_type)
         key = (t, int(instance))
         if key in self.objects:
@@ -554,103 +654,143 @@ class FakeNode:
 
     # --- configuration documents ------------------------------------------------------------
 
-    def _load_json(self, path: str) -> dict[str, Any] | None:
-        data = self.files.get(path)
-        if data is None:
-            return None
-        try:
-            doc = json.loads(data.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            log.warning("%s: %s", path, exc)
-            raise _Rc(g.UC_RC_INVALID) from None
-        if not isinstance(doc, dict) or doc.get("schema") != 1:
+    def _parse_doc(self, doc: str, data: bytes) -> dict[str, Any]:
+        """Parse stage of ``uc_config.c``: the checked document, or
+        ``_Rc(INVALID)`` (syntax, schema version, field types/ranges, table
+        limits, duplicate objects, size > ``CONFIG_UC_CONFIG_DOC_MAX``)."""
+        if len(data) > CONFIG_DOC_MAX:
             raise _Rc(g.UC_RC_INVALID)
-        return doc
+        try:
+            cfg = json.loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            log.warning("%s.json: %s", doc, exc)
+            raise _Rc(g.UC_RC_INVALID) from None
+        if not isinstance(cfg, dict) or not _is_int(cfg.get("schema"), 1, 1):
+            raise _Rc(g.UC_RC_INVALID)
+        if doc == "device":
+            _check_device_doc(cfg)
+        elif doc == "io":
+            _check_io_doc(cfg)
+        else:
+            entries = cfg.get("apps")
+            if not isinstance(entries, list) or len(entries) > APPS_MAX:
+                raise _Rc(g.UC_RC_INVALID)
+            manifests = [self._check_manifest(_manifest_from_entry(e)) for e in entries]
+            if len({m["name"] for m in manifests}) != len(manifests):
+                raise _Rc(g.UC_RC_INVALID)
+            cfg = {"schema": 1, "apps": manifests}
+        return cfg
 
     def _reload(self, doc: str, boot: bool = False) -> bool:
-        if doc == "device":
-            return self._reload_device(boot)
-        if doc == "io":
-            self._reload_io()
-            return False
-        if doc == "apps":
-            self._reload_apps()
-            return False
-        raise _Rc(g.UC_RC_INVALID)
+        """Load and apply one document like ``uc_config_reload()`` + the apply
+        step of ``uc_node reload`` (at ``boot``: ``uc_config_init()``).
 
-    def _reload_device(self, boot: bool) -> bool:
-        cfg = self._load_json(CFG_DEVICE)
-        if cfg is None:
-            cfg = {"schema": 1}
-        dev = cfg.get("device", {})
-        if not isinstance(dev, dict):
+        A staged ``<path>.new`` that passes the parse stage replaces the
+        active document and is applied; one that does not is deleted, the
+        active document and the running configuration stay and the reload
+        fails with ``INVALID`` (at boot the active document is loaded
+        instead). Without a staged document the active one is re-read; a
+        missing one yields the defaults, an invalid one fails the reload (at
+        boot: defaults). Errors of the apply stage are raised after the
+        document was activated.
+        """
+        path = {"device": CFG_DEVICE, "io": CFG_IO, "apps": CFG_APPS}.get(doc)
+        if path is None:
             raise _Rc(g.UC_RC_INVALID)
-        reboot = False
-        old = self._device_cfg
+        cfg: dict[str, Any] | None = None
+        staged = self.files.get(path + STAGED_SUFFIX)
+        if staged is not None:
+            try:
+                cfg = self._parse_doc(doc, staged)
+            except _Rc:
+                del self.files[path + STAGED_SUFFIX]
+                log.warning("%s%s rejected, deleting it", path, STAGED_SUFFIX)
+                if not boot:
+                    raise
+            else:
+                self.files[path] = self.files.pop(path + STAGED_SUFFIX)
+        if cfg is None:
+            data = self.files.get(path)
+            if data is None:
+                cfg = {"schema": 1}
+            else:
+                try:
+                    cfg = self._parse_doc(doc, data)
+                except _Rc:
+                    if not boot:
+                        raise
+                    log.warning("%s rejected, using defaults", path)
+                    cfg = {"schema": 1}
+        if doc == "device":
+            return self._apply_device(cfg, boot)
+        if doc == "io":
+            self._apply_io(cfg)
+            return False
+        self._apply_apps(cfg)
+        return False
+
+    def _apply_device(self, cfg: dict[str, Any], boot: bool) -> bool:
+        """Apply device.json: identity texts, password and log level at once;
+        ``True`` (reboot required) when the instance, the UDP port or the
+        network settings differ from what the node booted with."""
+        dev = cfg.get("device", {})
         if boot:
-            if "instance" in dev:
-                new_instance = int(dev["instance"])
-                if new_instance != self.device_instance:
-                    props = self.objects.pop(self.device_key)
-                    self.owners.pop(self.device_key, None)
-                    self.device_instance = new_instance
-                    props[P["object-identifier"]] = ObjectId(*self.device_key)
-                    self.objects[self.device_key] = props
-                    self.owners[self.device_key] = "system"
-        else:
-            for section in ("network", "bacnet"):
-                if cfg.get(section) != old.get(section):
-                    reboot = True
-            if int(dev.get("instance", self.device_instance)) != self.device_instance:
-                reboot = True
+            self._boot_device_cfg = cfg
+            new_instance = int(dev.get("instance", self.device_instance))
+            if new_instance != self.device_instance:
+                props = self.objects.pop(self.device_key)
+                self.owners.pop(self.device_key, None)
+                self.device_instance = new_instance
+                props[P["object-identifier"]] = ObjectId(*self.device_key)
+                self.objects[self.device_key] = props
+                self.owners[self.device_key] = "system"
+        boot_cfg = self._boot_device_cfg
+        reboot = (
+            int(dev.get("instance", self.device_instance)) != self.device_instance
+            or _udp_port(cfg) != _udp_port(boot_cfg)
+            or _net_key(cfg) != _net_key(boot_cfg)
+        )
         props = self.objects[self.device_key]
         if "name" in dev:
             self.device_name = str(dev["name"])
-        if "description" in dev:
-            self.description = str(dev["description"])
-        if "location" in dev:
-            self.location = str(dev["location"])
+        self.description = str(dev.get("description", ""))
+        self.location = str(dev.get("location", ""))
         props[P["object-name"]] = self.device_name
         props[P["description"]] = self.description
         props[P["location"]] = self.location
+        # applied immediately (uc_bn_node.c: at start and on every reload)
+        self.bacnet_password = str(cfg.get("bacnet", {}).get("password", ""))
+        self.log_level = str(cfg.get("log", {}).get("level", "inf"))
         self._device_cfg = cfg
         return reboot
 
-    def _reload_io(self) -> None:
-        cfg = self._load_json(CFG_IO)
-        points = [] if cfg is None else cfg.get("points", [])
-        if not isinstance(points, list) or len(points) > 32:
-            raise _Rc(g.UC_RC_INVALID)
-        planned: list[tuple[FakeChannel, dict[str, Any], tuple[int, int]]] = []
-        seen: set[tuple[int, int]] = set()
-        used: set[str] = set()
-        for pt in points:
-            if not isinstance(pt, dict) or not {"channel", "type", "instance"} <= pt.keys():
-                raise _Rc(g.UC_RC_INVALID)
-            ch = self.io_channels.get(str(pt["channel"]))
-            if ch is None:
-                raise _Rc(g.UC_RC_NOT_FOUND)
-            if pt["type"] not in _KIND_TYPES[ch.kind] or ch.name in used:
-                raise _Rc(g.UC_RC_INVALID)
-            try:
-                key = (enums.object_type_number(pt["type"]), int(pt["instance"]))
-                if "units" in pt:
-                    enums.unit_number(pt["units"])
-            except (ValueError, TypeError):
-                raise _Rc(g.UC_RC_INVALID) from None
-            if key in seen or (key in self.objects and self.owners.get(key) != "io"):
-                raise _Rc(g.UC_RC_EXISTS)
-            seen.add(key)
-            used.add(ch.name)
-            planned.append((ch, pt, key))
-        # re-create all IO-owned objects
+    def _apply_io(self, cfg: dict[str, Any]) -> None:
+        """``uc_io_apply_config()``: re-create all IO objects; points that
+        cannot be bound are skipped (logged), the others are bound."""
+        points = cfg.get("points", [])
         for key in [k for k, o in self.owners.items() if o == "io"]:
             self.objects.pop(key, None)
             self.owners.pop(key, None)
         for ch in self.io_channels.values():
             ch.point = None
             ch.obj = None
-        for ch, pt, key in planned:
+        for idx, pt in enumerate(points):
+            ch = self.io_channels.get(str(pt["channel"]))
+            key = (enums.object_type_number(pt["type"]), int(pt["instance"]))
+            why = None
+            if ch is None:
+                why = f"unknown channel {pt['channel']!r}"
+            elif pt["type"] not in _KIND_TYPES[ch.kind]:
+                why = f"{ch.kind} channel {ch.name} cannot be bound to {pt['type']}"
+            elif ch.obj is not None:
+                why = f"channel {ch.name} is already bound"
+            elif key in self.objects:
+                why = f"{enums.format_object_ref(*key)} exists ({self.owners.get(key)})"
+            elif ch.kind == "ao" and float(pt.get("scale", 1.0)) == 0.0:
+                why = f"scale 0 is invalid for output {ch.name}"
+            if why is not None or ch is None:
+                log.warning("io.json point %d skipped: %s", idx, why)
+                continue
             props = self.add_object(
                 key[0],
                 key[1],
@@ -663,8 +803,10 @@ class FakeNode:
                 props[P["cov-increment"]] = float(pt.get("cov_increment", 0.1))
             if key[0] in _BINARY and pt.get("invert"):
                 props[P["polarity"]] = Enumerated(1)
+            if key[0] == enums.OBJECT_MULTI_STATE_INPUT:
+                props[P["state-text"]] = ["Inactive", "Active"]
             if ch.is_output and key[0] in _COMMANDABLE:
-                # outputs start from the commanded channel value
+                # outputs start from the Relinquish_Default
                 if ch.kind == "do":
                     props[P["relinquish-default"]] = Enumerated(0)
                 else:
@@ -674,31 +816,13 @@ class FakeNode:
             ch.obj = key
         self._sync_io()
 
-    def _reload_apps(self) -> None:
-        cfg = self._load_json(CFG_APPS)
-        entries = [] if cfg is None else cfg.get("apps", [])
-        if not isinstance(entries, list) or len(entries) > 8:
-            raise _Rc(g.UC_RC_INVALID)
-        manifests = []
-        for e in entries:
-            if not isinstance(e, dict):
-                raise _Rc(g.UC_RC_INVALID)
-            m = dict(e)
-            if isinstance(m.get("params"), list):
-                try:
-                    m["params"] = {str(p["key"]): str(p["value"]) for p in m["params"]}
-                except (KeyError, TypeError):
-                    raise _Rc(g.UC_RC_INVALID) from None
-            if isinstance(m.get("sha256"), str):
-                try:
-                    m["sha256"] = bytes.fromhex(m["sha256"])
-                except ValueError:
-                    raise _Rc(g.UC_RC_INVALID) from None
-            manifests.append(self._check_manifest(m))
+    def _apply_apps(self, cfg: dict[str, Any]) -> None:
+        manifests: list[dict[str, Any]] = cfg.get("apps", [])
         first_err: _Rc | None = None
         wanted = {m["name"] for m in manifests}
         for name in list(self.apps):
             if name not in wanted:
+                self._drop_app_objects(name)
                 del self.apps[name]
         for m in manifests:
             old = self.apps.get(m["name"])
@@ -797,6 +921,12 @@ class FakeNode:
             rec["errors"] += 1
             raise
         rec.update(state="running", started_at=time.monotonic(), ticks_base=0, events=0)
+
+    def _drop_app_objects(self, name: str) -> None:
+        """Delete the objects an app created (the host does this on removal)."""
+        for key in [k for k, o in self.owners.items() if o == f"app:{name}"]:
+            self.objects.pop(key, None)
+            self.owners.pop(key, None)
 
     @staticmethod
     def _app_stop(rec: dict[str, Any]) -> None:
@@ -925,8 +1055,7 @@ class FakeNode:
         return {"r": d}
 
     def _os_reset(self, req: dict[str, Any]) -> dict[str, Any]:
-        self.resets += 1
-        self._boot()
+        self._reset()
         return {}
 
     def _os_params(self, req: dict[str, Any]) -> dict[str, Any]:
@@ -1120,12 +1249,10 @@ class FakeNode:
     # uc_app
     def _app_list(self, req: dict[str, Any]) -> dict[str, Any]:
         offset = self._uint(req, "offset", 0)
-        count = self._uint(req, "count", APPS_MAX)
+        count = self._uint(req, "count", 0xFFFFFFFF)
         names = list(self.apps)
-        return {
-            "total": len(names),
-            "apps": [self.app_status(n) for n in names[offset : offset + count]],
-        }
+        return _fill({"total": len(names)}, "apps",
+                     (self.app_status(n) for n in names[offset:]), count)
 
     def _app_install(self, req: dict[str, Any]) -> dict[str, Any]:
         restart = req.get("restart", False)
@@ -1172,9 +1299,7 @@ class FakeNode:
             raise _Rc(g.UC_RC_INVALID)
         self._app_stop(rec)
         del self.apps[rec["name"]]
-        for key in [k for k, o in self.owners.items() if o == f"app:{rec['name']}"]:
-            self.objects.pop(key, None)
-            self.owners.pop(key, None)
+        self._drop_app_objects(rec["name"])
         self._write_apps_json()
         if delete_file and all(a["file"] != rec["file"] for a in self.apps.values()):
             self.files.pop(rec["file"], None)
@@ -1198,15 +1323,11 @@ class FakeNode:
         return out
 
     def _io_catalog(self, req: dict[str, Any]) -> dict[str, Any]:
-        # offset/count/total: firmware extension of the documented request
         offset = self._uint(req, "offset", 0)
-        count = self._uint(req, "count", len(self.io_channels))
+        count = self._uint(req, "count", 0xFFFFFFFF)
         chans = list(self.io_channels.values())
-        return {
-            "board": self.catalog_board,
-            "total": len(chans),
-            "channels": [self._channel_map(c) for c in chans[offset : offset + count]],
-        }
+        return _fill({"board": self.catalog_board, "total": len(chans)}, "channels",
+                     (self._channel_map(c) for c in chans[offset:]), count)
 
     def _channel(self, req: dict[str, Any]) -> FakeChannel:
         name = self._str(req, "name")
@@ -1231,7 +1352,10 @@ class FakeNode:
 
     def _io_force(self, req: dict[str, Any]) -> dict[str, Any]:
         ch = self._channel(req)
-        if req.get("release") is True:
+        release = req.get("release", False)
+        if not isinstance(release, bool) or release == ("value" in req):
+            raise _Rc(g.UC_RC_INVALID)  # exactly one of "value" and "release": true
+        if release:
             ch.forced = False
             return {}
         value = _normalise(ch.kind, self._num(req, "value"))
@@ -1289,19 +1413,22 @@ class FakeNode:
         offset = self._uint(req, "offset", 0)
         count = self._uint(req, "count", OBJECTS_COUNT_DEFAULT)
         oids = self._object_list()
-        out = []
-        for oid in oids[offset : offset + count]:
-            props = self.objects[tuple(oid)]  # type: ignore[index]
-            entry: dict[str, Any] = {
-                "type": enums.object_type_name(oid.type),
-                "instance": oid.instance,
-                "name": props.get(P["object-name"], ""),
-                "owner": self.owners.get(tuple(oid), "system"),  # type: ignore[arg-type]
-            }
-            if P["present-value"] in props:
-                entry["pv"] = _smp_value(props[P["present-value"]])
-            out.append(entry)
-        return {"total": len(oids), "objects": out}
+
+        def entries() -> Any:
+            for oid in oids[offset:]:
+                key = (oid.type, oid.instance)
+                props = self.objects[key]
+                entry: dict[str, Any] = {
+                    "type": enums.object_type_name(oid.type),
+                    "instance": oid.instance,
+                    "name": _smp_text(props.get(P["object-name"], "")),
+                    "owner": self.owners.get(key, "system"),
+                }
+                if P["present-value"] in props:
+                    entry["pv"] = _smp_value(props[P["present-value"]])
+                yield entry
+
+        return _fill({"total": len(oids)}, "objects", entries(), count)
 
     def _smp_ref(self, req: dict[str, Any]) -> tuple[tuple[int, int], int, int | None]:
         try:
@@ -1317,6 +1444,8 @@ class FakeNode:
             raise _Rc(g.UC_RC_INVALID)
         if index is not None and index < 0:
             index = None
+        if index is not None and p not in _ARRAYS:
+            raise _Rc(g.UC_RC_INVALID)  # index on a property that is not an array
         return (t, inst), p, index
 
     def _node_prop_read(self, req: dict[str, Any]) -> dict[str, Any]:
@@ -1325,7 +1454,12 @@ class FakeNode:
             values = self.read_property_values(key, prop, index)
         except _BnError as exc:
             raise _Rc(_BN_TO_RC.get(exc.code_name, g.UC_RC_UNKNOWN)) from None
-        # like the firmware, an array read without index yields its first element
+        if index is None and prop in codec.ARRAY_OR_LIST_PROPERTIES:
+            # the whole array/list, rc LIMIT when it does not fit one response
+            rsp = {"value": [_smp_value(v) for v in values]}
+            if len(cbor2.dumps(rsp)) + RSP_RESERVE > RSP_MAX:
+                raise _Rc(g.UC_RC_LIMIT)
+            return rsp
         value: Any = values[0] if values else None
         return {"value": _smp_value(value)}
 
@@ -1342,11 +1476,11 @@ class FakeNode:
             if raw is None:
                 value: Any = None
             elif isinstance(raw, str):
+                if len(raw.encode()) > TEXT_WRITE_MAX:
+                    raise _Rc(g.UC_RC_INVALID)
                 value = raw  # CharacterString
-            elif isinstance(raw, bool):
-                value = raw
-            elif isinstance(raw, int | float):
-                value = _typed(raw, tag)
+            elif isinstance(raw, int | float):  # bool: the number 0 / 1
+                value = _typed(float(raw) if isinstance(raw, bool) else raw, tag, key[0], prop)
             else:
                 raise _Rc(g.UC_RC_INVALID)
             self.write_property_value(key, prop, value, priority or None, index)
@@ -1403,13 +1537,16 @@ class FakeNode:
             raise _BnError("property", "write-access-denied")
         if index is not None:
             raise _BnError("property", "property-is-not-an-array")
-        commandable_pv = prop == P["present-value"] and t in _COMMANDABLE
+        pv = prop == P["present-value"]
+        commandable_pv = pv and t in _COMMANDABLE
         if value is None:
+            if pv and t in _VALUE_OBJECTS:
+                return  # no priority array: a relinquish changes nothing (135 15.9.2)
             if not commandable_pv:
                 raise _BnError("property", "invalid-data-type")
         else:
             self._check_type(t, prop, value)
-        if prop == P["present-value"]:
+        if pv:
             if value is not None:
                 self._check_range(t, props, value)
             if commandable_pv:
@@ -1421,6 +1558,10 @@ class FakeNode:
             else:
                 if t in _INPUTS and not props.get(P["out-of-service"]):
                     raise _BnError("property", "write-access-denied")
+                if t == enums.OBJECT_ANALOG_VALUE and priority == 6:
+                    # bacnet-stack av.c: priority 6 is reserved (minimum on/off)
+                    raise _BnError("property", "write-access-denied")
+                # value objects: the priority is ignored, the last write wins
                 props[prop] = value
         else:
             props[prop] = value
@@ -1558,7 +1699,40 @@ class FakeNode:
                 raise _BnError("services", "parameter-out-of-range")
             self.write_property_value(key, req.prop, req.values[0], req.priority, req.index)
             return codec.encode_simple_ack(invoke, enums.SERVICE_CONFIRMED_WRITE_PROPERTY)
+        if apdu.service == enums.SERVICE_CONFIRMED_DEVICE_COMMUNICATION_CONTROL:
+            _, enable, password = codec.decode_device_communication_control_request(apdu.data)
+            self._check_password(password)
+            names = {v: k for k, v in enums.DCC_ENABLE_DISABLE.items()}
+            if enable not in names:
+                raise _BnError("services", "parameter-out-of-range")
+            self.dcc_state = names[enable]
+            return codec.encode_simple_ack(invoke, apdu.service)
+        if apdu.service == enums.SERVICE_CONFIRMED_REINITIALIZE_DEVICE:
+            state, password = codec.decode_reinitialize_device_request(apdu.data)
+            self._check_password(password)
+            names = {v: k for k, v in enums.REINITIALIZED_STATES.items()}
+            if state not in names:
+                raise _BnError("services", "parameter-out-of-range")
+            self.reinitialized.append(names[state])
+            if names[state] in ("coldstart", "warmstart"):
+                # restart after the SimpleACK went out
+                asyncio.get_running_loop().call_soon(self._reset)
+            return codec.encode_simple_ack(invoke, apdu.service)
         return codec.encode_reject(invoke, enums.REJECT_REASONS["unrecognized-service"])
+
+    def _check_password(self, password: str | None) -> None:
+        """uc_bn_node.c: without a configured password the request is refused
+        (CONFIG_UC_BACNET_REQUIRE_PASSWORD=y); with one it must match."""
+        if not self.bacnet_password:
+            if self.require_password:
+                raise _BnError("security", "password-failure")
+            return
+        if password != self.bacnet_password:
+            raise _BnError("security", "password-failure")
+
+    def _reset(self) -> None:
+        self.resets += 1
+        self._boot()
 
     @staticmethod
     def _encode_value(t: int, prop: int, value: Any) -> bytes:
@@ -1573,28 +1747,222 @@ class FakeNode:
 # --- helpers ------------------------------------------------------------------------------------
 
 
-def _typed(raw: int | float, tag: str | None) -> Any:
-    """CBOR number -> Python value of the property's natural datatype."""
-    if tag in ("real",):
-        return float(raw)
+def _is_int(v: Any, lo: int, hi: int) -> bool:
+    """A JSON integer (or integral number) within ``lo..hi``."""
+    if isinstance(v, bool) or not isinstance(v, int | float):
+        return False
+    return float(v).is_integer() and lo <= v <= hi
+
+
+def _is_num(v: Any) -> bool:
+    return not isinstance(v, bool) and isinstance(v, int | float) and math.isfinite(v)
+
+
+def _is_ipv4(v: Any) -> bool:
+    if not isinstance(v, str):
+        return False
+    parts = v.split(".")
+    return len(parts) == 4 and all(p.isdigit() and int(p) <= 255 for p in parts)
+
+
+def _text_ok(v: Any, lo: int, hi: int) -> bool:
+    return isinstance(v, str) and lo <= len(v.encode()) <= hi
+
+
+def _check_device_doc(cfg: dict[str, Any]) -> None:
+    """Parse-stage checks of ``device_from_json()`` (uc_config.c)."""
+    bad = _Rc(g.UC_RC_INVALID)
+    dev = cfg.get("device")
+    if not isinstance(dev, dict) or not _is_int(dev.get("instance"), 0, INSTANCE_MAX):
+        raise bad
+    if not _text_ok(dev.get("name"), 1, 63):
+        raise bad
+    for key in ("description", "location"):
+        if key in dev and not _text_ok(dev[key], 0, 63):
+            raise bad
+    net = cfg.get("network", {})
+    if not isinstance(net, dict) or not isinstance(net.get("dhcp", True), bool):
+        raise bad
+    for key in ("ipv4", "netmask", "gateway"):
+        if key in net and not _is_ipv4(net[key]):
+            raise bad
+    bn = cfg.get("bacnet", {})
+    if not isinstance(bn, dict):
+        raise bad
+    for key, lo, hi in (("udp_port", 1, 65535), ("apdu_timeout_ms", 100, 60000),
+                        ("apdu_retries", 0, 10)):
+        if key in bn and not _is_int(bn[key], lo, hi):
+            raise bad
+    fd = bn.get("foreign_device")
+    if fd is not None and (not isinstance(fd, dict) or not _is_ipv4(fd.get("bbmd"))
+                           or not _is_int(fd.get("port", 47808), 1, 65535)
+                           or not _is_int(fd.get("ttl_s", 60), 10, 65535)):
+        raise bad
+    bindings = bn.get("static_bindings", [])
+    if not isinstance(bindings, list) or len(bindings) > 16:
+        raise bad
+    for b in bindings:
+        if (not isinstance(b, dict) or not _is_int(b.get("device"), 0, INSTANCE_MAX)
+                or not _is_ipv4(b.get("address"))
+                or not _is_int(b.get("port", 47808), 1, 65535)):
+            raise bad
+    pw = bn.get("password")
+    if pw is not None and (not isinstance(pw, str) or not 1 <= len(pw) <= PASSWORD_MAX
+                           or any(not 0x20 <= ord(c) <= 0x7E for c in pw)):
+        raise bad
+    lvl = cfg.get("log", {})
+    if not isinstance(lvl, dict) or lvl.get("level", "inf") not in LOG_LEVELS:
+        raise bad
+
+
+def _check_io_doc(cfg: dict[str, Any]) -> None:
+    """Parse-stage checks of ``uc_config_parse_io()``: field types and
+    ranges, at most 32 points, no object twice. Channels are checked when
+    the points are bound."""
+    bad = _Rc(g.UC_RC_INVALID)
+    points = cfg.get("points")
+    if not isinstance(points, list) or len(points) > IO_POINTS_MAX:
+        raise bad
+    seen: set[tuple[int, int]] = set()
+    for pt in points:
+        if not isinstance(pt, dict) or not _text_ok(pt.get("channel"), 1, 15):
+            raise bad
+        if pt.get("type") not in _IO_TYPES or not _is_int(pt.get("instance"), 0, INSTANCE_MAX):
+            raise bad
+        for key in ("name", "description"):
+            if key in pt and not _text_ok(pt[key], 0, 63):
+                raise bad
+        if "units" in pt:
+            try:
+                enums.unit_number(pt["units"])
+            except (ValueError, TypeError):
+                raise bad from None
+        for key in ("scale", "offset", "min", "max", "cov_increment"):
+            if key in pt and not _is_num(pt[key]):
+                raise bad
+        if "min" in pt and "max" in pt and pt["min"] > pt["max"]:
+            raise bad
+        if pt.get("cov_increment", 0) < 0:
+            raise bad
+        if not _is_int(pt.get("sample_ms", 100), 10, 3600000) or not _is_int(
+                pt.get("debounce_ms", 20), 0, 10000):
+            raise bad
+        if not isinstance(pt.get("invert", False), bool):
+            raise bad
+        key = (enums.object_type_number(pt["type"]), int(pt["instance"]))
+        if key in seen:
+            raise bad
+        seen.add(key)
+
+
+def _manifest_from_entry(e: Any) -> dict[str, Any]:
+    """apps.json entry -> ``uc_app install`` style manifest (params map,
+    sha256 bytes); ``_Rc(INVALID)`` for malformed entries."""
+    if not isinstance(e, dict):
+        raise _Rc(g.UC_RC_INVALID)
+    m = dict(e)
+    if isinstance(m.get("params"), list):
+        try:
+            m["params"] = {str(p["key"]): p["value"] for p in m["params"]}
+        except (KeyError, TypeError):
+            raise _Rc(g.UC_RC_INVALID) from None
+    elif "params" in m:
+        raise _Rc(g.UC_RC_INVALID)
+    if "sha256" in m:
+        sha = m["sha256"]
+        if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", sha):
+            raise _Rc(g.UC_RC_INVALID)
+        m["sha256"] = bytes.fromhex(sha)
+    perms = m.get("perms", [])
+    if isinstance(perms, list) and len(set(map(str, perms))) != len(perms):
+        raise _Rc(g.UC_RC_INVALID)
+    return m
+
+
+def _udp_port(cfg: dict[str, Any]) -> int:
+    return int(cfg.get("bacnet", {}).get("udp_port", 47808))
+
+
+def _net_key(cfg: dict[str, Any]) -> tuple[Any, ...]:
+    """Network settings as the firmware compares them (static only)."""
+    net = cfg.get("network", {})
+    if net.get("dhcp", True) or not net.get("ipv4"):
+        return ("dhcp",)
+    return (net.get("ipv4"), net.get("netmask", "255.255.255.0"), net.get("gateway", ""))
+
+
+_FLT_MAX = 3.4028234663852886e38
+_BINARY_PROPS = frozenset({P["present-value"], P["relinquish-default"], P["priority-array"]})
+
+
+def _typed(raw: int | float, tag: str | None, obj_type: int, prop: int) -> Any:
+    """CBOR number -> Python value of the property's natural datatype, with
+    the checks of ``uc_value_from_double()`` (``ValueError`` -> rc INVALID):
+    finite; REAL within the float range; UNSIGNED/ENUMERATED integral,
+    0..2^32-1; SIGNED integral, 32-bit; BOOLEAN and the binary present value
+    (relinquish-default, priority-array) 0 or 1."""
+    f = float(raw)
+    if not math.isfinite(f):
+        raise ValueError("not finite")
+    if obj_type in _BINARY and prop in _BINARY_PROPS and f not in (0.0, 1.0):
+        raise ValueError("binary value must be 0 or 1")
+    if tag == "real":
+        if abs(f) > _FLT_MAX:
+            raise ValueError("out of the REAL range")
+        return f
     if tag == "double":
-        return Double(float(raw))
-    if tag == "enumerated":
-        if float(raw) != int(raw):
+        return Double(f)
+    if tag in ("enumerated", "unsigned", "signed", "boolean"):
+        if not f.is_integer():
             raise ValueError("not integral")
-        return Enumerated(int(raw))
-    if tag in ("unsigned", "signed"):
-        if float(raw) != int(raw):
-            raise ValueError("not integral")
-        return int(raw)
-    if tag == "boolean":
-        return bool(raw)
+        v = int(f)
+        if tag == "signed":
+            if not -(2**31) <= v < 2**31:
+                raise ValueError("out of the SIGNED range")
+            return v
+        if not 0 <= v <= 0xFFFFFFFF:
+            raise ValueError("out of the UNSIGNED range")
+        if tag == "enumerated":
+            return Enumerated(v)
+        if tag == "boolean":
+            if v not in (0, 1):
+                raise ValueError("boolean must be 0 or 1")
+            return bool(v)
+        return v
     return raw
+
+
+def _smp_text(text: str, limit: int = 96) -> str:
+    """Text as the firmware sends it: at most ``limit`` bytes of UTF-8, cut on
+    a character boundary."""
+    data = text.encode("utf-8")
+    if len(data) <= limit:
+        return text
+    return data[:limit].decode("utf-8", errors="ignore")
+
+
+def _fill(head: dict[str, Any], key: str, items: Any, count: int) -> dict[str, Any]:
+    """A list response: ``head`` plus ``key`` with at most ``count`` items and
+    only as many as fit one response (``RSP_MAX``, ``RSP_RESERVE`` bytes
+    left), like ``uc_mgmt_elem_commit()``."""
+    out: dict[str, Any] = {**head, key: []}
+    for item in items:
+        if len(out[key]) >= count:
+            break
+        out[key].append(item)
+        if len(cbor2.dumps(out)) + RSP_RESERVE > RSP_MAX:
+            out[key].pop()
+            break
+    return out
 
 
 def _smp_value(value: Any) -> Any:
     """Python value -> CBOR value as the firmware reports it."""
-    if value is None or isinstance(value, bool | str | bytes):
+    if isinstance(value, str):
+        return _smp_text(value)
+    if isinstance(value, bytes):
+        return value[:96]
+    if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
         return int(value)

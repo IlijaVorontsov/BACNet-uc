@@ -165,10 +165,18 @@ static void test_setpoint_written_by_client(void)
 	UC_CHECK_LOG(UC_LOG_WRN, "setpoint 50.00 outside 5.0..35.0, using 35.00", 1);
 	UC_CHECK(uc_stub_obj_pv(AO, 1) >= 99.99);
 
-	/* relinquish (no uc_app_on_write): noticed through the priority array */
-	uc_stub_client_relinquish(AV, 1, 8);
+	/* relinquish: the analog-value has no priority array, the write
+	 * succeeds and changes nothing */
+	UC_CHECK_INT(uc_stub_client_relinquish(AV, 1, 8), UC_OK);
 	uc_stub_run(1000);
-	UC_CHECK_LOG(UC_LOG_INF, "-> 21.00 (priority array)", 1);
+	UC_CHECK_NEAR(uc_stub_obj_pv(AV, 1), 50.0, 0);
+	UC_CHECK_LOG(UC_LOG_INF, "(present value)", 0);
+	UC_CHECK(uc_stub_obj_pv(AO, 1) >= 99.99);
+
+	/* any write sets it, whatever the priority */
+	UC_CHECK_INT(uc_stub_client_write(AV, 1, PV, 21.0, 12), UC_OK);
+	uc_stub_run(1000);
+	UC_CHECK_LOG(UC_LOG_INF, "setpoint 35.00 -> 21.00 (written @12)", 1);
 	UC_CHECK(uc_stub_obj_pv(AO, 1) < 25.0);
 }
 

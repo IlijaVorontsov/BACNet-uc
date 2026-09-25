@@ -49,6 +49,7 @@ struct uc_io_channel_info {
 	enum uc_io_hw hw;
 	bool forced;
 	bool bound;
+	/* object of the io.json point: meaningful only when bound (0 else) */
 	uint16_t obj_type;
 	uint32_t obj_instance;
 };

@@ -168,10 +168,13 @@ Field reference and limits: [configuration.md](configuration.md#2-iojson).
 | `do` | `binary-output`, `binary-value` | Present_Value → channel |
 | `ao` | `analog-output`, `analog-value` | Present_Value → channel |
 
-A point is skipped (error logged, other points still bound) when its channel
-is unknown, the kind does not match the type, the channel or the object is
-already bound by an earlier point, `scale` is 0 for an `ao` channel, or the
-object exists with another owner (e.g. an application's object).
+A point is skipped (error logged, other points still bound, the reload
+succeeds) when its channel is unknown, the kind does not match the type, the
+channel or the object is already bound by an earlier point, `scale` is 0 for
+an `ao` channel, or the object exists with another owner (an application's
+object, or one created over the network with CreateObject). The harness
+checks the same rules before it uploads `io.json` (`configure_io`,
+`validate_system`).
 
 ### 3.2 Value transformations
 
@@ -270,7 +273,9 @@ Interfaces:
 
 Forces live in RAM: a reset releases all of them. The catalog (`uc_io
 catalog`) shows `forced: true` for forced channels. Values are validated per
-kind (digital: any non-zero value is 1; `ao`: clamped to 0..100).
+kind (digital: any non-zero value is 1; `ao`: clamped to 0..100). An SMP
+`force` request carries exactly one of `value` and `"release": true`; neither
+or both is rc `INVALID`.
 
 `uc_io write` (SMP) and `uc_io_write()` (applications) drive an **output
 channel** directly: `-EACCES` / rc `PERM` for inputs. On a channel that is
@@ -292,12 +297,15 @@ changes; do not mix direct writes and object control on one channel.
 3. **Overlay.** Create `firmware/boards/<board>.overlay`: include the catalog,
    add the `fstab` node `uc_lfs` (LittleFS, mount point `/lfs`, `automount`,
    `no-format`, `cache-size = <256>`) on a partition with small erase blocks
-   (≤ 8 KiB) and a stable MAC address if the board default is random.
+   (≤ 8 KiB) and a stable MAC address if the board default is random. If the
+   SoC has a RAM region outside `zephyr,sram` (TCM, a separate SRAM bank),
+   point the chosen node `uc,app-pool` at it to hold the WAMR pool.
 4. **Configuration.** Create `firmware/boards/<board>.conf`: `CONFIG_FPU` and
    `CONFIG_FP_HARDABI` where available (they select the WAMR build target),
-   `CONFIG_NET_L2_ETHERNET=y`, `CONFIG_UC_APP_POOL_SIZE` and
-   `CONFIG_HEAP_MEM_POOL_SIZE` for the board's RAM. Check that
-   `CONFIG_WAMR_BUILD_TARGET` gets a default for the CPU
+   `CONFIG_NET_L2_ETHERNET=y`, and the RAM budget: `CONFIG_UC_APP_POOL_SIZE`,
+   `CONFIG_HEAP_MEM_POOL_SIZE` and a fixed `CONFIG_COMMON_LIBC_MALLOC_ARENA_SIZE`
+   (at least 24 KiB; see [architecture.md](architecture.md#61-static-allocation-plan)).
+   Check that `CONFIG_WAMR_BUILD_TARGET` gets a default for the CPU
    (`modules/wasm-micro-runtime/Kconfig`); add one if not.
 5. **Build and check.**
    ```sh
@@ -309,7 +317,10 @@ changes; do not mix direct writes and object control on one channel.
    `firmware/sample.yaml`, `BOARDS` in the harness
    (`harness/src/bacnet_uc_harness/firmware.py`), the `board` enum in
    `schemas/system.schema.json`, the AOT target table of `wasm/sdk/uc-aot`
-   if AOT is wanted, and [hardware.md](hardware.md).
+   if AOT is wanted, the three firmware builds of `.github/workflows/ci.yml`,
+   and [hardware.md](hardware.md). The harness's pool budget
+   (`budget.py`) reads `CONFIG_UC_APP_POOL_SIZE` from the new board file by
+   itself.
 
 A DAC output kind is not part of the binding. Boards with DACs can expose
 them after extending the binding and `uc_io.c` with a `hw = dac` variant.
@@ -322,5 +333,7 @@ them after extending the binding and `uc_io.c` with a `hw = dac` variant.
 | `io.json point N: unknown channel 'x'` | typo, or a catalog of another board |
 | `io.json point N: ai channel ai0 cannot be bound to binary-input` | kind/type mismatch (section 3.1) |
 | `io.json point N: channel do0 is already bound` | two points on one channel |
+| `io.json point N: binary-output 1 is already bound` | two points on one object |
+| `io.json point N: channel ai0 has no working hardware` | the channel's device is not ready (the point is bound anyway) |
 | `io.json point N: creating analog-value 5 failed: -17 (...)` | object exists with another owner, or the owner table is full |
 | `ai0 (analog-input 1): read failed: -5` | ADC error; logged once until it recovers (`recovered`) |

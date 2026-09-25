@@ -1,13 +1,11 @@
 /*
  * SPDX-License-Identifier: Apache-2.0
  *
- * uc-ramfs on NUCLEO-F767ZI: no external SPI NOR flash wired. Replace the
- * board's /lfs fstab entry by the RAM one and drop the flash device.
+ * uc-ramfs on NUCLEO-F767ZI: no external SPI NOR flash wired. /lfs is on the
+ * RAM disk (uc-ramfs.overlay redefines /fstab/lfs), so the flash node of the
+ * board overlay is disabled: CONFIG_SPI_NOR stays off and its partition is
+ * left out of the flash map.
  */
-
-&uc_lfs {
-	status = "disabled";
-};
 
 &uc_nor {
 	status = "disabled";

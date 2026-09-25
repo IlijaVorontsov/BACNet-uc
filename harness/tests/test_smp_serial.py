@@ -239,9 +239,10 @@ async def test_serial_transport_end_to_end() -> None:
         assert await client.fs_download("/lfs/data/blob.bin") == data
         catalog = await client.io_catalog()
         assert catalog["board"] == "native_sim"
-        # frame size is limited by the 256 byte shell MTU
-        assert transport.mtu == 256
-        assert dev.frames >= 8
+        # full-size frames: the firmware buffers 16 console lines, no pacing
+        assert transport.mtu == 1152 and transport.line_delay == 0.0
+        assert await client.max_frame() == 1152
+        assert dev.frames >= 5
         assert any("uc_mgmt: request" in line for line in console)
         assert "uart:~$ " in transport.console
     finally:

@@ -12,6 +12,14 @@
 #   bacnet-uc system validate harness/examples/systems/hvac-demo.yaml
 #   bacnet-uc system apply    harness/examples/systems/hvac-demo.yaml --no-dry-run
 #   bacnet-uc system test     harness/examples/systems/hvac-demo.yaml
+#
+# Priorities: analog-/binary-/multi-state-output objects are commandable
+# (priority array); the value objects (analog-value etc.) of BACnet-uc nodes
+# are not: a write sets them whatever the priority and a relinquish (null)
+# does nothing. So the fan link and the thermostat output use priorities 8
+# and 10 on output objects, the temperature mirror uses 0 on an analog-value.
+# bacnet.password protects DeviceCommunicationControl and ReinitializeDevice
+# (the firmware refuses both without one); use your own.
 apiVersion: bacnet-uc/v1
 kind: System
 metadata:
@@ -24,6 +32,7 @@ nodes:
     transport: {kind: udp, host: 192.168.10.51}
     device: {instance: 1001, name: uc-sensor, location: Lab 1}
     network: {dhcp: false, ipv4: 192.168.10.51, netmask: 255.255.255.0, gateway: 192.168.10.1}
+    bacnet: {password: hvac-demo-change-me}
     io:
       - channel: ai0
         type: analog-input
@@ -44,6 +53,7 @@ nodes:
     transport: {kind: udp, host: 192.168.10.52}
     device: {instance: 1002, name: uc-actuator, location: Lab 1}
     network: {dhcp: false, ipv4: 192.168.10.52, netmask: 255.255.255.0, gateway: 192.168.10.1}
+    bacnet: {password: "{{ nodes.sensor.bacnet.password }}"}
     io:
       - {channel: ao0, type: analog-output, instance: 1, name: Heating Valve, units: percent,
          min: 0, max: 100}
@@ -54,6 +64,7 @@ nodes:
     transport: {kind: udp, host: 192.168.10.53}
     device: {instance: 1003, name: uc-supervisor, location: Lab 1}
     network: {dhcp: false, ipv4: 192.168.10.53, netmask: 255.255.255.0, gateway: 192.168.10.1}
+    bacnet: {password: "{{ nodes.sensor.bacnet.password }}"}
 
 apps:
   - name: thermostat
@@ -80,11 +91,13 @@ links:
     to: actuator/binary-output:1
     mode: cov
     priority: 8
-  # mirror of the room temperature on the supervisor (analog-value:10)
+  # mirror of the room temperature on the supervisor (analog-value:10, a value
+  # object created by uc-link: no priority array, priority 0)
   - from: sensor/analog-input:1
     to: supervisor/analog-value:10
     mode: poll
     period_ms: 5000
+    priority: 0
 
 tests:
   - name: occupancy-switches-fan
@@ -105,8 +118,11 @@ tests:
       - expect: {point: actuator/analog-output:1, op: le, value: 1, within_ms: 15000}
       - release: {node: sensor, channel: ai0}
 
+  # the setpoint analog-value has no priority array: write it, then write the
+  # original value back (a relinquish would leave 23.0)
   - name: setpoint-is-writable
     steps:
-      - write: {point: supervisor/analog-value:1, value: 23.0, priority: 8}
+      - write: {point: supervisor/analog-value:1, value: 23.0}
       - expect: {point: supervisor/analog-value:1, op: approx, value: 23.0, within_ms: 2000}
-      - write: {point: supervisor/analog-value:1, value: null, priority: 8}
+      - write: {point: supervisor/analog-value:1, value: 21.5}
+      - expect: {point: supervisor/analog-value:1, op: approx, value: 21.5, within_ms: 2000}

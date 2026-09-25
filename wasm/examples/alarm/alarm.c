@@ -298,13 +298,10 @@ void uc_app_on_write(uint32_t type, uint32_t instance, uint32_t prop, uint32_t p
 			g.trips = 0;
 			state_save();
 		}
-		/* the counter object always shows the counter */
+		/* the counter object always shows the counter (an analog-value
+		 * has no priority array: this overwrites any written value) */
 		(void)uc_pv_write(UC_OBJ_ANALOG_VALUE, g.count_instance, (double)g.trips,
 				  UC_PRIORITY_NONE);
-		if ((priority != UC_PRIORITY_NONE) && (priority != 16u)) {
-			(void)uc_prop_write_null(UC_OBJ_ANALOG_VALUE, g.count_instance,
-						 UC_PROP_PRESENT_VALUE, priority);
-		}
 	} else if ((type == UC_OBJ_BINARY_VALUE) && (instance == g.bv_instance)) {
 		uc_logf(UC_LOG_INF, "BV:%u overridden: %s @%u", (unsigned int)g.bv_instance,
 			(value != 0.0) ? "active" : "inactive", (unsigned int)priority);

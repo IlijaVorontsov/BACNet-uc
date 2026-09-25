@@ -142,9 +142,10 @@ def check_module(mod: Module, path: str = "", *, allow_grow: bool = False,
     bounds = None if linear is None else (linear + page - 1) // page * page
     if linear is not None and bounds != linear:
         rep.warnings.append(
-            f"linear memory {linear} B is not a multiple of {page} B: WAMR 2.4.5 without "
-            f"hardware bounds checks bounds-checks up to {bounds} B but allocates {linear} B "
-            "(build with uc-cc page alignment and use heap_kb % 4 == 0)")
+            f"linear memory {linear} B is not a multiple of {page} B: WAMR bounds-checks "
+            f"{bounds} B and the firmware allocates {bounds} B from the pool, {bounds - linear} B "
+            "more than the module uses (build with uc-cc page alignment and use "
+            "heap_kb % 4 == 0)")
 
     # -- info -----------------------------------------------------------------
     stack_top = lay["stack_top"]

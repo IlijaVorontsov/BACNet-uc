@@ -112,15 +112,15 @@ flowchart TB
 | Module | Sources | Responsibility | Runs in |
 |--------|---------|----------------|---------|
 | `uc_common` | `src/common/uc_common.c` | errno ↔ `UC_ERR_*` ↔ management rc mapping, BACnet text names ↔ enums, value conversion, name validation, permissions | caller |
-| `uc_storage` | `src/storage/uc_storage.c` | mount `/lfs` (format on failure), directory layout, atomic file replace, SHA-256 of files | main, callers |
-| `uc_config` | `src/config/uc_config.c` | parse `device.json`, `io.json`, `apps.json` into a RAM cache, defaults, `apps.json` encoder | main, SMP work queue, shell |
-| `uc_net` | `src/net/uc_net.c` | static IPv4 or DHCPv4 on the default interface; loopback/static address on `native_sim` | main |
-| `uc_bacnet` | `src/bacnet/uc_bn_{node,local,client,cov}.c` | BACnet thread, stack initialisation, BACnet/IP datalink, executor, local objects with owner table, blocking client, COV subscriptions for applications | BACnet thread (+ thread-safe wrappers) |
+| `uc_storage` | `src/storage/uc_storage.c` | mount `/lfs` (format on failure), directory layout, atomic file replace and rename, SHA-256 of files | main, callers |
+| `uc_config` | `src/config/uc_config.c` | activate staged `<doc>.json.new` documents, parse `device.json`, `io.json`, `apps.json` into a RAM cache, defaults, runtime log level, `apps.json` encoder | main, SMP work queue, shell |
+| `uc_net` | `src/net/uc_net.c` | static IPv4 or DHCPv4 on the default interface; loopback/static address on `native_sim` (plus closing inherited host sockets before a `native_sim` restart) | main |
+| `uc_bacnet` | `src/bacnet/uc_bn_{node,local,client,cov}.c` | BACnet thread, stack initialisation, BACnet/IP datalink, executor, local objects with owner table, CreateObject/DeleteObject policy, ReinitializeDevice/DCC password, blocking client, COV subscriptions for applications | BACnet thread (+ thread-safe wrappers) |
 | `uc_io` | `src/io/uc_io.c` | devicetree channel table, GPIO/ADC/PWM/simulated channels, forcing, `io.json` point binding, IO scan | BACnet thread (scan), any thread (channel API) |
 | `uc_apps` | `src/apps/uc_app_mgr.c`, `uc_app_host_api.c` | WAMR runtime and pool, application slots and threads, events, watchdog, host functions of import module `bacnet_uc`, key/value store | app threads, manager callers |
 | `uc_mgmt` | `src/mgmt/uc_mgmt_{app,io,node,util}.c` | SMP groups 64 `uc_app`, 65 `uc_io`, 66 `uc_node` ([management-protocol.md](management-protocol.md)) | MCUmgr work queue |
 | `uc_shell` | `src/shell/uc_shell.c` | `uc info`, `uc app ...`, `uc io ...`, `uc obj list`, `uc cfg show/reload` | shell thread, SMP shell group |
-| `main` | `src/main.c` | boot sequence, runtime log level | main thread |
+| `main` | `src/main.c` | boot sequence | main thread |
 
 The modules talk only through the headers in `firmware/include/uc/`. Two
 rules keep them decoupled:
@@ -149,13 +149,14 @@ only in the Ethernet driver thread).
 | `rx_q[0]` (net RX traffic class) | -16 (coop) | 2048 | Zephyr net | IP/UDP receive processing, delivery to sockets |
 | `stm_eth` (F767) / `ENETQOS_RX` work queue (MCXN947) | -14 / -13 (coop) | 1500 / 1024 | Ethernet driver | receive DMA descriptor service (none on `native_sim`: host sockets) |
 | `sysworkq` | -1 (coop) | 4096 | Zephyr | system work queue: application watchdog work items, driver work |
-| net_mgmt events, conn mgr monitor | -1 (coop) | 800 / default | Zephyr net | interface and address events (DHCP lease, link) |
+| net_mgmt events, conn mgr monitor | -1 (coop) | 800 / 512 | Zephyr net | interface and address events (DHCP lease, link) |
 | `main` | 0 | 4096 | `main.c` | boot sequence, then returns |
 | SMP UDP receive | 0 | 1024 | MCUmgr | receives SMP datagrams, queues them to the SMP work queue |
 | `mcumgr smp` work queue | 3 | 4096 | MCUmgr | runs every SMP command handler, including the custom groups; file uploads, JSON parsing of reloads, SHA-256 of app modules |
 | `bacnet` | 5 (`CONFIG_UC_BACNET_THREAD_PRIORITY`) | 8192 | `uc_bacnet` | owns bacnet-stack; loop every `CONFIG_UC_BACNET_POLL_MS` (5 ms) or when woken |
 | `uc_app0` .. `uc_app3` | 10 (`CONFIG_UC_APP_THREAD_PRIORITY`) | 8192 each | `uc_apps` | one per application slot; the only thread that executes that slot's WebAssembly instance |
-| shell (UART) | 14 | 4096 | Zephyr shell | console, `uc` commands |
+| shell (UART) | 14 | 4096 | Zephyr shell | console, `uc` commands, SMP shell transport |
+| shell (dummy backend) | 14 | 4096 | Zephyr shell | executes the commands of the SMP shell group (`exec`) |
 | logging | 14 | 2048 | Zephyr logging | formats deferred log messages for UART, FS and net backends; `fs_sync()` after each batch |
 | `idle` | 15 | 320 | kernel | |
 
@@ -174,7 +175,11 @@ Consequences of this assignment:
   overwritten when it is full), never the control path.
 - Applications may block in host calls (remote requests wait up to
   `timeout_ms`); the watchdog is paused while they block, so only execution
-  time counts against `CONFIG_UC_APP_WATCHDOG_MS`.
+  time counts against `CONFIG_UC_APP_WATCHDOG_MS`. On `native_sim` simulated
+  time stands still while a callback computes, so the watchdog cannot fire
+  there; a budget of interpreted instructions per callback
+  (`CONFIG_WAMR_INSTRUCTION_LIMIT`, 100 000 000 on `native_sim`, off on the
+  boards) stops busy loops instead ([wasm-runtime.md](wasm-runtime.md#6-scheduling-and-timing)).
 
 ### The BACnet thread loop
 
@@ -232,8 +237,8 @@ flowchart LR
     subgraph obj["BACnet objects (bacnet-stack)"]
         bi["BI / MSI<br/>Present_Value"]
         aiobj["AI<br/>Present_Value"]
-        bo["BO / BV<br/>priority array -> PV"]
-        aoobj["AO / AV<br/>priority array -> PV"]
+        bo["BO (priority array -> PV)<br/>BV (PV)"]
+        aoobj["AO (priority array -> PV)<br/>AV (PV)"]
     end
     di -- "debounce, invert" --> bi
     ai -- "raw * scale + offset" --> aiobj
@@ -245,8 +250,9 @@ flowchart LR
 Every loop, `uc_io_scan()` services the points whose `sample_ms` has elapsed.
 Inputs write Present_Value directly (bypassing the write protection of input
 objects) unless the object is Out_Of_Service; outputs read the effective
-Present_Value (after priority arbitration) and drive the channel when it
-changed. Details: [io.md](io.md).
+Present_Value (after priority arbitration for AO/BO; AV and BV have no
+priority array) and drive the channel when it changed. Details:
+[io.md](io.md).
 
 ### 4.2 BACnet server requests and write events
 
@@ -305,7 +311,11 @@ Applications subscribe through `uc_cov_subscribe()`:
 | remote device rejecting COV | ReadProperty every `CONFIG_UC_BACNET_COV_POLL_MS` (2 s) | polling |
 | remote device not answering SubscribeCOV | polling, SubscribeCOV retried every 60 s | polling |
 
-The current value is delivered once right after subscribing. Server-side COV
+The current value is delivered once right after subscribing. Before every
+SubscribeCOV (initial, renewal, retry) and every poll, a remote subscription
+takes the device's address from the address cache again, so a re-bound
+device (new I-Am, changed static binding after `reload device`) is reached at
+its new address. Server-side COV
 (BMS subscribes to the node) is bacnet-stack's `handler_cov_subscribe` with
 `CONFIG_BACNET_BASIC_COV_SUBSCRIPTIONS_SIZE` = 16 subscriptions. See
 [bacnet.md](bacnet.md#5-change-of-value).
@@ -319,21 +329,29 @@ sequenceDiagram
     participant W as MCUmgr work queue
     participant M as uc_mgmt / fs_mgmt
     participant X as module (uc_config, uc_io, uc_bacnet ...)
-    H->>U: SMP write fs upload /lfs/cfg/io.json (chunks)
+    H->>U: SMP write fs upload /lfs/cfg/io.json.new (chunks)
     U->>W: queue frame
     W->>M: fs_mgmt: write chunk to LittleFS
     M-->>H: rsp {off}
     H->>U: SMP write group 66 cmd 1 {"doc":"io"}
     U->>W: queue frame
     W->>M: uc_node reload
-    M->>X: uc_config_reload(IO), uc_io_apply_config() via executor
+    M->>X: uc_config_reload(IO): validate io.json.new,<br/>rename over io.json, then uc_io_apply_config() via executor
     X-->>M: points bound
     M-->>H: {"reboot_required": false}
 ```
 
-The same command set is reachable over the console UART (SMP shell
-transport, frames multiplexed with the interactive shell). Group, command and
-key definitions: [management-protocol.md](management-protocol.md).
+Configuration documents are staged: the client uploads `<doc>.json.new` and
+the reload validates it and renames it over the active document (an invalid
+one is deleted and the active configuration stays). Requests are limited to
+1024 bytes over UDP (`CONFIG_MCUMGR_TRANSPORT_UDP_MTU`), responses to the
+1152-byte SMP buffer; the lists `uc_app list`, `uc_io catalog` and
+`uc_node objects` are paged with `offset`/`count`, and `uc_node prop_read`
+returns an array property whole or rc `LIMIT` when it does not fit. The same
+command set is reachable over the console UART (SMP shell transport, frames
+multiplexed with the interactive shell, 16 receive buffers so that a full
+request needs no pacing). Group, command and key definitions:
+[management-protocol.md](management-protocol.md).
 
 ### 4.6 Logging
 
@@ -356,7 +374,7 @@ sequenceDiagram
     K->>K: clocks, GPIO, flash, Ethernet, net stack,<br/>fstab automount of /lfs (no format),<br/>SMP UDP server
     K->>M: main()
     M->>M: 1 uc_storage_init: mount /lfs (format if<br/>mount fails), create cfg/ apps/ data/ log/
-    M->>M: 2 uc_config_init: load device/io/apps.json<br/>(defaults for missing/invalid)
+    M->>M: 2 uc_config_init: activate staged *.json.new,<br/>load device/io/apps.json (defaults for missing/invalid)
     M->>M: 3 runtime log level from device.json log.level
     M->>M: 4 uc_net_init: static IPv4 or DHCPv4 (no wait)
     M->>M: 5 uc_io_init: channel hardware from devicetree
@@ -376,6 +394,7 @@ sequenceDiagram
 | storage | no flash device, mount and format fail | logged; configuration falls back to Kconfig defaults; logs only on UART; apps cannot be installed |
 | configuration | document missing | defaults for that document (`INF` log) |
 | configuration | document invalid (syntax, schema, limits) | defaults for that document (`WRN` log with the offending field) |
+| configuration | staged `<doc>.json.new` invalid | the staged file is deleted, the active document is used |
 | network | no link / no DHCP lease | BACnet thread keeps waiting; after `CONFIG_UC_NET_WAIT_MS` (30 s) it starts BACnet anyway and retries the datalink once per second |
 | io | a channel's device not ready | channel marked not ready, reads/writes return `-EIO`; points on it log once |
 | bacnet | UDP port cannot be bound | retried once per second |
@@ -390,100 +409,116 @@ else runs in the threads above.
 
 ### 6.1 Static allocation plan
 
+Every large RAM consumer has a fixed size, so that the linker, not a
+failure at run time, reports a board that runs out of RAM. The two MCU boards
+use the same plan; they differ in where the WAMR pool lives.
+
+| Board | Main RAM (`zephyr,sram`) | WAMR pool (chosen `uc,app-pool`) |
+|-------|--------------------------|----------------------------------|
+| `nucleo_f767zi` | SRAM1/2, 384 KiB | 112 KiB in the 128 KiB DTCM, next to the Ethernet DMA descriptors and buffers (12 544 B, `CONFIG_ETH_STM32_HAL_USE_DTCM_FOR_DMA_BUFFER`) |
+| `frdm_mcxn947/mcxn947/cpu0` | SRAM A-G, 384 KiB (the overlay gives cpu0 the RAM that Zephyr's default split reserves for the unused cpu1; SRAM H stays unused) | 96 KiB, all of SRAMX |
+| `native_sim/native/64` | host process | 256 KiB in `.noinit` of the process |
+
+Main RAM consumers (sizes from the symbol table of the `nucleo_f767zi`
+build; the MCXN947 build has the same consumers):
+
 | Consumer | Size | Where configured |
 |----------|------|------------------|
-| WAMR pool: module images, loaded modules (fast-interpreter code), instances, linear memories, app heaps, operand stacks | 128 KiB (F767), 96 KiB (MCXN947), 256 KiB (native_sim) | `CONFIG_UC_APP_POOL_SIZE` in `boards/<board>.conf` |
-| kernel heap (`k_malloc`): configuration parse buffers, file reads, per-command scratch | 64 KiB (MCUs), 128 KiB (native_sim) | `CONFIG_HEAP_MEM_POOL_SIZE` |
+| WAMR pool: module images, loaded modules (fast-interpreter code), instances, linear memories, app heaps, operand stacks | 112 KiB (F767, DTCM), 96 KiB (MCXN947, SRAMX), 256 KiB (native_sim) | `CONFIG_UC_APP_POOL_SIZE` in `boards/<board>.conf`, region in `boards/<board>.overlay` |
+| kernel heap (`k_malloc`): configuration documents and parse buffers, file reads, shell/SMP snapshots | 64 KiB (MCUs; 48 KiB with `uc-ramfs`), 128 KiB (native_sim) | `CONFIG_HEAP_MEM_POOL_SIZE` |
+| libc `malloc` arena (picolibc): bacnet-stack object data (`calloc` per object created from `io.json`, by applications or by CreateObject), PSA crypto | 64 KiB (MCUs; 32 KiB with `uc-ramfs`); host `malloc` on `native_sim` | `CONFIG_COMMON_LIBC_MALLOC_ARENA_SIZE` in `boards/<board>.conf` (`snippets/uc-ramfs/boards/ram.conf`) |
 | app thread stacks | 4 × 8 KiB | `CONFIG_UC_APPS_MAX` × `CONFIG_UC_APP_THREAD_STACK_SIZE` |
 | BACnet thread stack | 8 KiB | `CONFIG_UC_BACNET_THREAD_STACK_SIZE` |
-| main, system work queue, SMP work queue, shell | 4 KiB each | `prj.conf` |
+| main, system work queue, SMP work queue, shell (UART), shell (dummy backend of the SMP shell group) | 4 KiB each | `prj.conf` |
 | bacnet-stack TSM table (16 transactions with a 1476-byte APDU buffer each) | 24 KiB | `CONFIG_BACNET_MAX_TSM_TRANSACTIONS` |
-| configuration cache (`device`, `io`, `apps`) and IO point table | ~20 KiB | `CONFIG_UC_IO_POINTS_MAX`, `CONFIG_UC_APPS_MAX`, `CONFIG_UC_APP_PARAMS_MAX` |
+| configuration cache (`device`, `io`, `apps`), the BACnet thread's copies of the device and IO configuration, IO point table | ~30 KiB | `CONFIG_UC_IO_POINTS_MAX`, `CONFIG_UC_APPS_MAX`, `CONFIG_UC_APP_PARAMS_MAX` |
 | application slots (event queues, watchdog state, subscriptions) | ~14 KiB | `CONFIG_UC_APPS_MAX`, `CONFIG_UC_APP_EVENT_QUEUE_LEN` |
-| network packets and buffers (16/16 packets, 32/32 buffers of 128 bytes) | ~14 KiB | `CONFIG_NET_PKT_*`, `CONFIG_NET_BUF_*` |
-| log buffer | 4 KiB | `CONFIG_LOG_BUFFER_SIZE` |
-| LittleFS file caches (8 files × 256 bytes + read/prog/lookahead) | ~3 KiB | `CONFIG_FS_LITTLEFS_*`, fstab node |
+| network packets and buffers (16/16 packets, 32/32 buffers of 128 bytes, socket contexts) | ~15 KiB | `CONFIG_NET_PKT_*`, `CONFIG_NET_BUF_*` |
 | bacnet-stack Network Port object lists | 11 KiB | bacnet-stack |
-| libc `malloc` arena: bacnet-stack object data (`calloc` per object created) | **all RAM left after linking** on the MCUs; host `malloc` on `native_sim` | `CONFIG_COMMON_LIBC_MALLOC_ARENA_SIZE=-1` (Zephyr default) |
+| owner table (64 objects) | 4.5 KiB | `CONFIG_UC_BACNET_OBJECTS_MAX` |
+| log buffer | 4 KiB | `CONFIG_LOG_BUFFER_SIZE` |
+| SMP shell transport receive buffers (16 lines) | ~2.4 KiB | `CONFIG_MCUMGR_TRANSPORT_SHELL_RX_BUF_COUNT` |
+| LittleFS file caches (8 files × 256 bytes + read/prog/lookahead) | ~3 KiB | `CONFIG_FS_LITTLEFS_*`, fstab node |
+| RAM disk of the `uc-ramfs` snippet | 64 KiB | `snippets/uc-ramfs/uc-ramfs.overlay` |
 
-The last row matters: static RAM that grows (a larger pool, more threads)
-shrinks the arena from which IO points and applications create their BACnet
-objects, and object creation then fails at run time with
-`NO_SPACE_FOR_OBJECT` (`UC_ERR_NO_MEM`). Keep a few KiB of RAM unallocated
-after linking (roughly 50..200 bytes per object plus list nodes; an AO
-with its 16-entry priority array is about 140 bytes).
-
-Sizes of the largest consumers are from the linker map (sections `bss`,
-`noinit`, `datas`) of the `nucleo_f767zi` build.
+The `malloc` arena has a fixed size (Zephyr's default of -1 would give it
+whatever RAM is left after linking). IO points and applications create their
+BACnet objects from it, roughly 50..200 bytes per object plus list nodes (an
+AO with its 16-entry priority array is about 140 bytes); an exhausted arena
+fails object creation at run time with `NO_SPACE_FOR_OBJECT`
+(`UC_ERR_NO_MEM`). With a fixed arena, static RAM that grows (a larger pool,
+more threads) fails the link instead of silently shrinking the arena. The
+board files document 24 KiB as the minimum arena.
 
 ### 6.2 Measured usage
 
-Builds of the repository state at the time of writing (`west build -b <board>
-BACNet-uc/firmware`, default configuration):
+`west build -p -b <board> BACNet-uc/firmware` of the current repository
+state (Zephyr SDK 1.0.1, GCC 14.3), 0 compiler warnings in every build. None
+of the images has run on the boards yet.
 
-| Board | Result | Static RAM demand (sum of input sections in the linker map) | RAM region |
-|-------|--------|-------------------------------:|-----------:|
-| `nucleo_f767zi` | **does not link**: `region 'RAM' overflowed by 29564 bytes` | 421 190 B | 393 216 B (`sram0`, 384 KiB) |
-| `frdm_mcxn947/mcxn947/cpu0` | **does not link**: `region 'RAM' overflowed by 60648 bytes` | 386 573 B | 327 680 B (320 KiB) |
-| `native_sim/native/64` | links; `zephyr.exe`: text 699 322 B, data 78 076 B, bss 637 990 B | host process | - |
+| Build | FLASH | RAM (384 KiB) | Second region |
+|-------|------:|--------------:|---------------|
+| `nucleo_f767zi` | 497 944 B of 2 MiB (23.74 %) | 359 868 B (91.52 %), 33 348 B free | DTCM 127 232 B of 128 KiB (97.07 %): pool 114 688 B + Ethernet DMA 12 544 B, 3 840 B free |
+| `frdm_mcxn947/mcxn947/cpu0` | 507 236 B of 2 MiB (24.19 %) | 358 144 B (91.08 %), 35 072 B free | SRAMX 96 KiB of 96 KiB (100 %): pool |
+| `nucleo_f767zi` `-S uc-ramfs` | 507 452 B (24.20 %) | 378 044 B (96.14 %), 15 172 B free | DTCM as above |
+| `frdm_mcxn947/mcxn947/cpu0` `-S uc-ramfs` | 521 572 B (24.87 %) | 376 456 B (95.74 %), 16 760 B free | SRAMX as above |
+| `native_sim/native/64` | `zephyr.exe`: text 715 220 B, data 78 404 B, bss 641 240 B | host process | - |
 
-With the WAMR pool moved out of the main RAM through the chosen node
-`uc,app-pool` (proposed fix; the overlay is not part of the repository yet,
-and the resulting images were not run on hardware):
+MCUboot builds (`west build -p --sysbuild -b <board> BACNet-uc/firmware`,
+[`sysbuild.conf`](../firmware/sysbuild.conf)):
 
-| Board | Change | FLASH | RAM | Second region |
-|-------|--------|------:|----:|---------------|
-| `nucleo_f767zi` | `/ { chosen { uc,app-pool = &dtcm; }; };` and `CONFIG_UC_APP_POOL_SIZE=98304` | 494 444 B of 2 MiB (23.6 %) | 291 708 B of 384 KiB (74.2 %) | DTCM 110 848 B of 128 KiB: pool 96 KiB + 12.25 KiB Ethernet DMA buffers (`CONFIG_ETH_STM32_HAL_USE_DTCM_FOR_DMA_BUFFER`) |
-| `frdm_mcxn947/mcxn947/cpu0` | `/ { chosen { uc,app-pool = &sramx; }; };` | 503 628 B of 2 MiB (24.0 %) | 290 024 B of 320 KiB (88.5 %) | SRAMX 96 KiB of 96 KiB (pool) |
+| Board | MCUboot (`boot_partition`) | Firmware in `slot0_partition` | Firmware RAM | Swap mode |
+|-------|---------------------------:|------------------------------:|-------------:|-----------|
+| `nucleo_f767zi` | 31 276 B of 64 KiB | 505 712 B of 785 850 B (64.35 %; 768 KiB slot minus the image trailer) | 360 508 B (91.68 %) | swap using scratch |
+| `frdm_mcxn947/mcxn947/cpu0` | 48 052 B of 80 KiB | 516 152 B of 999 274 B (51.65 %; 984 KiB slot) | 358 776 B (91.24 %) | swap using offset |
 
-Reproduce with an overlay file passed as
-`-- -DEXTRA_DTC_OVERLAY_FILE=<abs path>` (plus `-DCONFIG_UC_APP_POOL_SIZE=98304`
-on the F767). RAM left after linking, which becomes the `malloc` arena for
-BACnet objects: ~99 KiB on the F767, ~37 KiB on the MCXN947. Both images fit
-the MCUboot slots (768 KiB and 984 KiB).
+The free main RAM is margin for later growth; the heap and the arena are
+already reserved. Tight spots: the `uc-ramfs` variants (~15 KiB free) and the
+F767 DTCM (3.8 KiB free next to the pool).
 
-Code size by component (`nucleo_f767zi`, `.text` from the linker map;
-`.rodata` adds 112 868 B, mostly strings and tables):
+Code size by component (`nucleo_f767zi`, sum of the `.text` input sections
+of the linker map; `.rodata` adds 113 512 B, mostly strings and tables):
 
 | Component | `.text` |
 |-----------|--------:|
-| bacnet-stack + Zephyr glue | 72 924 B |
-| WAMR (fast interpreter, loader, libc-builtin, thread manager) | 62 962 B |
-| BACnet-uc modules (`firmware/src`) | 53 142 B |
-| network stack (IP, UDP, sockets, DHCPv4, Ethernet L2, conn mgr, net shell) | 58 804 B |
-| Zephyr libraries (logging, shell, JSON, crypto glue, ...) | 33 986 B |
-| LittleFS + VFS | 22 928 B |
-| kernel | 11 610 B |
-| C library | 9 912 B |
-| MCUmgr (SMP transports and groups) + zcbor | 11 664 B |
-| drivers and HAL (Ethernet, flash, SPI NOR, ADC, PWM, GPIO, UART) | 18 270 B |
-| total `.text` | 367 828 B |
+| bacnet-stack + Zephyr glue | 72 996 B |
+| WAMR (fast interpreter, loader, libc-builtin, thread manager) | 62 984 B |
+| BACnet-uc modules (`firmware/src`) | 55 874 B |
+| network stack (IP, UDP, sockets, DHCPv4, Ethernet L2, conn mgr, net shell) | 54 580 B |
+| Zephyr libraries (logging, shell, JSON, PSA crypto, ...) | 35 328 B |
+| LittleFS + VFS | 24 476 B |
+| drivers and HAL (Ethernet, flash, SPI NOR, ADC, PWM, GPIO, UART) | 22 982 B |
+| kernel + Cortex-M architecture code | 15 480 B |
+| C library (picolibc, libgcc) | 14 234 B |
+| MCUmgr (SMP transports and groups) + zcbor | 11 688 B |
+| total `.text` | 370 622 B |
 
 ### 6.3 Tuning
 
 | Goal | Change | Saves |
 |------|--------|-------|
-| more room for applications | raise `CONFIG_UC_APP_POOL_SIZE`; place the pool in another RAM region with the chosen node `uc,app-pool` (e.g. the MCXN947's 96 KiB SRAMX, or the F767's DTCM where the Ethernet DMA buffers leave room) | - |
+| more room for applications | raise `CONFIG_UC_APP_POOL_SIZE` only together with room in its region (the MCXN947's SRAMX is full; the F767 DTCM has 3.8 KiB left), or move the pool to the main RAM (remove the chosen `uc,app-pool`) and pay for it with the heap or the margin | - |
 | fewer applications | `CONFIG_UC_APPS_MAX=2` | 16 KiB stacks + ~7 KiB slots |
 | fewer simultaneous client requests of the stack | `CONFIG_BACNET_MAX_TSM_TRANSACTIONS=8` | ~12 KiB |
 | smaller app threads (C apps with shallow host calls) | `CONFIG_UC_APP_THREAD_STACK_SIZE=6144` | 2 KiB per slot |
-| no shell | `CONFIG_SHELL=n` (also removes the SMP shell transport and group, and the `fs mv` used for power-safe uploads) | two 4 KiB shell stacks, buffers and the shell code |
+| no shell | `CONFIG_SHELL=n` (also removes the SMP shell transport and group, the console recovery path) | two 4 KiB shell stacks, buffers and the shell code |
+| smaller malloc arena | `CONFIG_COMMON_LIBC_MALLOC_ARENA_SIZE` down to the 24 KiB minimum, when few objects are created | up to 40 KiB |
 
 ## 7. Failure handling
 
 | Failure | Detection | Handling | Visible as |
 |---------|-----------|----------|------------|
 | corrupt or blank file system | mount fails | format (`CONFIG_UC_STORAGE_FORMAT_ON_FAIL=y`) and continue with defaults | `WRN uc_storage: formatting /lfs` |
-| invalid configuration document at boot | parser error | defaults for that document | `WRN uc_config: ... rejected (-22), using defaults` |
-| invalid document on `reload` | parser error | the active configuration is kept | SMP rc `INVALID`, log |
-| power loss during a configuration write | - | `uc_storage_write_file()` writes `<path>.tmp` and renames it (one LittleFS metadata commit): the old or the new file exists | - |
+| invalid configuration document at boot | parser error | defaults for that document (an invalid staged `<doc>.json.new` is deleted and the active document is used) | `WRN uc_config: ... rejected (-22), using defaults` |
+| invalid document on `reload` | parser error | the active configuration is kept; an invalid staged `<doc>.json.new` is deleted | SMP rc `INVALID`, `WRN uc_config: ... rejected (-22), deleting it` |
+| power loss during a configuration write | - | the firmware (`apps.json`) writes `<path>.tmp` and renames it; clients upload `<doc>.json.new` and the reload renames it over the document (one LittleFS metadata commit each): the old or the new file exists | - |
 | no IPv4 address | `uc_net_wait_ready()` | BACnet waits, starts after 30 s anyway; SMP UDP starts when the address appears | `WRN no IPv4 address after 30000 ms` |
 | remote device not reachable | no I-Am / TSM timeout | `UC_ERR_NO_ROUTE` / `UC_ERR_TIMEOUT` to the application; Who-Is repeated | app status `errors` |
 | remote device rejects COV | Error/Reject/Abort to SubscribeCOV | polling fallback | transparent to the application |
 | executor or client slots exhausted | queue full | `-EAGAIN`/`-EBUSY` → `UC_ERR_BUSY` / rc `BUSY`; caller retries | |
 | IO hardware error | driver return code | point skipped, logged once per episode, retried every sample | `ERR uc_io: ai0 (analog-input 1): read failed` |
 | application trap (out-of-bounds, unreachable, division by zero) | WAMR exception | instance destroyed, owned objects deleted, subscriptions cancelled, state `failed`, `last_error` set | `uc_app status` |
-| application endless loop | watchdog `CONFIG_UC_APP_WATCHDOG_MS` (2 s) of execution time | `wasm_runtime_terminate()`, state `failed` | `last_error: "uc_app_tick: watchdog, callback exceeded 2000 ms"` |
+| application endless loop | watchdog `CONFIG_UC_APP_WATCHDOG_MS` (2 s) of execution time; on `native_sim` the instruction budget `CONFIG_WAMR_INSTRUCTION_LIMIT` (interpreter only) | `wasm_runtime_terminate()` / trap, state `failed` | `last_error: "uc_app_tick: watchdog, callback exceeded 2000 ms"` (`native_sim`: `"uc_app_tick: instruction limit exceeded"`) |
 | application floods events or logs | queue full / rate limit | events dropped and counted as errors; log lines above 20/s dropped and counted | `WRN <app>: N log lines dropped` |
 | WAMR pool exhausted | load/instantiate fails | start fails, state `failed`, `last_error` names the WAMR message | `uc_app status`, `uc_node info` `wasm.pool_free` |
 | thread stack overflow | MPU stack guard (Cortex-M7), stack limit registers (Cortex-M33) | kernel fatal error | fatal error dump on the console |

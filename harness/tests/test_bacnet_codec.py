@@ -459,3 +459,16 @@ def test_to_jsonable() -> None:
         1.5,
         None,
     ]
+
+
+def test_device_management_requests() -> None:
+    data = codec.device_communication_control_request_data(1, 5, "pw")
+    assert data == bytes.fromhex("0905") + bytes.fromhex("1901") + bytes.fromhex("2b007077")
+    assert codec.decode_device_communication_control_request(data) == (5, 1, "pw")
+    assert codec.decode_device_communication_control_request(
+        codec.device_communication_control_request_data(0)) == (None, 0, None)
+    data = codec.reinitialize_device_request_data(1, "secret")
+    assert codec.decode_reinitialize_device_request(data) == (1, "secret")
+    assert codec.decode_reinitialize_device_request(bytes.fromhex("0900")) == (0, None)
+    with pytest.raises(codec.CodecError):
+        codec.decode_reinitialize_device_request(bytes.fromhex("0900") + b"\x00")

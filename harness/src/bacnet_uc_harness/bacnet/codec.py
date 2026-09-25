@@ -1435,6 +1435,65 @@ def decode_write_property_request(data: bytes) -> WritePropertyRequest:
     return req
 
 
+# --- device management (DM-DCC-B, DM-RD-B) ----------------------------------------------------
+
+
+def device_communication_control_request_data(
+    enable: int, duration_min: int | None = None, password: str | None = None
+) -> bytes:
+    """DeviceCommunicationControl-Request: [0] time duration (minutes,
+    optional), [1] enable-disable, [2] password (optional)."""
+    out = b""
+    if duration_min is not None:
+        out += encode_context_unsigned(0, duration_min)
+    out += encode_context_enumerated(1, enable)
+    if password is not None:
+        out += encode_context_character_string(2, password)
+    return out
+
+
+def decode_device_communication_control_request(
+    data: bytes,
+) -> tuple[int | None, int, str | None]:
+    """-> ``(duration_min, enable_disable, password)``."""
+    i = 0
+    duration = None
+    if _peek_context(data, i, 0):
+        content, i = _expect_context(data, i, 0)
+        duration = decode_unsigned(content)
+    content, i = _expect_context(data, i, 1)
+    enable = decode_unsigned(content)
+    password = None
+    if _peek_context(data, i, 2):
+        content, i = _expect_context(data, i, 2)
+        password = decode_character_string(content)
+    if i != len(data):
+        raise CodecError("trailing data in DeviceCommunicationControl request")
+    return duration, enable, password
+
+
+def reinitialize_device_request_data(state: int, password: str | None = None) -> bytes:
+    """ReinitializeDevice-Request: [0] reinitialized-state, [1] password
+    (optional)."""
+    out = encode_context_enumerated(0, state)
+    if password is not None:
+        out += encode_context_character_string(1, password)
+    return out
+
+
+def decode_reinitialize_device_request(data: bytes) -> tuple[int, str | None]:
+    """-> ``(state, password)``."""
+    content, i = _expect_context(data, 0, 0)
+    state = decode_unsigned(content)
+    password = None
+    if _peek_context(data, i, 1):
+        content, i = _expect_context(data, i, 1)
+        password = decode_character_string(content)
+    if i != len(data):
+        raise CodecError("trailing data in ReinitializeDevice request")
+    return state, password
+
+
 # --- natural datatypes ------------------------------------------------------------------------
 
 _ANALOG_PV = {"analog-input", "analog-output", "analog-value", "loop", "pulse-converter"}

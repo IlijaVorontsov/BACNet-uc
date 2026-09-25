@@ -9,13 +9,22 @@
    (``apps.json`` entries + ``uc_app list``), SHA-256 of the module files and
    the object list.
 3. :func:`plan` compares desired and live state and returns a
-   :class:`Plan` of actions: ``push_config`` (upload + reload), ``reload``,
-   ``remove_app`` (only with ``prune``), ``deploy_app`` (upload if the module
-   changed, install with manifest), ``start_app``, plus notes (e.g. a pending
-   reboot).
+   :class:`Plan` of actions: ``push_config`` (staged upload + reload),
+   ``reload``, ``remove_app`` (only with ``prune``), ``deploy_app`` (upload if
+   the module changed, install with manifest), ``start_app``,
+   ``restart_app``, plus notes (e.g. a pending reboot).
 4. :func:`apply` executes a plan in a safe order: device configuration, IO
-   configuration, applications, links (uc-link instances); optionally
-   reboots nodes that report ``reboot_required``.
+   configuration, applications, links (uc-link instances), restarts;
+   optionally reboots nodes that report ``reboot_required``.
+
+An ``io.json`` reload deletes and re-creates every IO object of the node:
+outputs fall back to their Relinquish_Default and COV subscriptions on the
+old objects are gone. uc-link only writes a destination when its source
+changes, so a link-driven output would stay at Relinquish_Default until
+then. The plan therefore restarts every app (on any node) whose inputs or
+outputs are IO objects of a node whose ``io.json`` is pushed or reloaded
+(stock apps and uc-link instances, from their parameters), unless the app is
+(re)deployed or started anyway.
 
 :func:`plan` is pure; :func:`fetch_live` and :func:`apply` only use the
 duck-typed node methods of :class:`bacnet_uc_harness.node.Node`, so tests can
@@ -48,10 +57,12 @@ from bacnet_uc_harness.render import (
 )
 from bacnet_uc_harness.wasm_build import aot_compile, build_c, check_module
 
-ActionKind = Literal["push_config", "reload", "remove_app", "deploy_app", "start_app"]
+ActionKind = Literal["push_config", "reload", "remove_app", "deploy_app", "start_app",
+                     "restart_app"]
 PHASE_DEVICE, PHASE_IO, PHASE_APPS, PHASE_LINKS = 0, 1, 2, 3
 PHASE_NAMES = {PHASE_DEVICE: "device", PHASE_IO: "io", PHASE_APPS: "apps", PHASE_LINKS: "links"}
-_KIND_ORDER = {"push_config": 0, "reload": 1, "remove_app": 2, "deploy_app": 3, "start_app": 4}
+_KIND_ORDER = {"push_config": 0, "reload": 1, "remove_app": 2, "deploy_app": 3, "start_app": 4,
+               "restart_app": 5}
 DEFAULT_OPT = "-Oz"
 
 
@@ -313,6 +324,26 @@ def _live_io_objects(objects: list[dict[str, Any]]) -> set[tuple[int, int]]:
     return out
 
 
+def io_dependents(system: System, io_nodes: set[str]) -> dict[tuple[str, str], list[str]]:
+    """Apps (``(node, app)``, generated uc-link instances included) that read
+    or write an IO object of one of ``io_nodes``, with the objects concerned
+    (``"sim-a/analog-input:1"``)."""
+    io_keys = {n.name: {(t, i) for t, i, _ in n.io_objects()} for n in system.nodes
+               if n.name in io_nodes}
+    by_instance = {n.instance: n.name for n in system.nodes}
+    out: dict[tuple[str, str], list[str]] = {}
+    for node in system.nodes:
+        for app in node_apps(system, node.name):
+            hits = []
+            for ref in app.point_refs():
+                owner = node.name if ref.device is None else by_instance.get(ref.device)
+                if owner in io_keys and ref.key in io_keys[owner]:
+                    hits.append(f"{owner}/{enums.format_object_ref(*ref.key)}")
+            if hits:
+                out[(node.name, app.name)] = list(dict.fromkeys(hits))
+    return out
+
+
 def _reboot_hint(system: System, node: str, render: NodeRender, info: Mapping[str, Any]
                  ) -> str | None:
     dev = info.get("device", {}) if isinstance(info, Mapping) else {}
@@ -436,7 +467,35 @@ def plan(
                     p.actions.append(Action(
                         "start_app", name, app_name,
                         f"state {status.get('state')}" + (f": {err}" if err else ""), phase))
+    _plan_restarts(system, p, renders, live)
     return p
+
+
+def _plan_restarts(system: System, p: Plan, renders: Mapping[str, NodeRender],
+                   live: Mapping[str, LiveState]) -> None:
+    """``restart_app`` for apps that depend on IO objects re-created by the
+    planned io.json pushes/reloads (see the module docstring)."""
+    io_nodes = {a.node for a in p.actions if a.target == "io" and a.kind in ("push_config",
+                                                                               "reload")}
+    if not io_nodes:
+        return
+    busy = {(a.node, a.target) for a in p.actions if a.kind in ("deploy_app", "start_app",
+                                                                 "remove_app")}
+    for (node, app_name), refs in io_dependents(system, io_nodes).items():
+        st = live.get(node)
+        if (node, app_name) in busy or st is None or not st.reachable:
+            continue
+        try:
+            entry = renders[node].app(app_name).entry
+        except (KeyError, HarnessError):
+            continue
+        status = st.apps_status.get(app_name)
+        if not entry.get("autostart", True) or status is None:
+            continue
+        p.actions.append(Action(
+            "restart_app", node, app_name,
+            f"uses re-created IO objects {', '.join(refs)}", PHASE_LINKS,
+            {"objects": refs}))
 
 
 # --- apply ------------------------------------------------------------------------------------
@@ -492,6 +551,9 @@ async def _execute(action: Action, node: Any) -> Any:
                                      delete_file=action.data.get("delete_file", True))
     if action.kind == "start_app":
         return await node.start_app(action.target)
+    if action.kind == "restart_app":
+        res = await node.restart_app(action.target)
+        return {"name": action.target, "state": (res or {}).get("state")}
     if action.kind == "deploy_app":
         art: AppArtifact = action.data["artifact"]
         e = action.data["entry"]

@@ -10,16 +10,17 @@
 
 #include <zephyr/kernel.h>
 
+#include "uc/uc_common.h"
 #include "uc/uc_storage.h"
 
 #include "storage_stub.h"
 
-#define STUB_FILES    4
+#define STUB_FILES    8
 #define STUB_FILE_MAX (CONFIG_UC_CONFIG_DOC_MAX + 64)
 
 struct stub_file {
 	bool used;
-	char path[64];
+	char path[UC_PATH_MAX];
 	char data[STUB_FILE_MAX + 1];
 	size_t len;
 };
@@ -27,6 +28,8 @@ struct stub_file {
 static struct stub_file files[STUB_FILES];
 static int writes;
 static int fail_next;
+static int fail_next_rename;
+static bool not_ready;
 
 static struct stub_file *find(const char *path)
 {
@@ -60,15 +63,22 @@ void stub_fs_reset(void)
 	memset(files, 0, sizeof(files));
 	writes = 0;
 	fail_next = 0;
+	fail_next_rename = 0;
+	not_ready = false;
 }
 
 void stub_fs_put(const char *path, const char *text)
 {
+	stub_fs_put_len(path, text, strlen(text));
+}
+
+void stub_fs_put_len(const char *path, const char *data, size_t len)
+{
 	struct stub_file *f = find_or_add(path);
-	size_t len = strlen(text);
 
 	__ASSERT_NO_MSG(f != NULL && len <= STUB_FILE_MAX);
-	memcpy(f->data, text, len + 1);
+	memcpy(f->data, data, len);
+	f->data[len] = '\0';
 	f->len = len;
 }
 
@@ -89,6 +99,16 @@ void stub_fs_fail_next_write(int err)
 	fail_next = err;
 }
 
+void stub_fs_fail_next_rename(int err)
+{
+	fail_next_rename = err;
+}
+
+void stub_fs_set_ready(bool ready)
+{
+	not_ready = !ready;
+}
+
 int uc_storage_init(void)
 {
 	return 0;
@@ -96,7 +116,7 @@ int uc_storage_init(void)
 
 bool uc_storage_ready(void)
 {
-	return true;
+	return !not_ready;
 }
 
 int uc_storage_read_file(const char *path, char **buf, size_t *len, size_t max_len)
@@ -141,6 +161,33 @@ int uc_storage_write_file(const char *path, const void *data, size_t len)
 	f->data[len] = '\0';
 	f->len = len;
 	writes++;
+	return 0;
+}
+
+int uc_storage_rename(const char *from, const char *to)
+{
+	struct stub_file *src = find(from);
+	struct stub_file *dst;
+
+	if (fail_next_rename != 0) {
+		int err = fail_next_rename;
+
+		fail_next_rename = 0;
+		return err;
+	}
+	if (src == NULL) {
+		return -ENOENT;
+	}
+	if (strcmp(from, to) == 0) {
+		return 0;
+	}
+	/* clobber the destination, like LittleFS */
+	dst = find(to);
+	if (dst != NULL) {
+		dst->used = false;
+	}
+	strncpy(src->path, to, sizeof(src->path) - 1);
+	src->path[sizeof(src->path) - 1] = '\0';
 	return 0;
 }
 

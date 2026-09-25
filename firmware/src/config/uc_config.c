@@ -22,6 +22,11 @@
  * The parse scratch structures and the cache are large (io.json: ~11 KB
  * scratch + ~7 KB result); they live on the kernel heap or in .bss, never on
  * the caller's stack.
+ *
+ * Staged documents: a client uploads <doc>.new (SMP fs group) and requests a
+ * reload; load_doc() validates the staged file and renames it over the
+ * active document only when it is valid, so a half-written or invalid
+ * upload never replaces a working configuration.
  */
 
 #include <errno.h>
@@ -32,6 +37,7 @@
 #include <zephyr/data/json.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/logging/log_ctrl.h>
 #include <zephyr/sys/printk.h>
 
 #include "bacnet/bacenum.h"
@@ -42,6 +48,7 @@
 LOG_MODULE_REGISTER(uc_config, CONFIG_UC_LOG_LEVEL);
 
 #define UC_BACNET_PORT_DEFAULT 47808 /* 0xBAC0 */
+#define UC_PASSWORD_MAX        20    /* BACnet: CharacterString (SIZE(1..20)) */
 #define UC_INSTANCE_MAX        4194302
 #define UC_SCHEMA_VERSION      1
 
@@ -368,6 +375,8 @@ struct jd_bacnet {
 	struct jd_fd foreign_device;
 	struct jd_binding static_bindings[CONFIG_UC_BACNET_STATIC_BINDINGS_MAX];
 	size_t static_bindings_len;
+	/* larger than the limit so that a long password gets its own message */
+	char password[UC_NAME_MAX];
 };
 
 struct jd_log {
@@ -416,6 +425,7 @@ static const struct json_obj_descr jd_bacnet_descr[] = {
 	JSON_OBJ_DESCR_OBJ_ARRAY(struct jd_bacnet, static_bindings,
 				 CONFIG_UC_BACNET_STATIC_BINDINGS_MAX, static_bindings_len,
 				 jd_binding_descr, ARRAY_SIZE(jd_binding_descr)),
+	JSON_OBJ_DESCR_PRIM(struct jd_bacnet, password, JSON_TOK_STRING_BUF),
 };
 
 static const struct json_obj_descr jd_log_descr[] = {
@@ -532,6 +542,22 @@ static int device_from_json(const struct jd_doc *d, uint64_t fields, struct uc_d
 		o->port = UC_BACNET_PORT_DEFAULT;
 		OPT_INT(&b->port, 1, UINT16_MAX, o->port, doc, (int)i,
 			"bacnet.static_bindings.port");
+	}
+
+	/* The schema requires 1..20 printable ASCII characters; "" (absent)
+	 * means no password.
+	 */
+	if (d->bacnet.password[0] != '\0') {
+		if (strlen(d->bacnet.password) > UC_PASSWORD_MAX) {
+			return bad(doc, -1, "bacnet.password");
+		}
+		for (const char *c = d->bacnet.password; *c != '\0'; c++) {
+			if (*c < 0x20 || *c > 0x7e) {
+				return bad(doc, -1, "bacnet.password");
+			}
+		}
+		(void)uc_strlcpy(out->bacnet_password, d->bacnet.password,
+				 sizeof(out->bacnet_password));
 	}
 
 	/* log */
@@ -1182,6 +1208,10 @@ int uc_config_encode_apps(const struct uc_apps_cfg *cfg, char *buf, size_t buf_l
 /* ---------------------------------------------------------------------- */
 
 static K_MUTEX_DEFINE(cfg_lock);  /* protects the cache */
+/* serialises document loads (shell and SMP may reload at the same time; a
+ * staged document must be validated and renamed by one of them only)
+ */
+static K_MUTEX_DEFINE(load_lock);
 static K_MUTEX_DEFINE(apps_lock); /* serialises uc_config_set_apps() */
 
 static struct uc_device_cfg cache_device;
@@ -1247,15 +1277,85 @@ static const struct cfg_doc cfg_docs[] = {
 	 defaults_apps_any},
 };
 
-/*
- * Load one document into the cache. A missing file yields defaults. On a
- * read or parse error the cache keeps its content when keep_on_error is set
- * (reload), otherwise it gets defaults (boot).
+/* Read and parse one file into out: 0, -ENOENT (missing), a parser error
+ * (-EINVAL, -ENOSPC) or a storage error (-ENODEV: /lfs not mounted, -EFBIG:
+ * larger than CONFIG_UC_CONFIG_DOC_MAX, -EIO, -ENOMEM, ...).
  */
-static int load_doc(const struct cfg_doc *doc, bool keep_on_error)
+static int read_doc(const struct cfg_doc *doc, const char *path, void *out)
 {
 	char *json = NULL;
 	size_t len = 0;
+	int rc;
+
+	if (!uc_storage_ready()) {
+		/* no /lfs: not "missing" (a reload must keep the cache) */
+		return -ENODEV;
+	}
+
+	rc = uc_storage_read_file(path, &json, &len, CONFIG_UC_CONFIG_DOC_MAX);
+	if (rc < 0) {
+		return rc;
+	}
+
+	rc = doc->parse(json, len, out);
+	k_free(json);
+	return rc;
+}
+
+/*
+ * Staged document <path>.new: 1 when it was valid and has been renamed over
+ * <path> (out holds it), 0 when there is none, -EINVAL when it was rejected
+ * and deleted, another negative errno when it could not be read or renamed
+ * (then it is left in place for another attempt).
+ */
+static int load_staged(const struct cfg_doc *doc, void *out)
+{
+	char staged[UC_PATH_MAX];
+	int rc;
+
+	if (!uc_storage_ready()) {
+		return 0;
+	}
+	if (snprintk(staged, sizeof(staged), "%s" UC_CFG_STAGED_SUFFIX, doc->path) >=
+	    (int)sizeof(staged)) {
+		return -ENAMETOOLONG;
+	}
+
+	rc = read_doc(doc, staged, out);
+	if (rc == -ENOENT) {
+		return 0;
+	}
+	if (rc == -EINVAL || rc == -ENOSPC || rc == -EFBIG) {
+		LOG_WRN("%s rejected (%d), deleting it", staged, rc);
+		rc = uc_storage_remove(staged);
+		if (rc < 0) {
+			LOG_ERR("%s: delete failed (%d)", staged, rc);
+		}
+		return -EINVAL;
+	}
+	if (rc < 0) {
+		LOG_WRN("%s: read failed (%d)", staged, rc);
+		return rc;
+	}
+
+	rc = uc_storage_rename(staged, doc->path);
+	if (rc < 0) {
+		LOG_ERR("%s: activation failed (%d)", staged, rc);
+		return rc;
+	}
+
+	LOG_INF("%s activated", staged);
+	return 1;
+}
+
+/*
+ * Load one document into the cache: the staged <path>.new if there is one,
+ * else <path>. A missing <path> yields defaults. On an error the cache keeps
+ * its content when keep_on_error is set (reload), otherwise it gets defaults
+ * (boot; a rejected staged document falls back to <path> there).
+ */
+static int load_doc_locked(const struct cfg_doc *doc, bool keep_on_error)
+{
 	void *tmp;
 	int rc;
 
@@ -1265,19 +1365,24 @@ static int load_doc(const struct cfg_doc *doc, bool keep_on_error)
 		return -ENOMEM;
 	}
 
-	rc = uc_storage_read_file(doc->path, &json, &len, CONFIG_UC_CONFIG_DOC_MAX);
+	rc = load_staged(doc, tmp);
+	if (rc > 0) {
+		rc = 0;
+		goto commit;
+	}
+	if (rc < 0 && keep_on_error) {
+		LOG_WRN("%s: keeping the active configuration", doc->path);
+		k_free(tmp);
+		return rc;
+	}
+
+	rc = read_doc(doc, doc->path, tmp);
 	if (rc == -ENOENT) {
 		LOG_INF("%s not found, using defaults", doc->path);
 		doc->defaults(tmp);
 		rc = 0;
-	} else if (rc < 0) {
-		LOG_WRN("%s: read failed (%d)", doc->path, rc);
-	} else {
-		rc = doc->parse(json, len, tmp);
-		k_free(json);
-		if (rc == 0) {
-			LOG_INF("%s loaded", doc->path);
-		}
+	} else if (rc == 0) {
+		LOG_INF("%s loaded", doc->path);
 	}
 
 	if (rc < 0) {
@@ -1291,6 +1396,7 @@ static int load_doc(const struct cfg_doc *doc, bool keep_on_error)
 		doc->defaults(tmp);
 	}
 
+commit:
 	k_mutex_lock(&cfg_lock, K_FOREVER);
 	cache_defaults_locked();
 	memcpy(doc->cache, tmp, doc->size);
@@ -1298,6 +1404,46 @@ static int load_doc(const struct cfg_doc *doc, bool keep_on_error)
 
 	k_free(tmp);
 	return rc;
+}
+
+static int load_doc(const struct cfg_doc *doc, bool keep_on_error)
+{
+	int rc;
+
+	k_mutex_lock(&load_lock, K_FOREVER);
+	rc = load_doc_locked(doc, keep_on_error);
+	k_mutex_unlock(&load_lock);
+
+	return rc;
+}
+
+static const char *log_level_name(uint8_t level)
+{
+	static const char *const names[] = {"none", "err", "wrn", "inf", "dbg"};
+
+	return (level < ARRAY_SIZE(names)) ? names[level] : "?";
+}
+
+void uc_config_apply_log_level(void)
+{
+	uint8_t level;
+
+	k_mutex_lock(&cfg_lock, K_FOREVER);
+	cache_defaults_locked();
+	level = cache_device.log_level;
+	k_mutex_unlock(&cfg_lock);
+
+#if defined(CONFIG_LOG_RUNTIME_FILTERING)
+	uint32_t count = log_src_cnt_get(Z_LOG_LOCAL_DOMAIN_ID);
+
+	for (uint32_t i = 0; i < count; i++) {
+		(void)log_filter_set(NULL, Z_LOG_LOCAL_DOMAIN_ID, (int16_t)i, level);
+	}
+	LOG_INF("log level %s (%u sources)", log_level_name(level), count);
+#else
+	LOG_WRN("CONFIG_LOG_RUNTIME_FILTERING disabled, log level %s not applied",
+		log_level_name(level));
+#endif
 }
 
 int uc_config_init(void)
@@ -1320,6 +1466,8 @@ int uc_config_init(void)
 		}
 	}
 
+	uc_config_apply_log_level();
+
 	return first_err;
 }
 
@@ -1340,6 +1488,9 @@ int uc_config_reload(uint32_t docs)
 		rc = load_doc(&cfg_docs[i], true);
 		if (rc < 0 && first_err == 0) {
 			first_err = rc;
+		}
+		if (rc == 0 && cfg_docs[i].bit == UC_CFG_DEVICE) {
+			uc_config_apply_log_level();
 		}
 	}
 

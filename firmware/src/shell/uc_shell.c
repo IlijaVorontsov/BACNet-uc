@@ -10,6 +10,9 @@
  *   uc obj list [offset] [count]
  *   uc cfg show <device|io|apps> | reload <device|io|apps|all>
  *
+ * "uc cfg reload" activates a staged <doc>.json.new first (see
+ * uc_config_reload()).
+ *
  * Only the public module APIs are used. Commands may run concurrently (UART
  * shell thread and the MCUmgr shell backend), so large structures are
  * allocated per command from the kernel heap instead of static buffers or
@@ -526,6 +529,9 @@ static void show_device(const struct shell *sh)
 		shell_print(sh, "         binding: device %u -> %s:%u", c->bindings[i].device,
 			    c->bindings[i].address, c->bindings[i].port);
 	}
+	/* never print the password itself */
+	shell_print(sh, "         password: %s",
+		    (c->bacnet_password[0] != '\0') ? "configured" : "none");
 	shell_print(sh, "log:     %s", log_level_str(c->log_level));
 	k_free(c);
 }
@@ -544,8 +550,8 @@ static void show_io(const struct shell *sh)
 	for (size_t i = 0; i < c->count; i++) {
 		const struct uc_io_point_cfg *p = &c->points[i];
 
-		shell_print(sh, "%-15s -> %s:%u \"%s\"", p->channel, uc_obj_type_to_str(p->object_type),
-			    p->object_instance, p->name);
+		shell_print(sh, "%-15s -> %s:%u \"%s\"", p->channel,
+			    uc_obj_type_to_str(p->object_type), p->object_instance, p->name);
 		shell_print(sh, "    units %u, scale %g, offset %g, cov %g, sample %u ms, "
 			    "debounce %u ms%s", p->units, p->scale, p->offset, p->cov_increment,
 			    p->sample_ms, p->debounce_ms, p->invert ? ", inverted" : "");
@@ -622,52 +628,84 @@ static int cmd_cfg_show(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/* Apply one freshly loaded document to the running node. */
+static int cfg_apply(const struct shell *sh, uint32_t doc, bool *reboot)
+{
+	int rc;
+
+	switch (doc) {
+	case UC_CFG_DEVICE:
+		/* uc_config_reload() has applied log.level already */
+		return uc_bn_apply_device_cfg(reboot);
+	case UC_CFG_IO:
+		rc = uc_io_apply_config();
+		if (rc >= 0) {
+			shell_print(sh, "io.json: %d points bound", rc);
+		}
+		return rc;
+	case UC_CFG_APPS:
+#if defined(CONFIG_UC_APPS)
+		return uc_apps_reload();
+#else
+		return 0;
+#endif
+	default:
+		return -EINVAL;
+	}
+}
+
+/* Like the SMP uc_node reload: every document is loaded and applied on its
+ * own (a staged <doc>.json.new first); a rejected document keeps its active
+ * configuration and does not stop the others.
+ */
 static int cmd_cfg_reload(const struct shell *sh, size_t argc, char **argv)
 {
-	uint32_t doc;
-	int rc;
+	static const struct {
+		uint32_t doc;
+		const char *file;
+	} order[] = {
+		{UC_CFG_DEVICE, "device.json"},
+		{UC_CFG_IO, "io.json"},
+		{UC_CFG_APPS, "apps.json"},
+	};
+	bool reboot_required = false;
+	uint32_t docs;
+	int first_err = 0;
 
 	ARG_UNUSED(argc);
 
-	if (doc_from_str(argv[1], &doc) < 0) {
+	if (doc_from_str(argv[1], &docs) < 0) {
 		shell_error(sh, "usage: uc cfg reload <device|io|apps|all>");
 		return -EINVAL;
 	}
 
-	rc = uc_config_reload(doc);
-	if (rc < 0) {
-		return print_rc(sh, "cfg reload", rc);
-	}
-
-	if ((doc & UC_CFG_DEVICE) != 0U) {
+	for (size_t i = 0; i < ARRAY_SIZE(order); i++) {
 		bool reboot = false;
+		int rc;
 
-		rc = uc_bn_apply_device_cfg(&reboot);
+		if ((docs & order[i].doc) == 0U) {
+			continue;
+		}
+		rc = uc_config_reload(order[i].doc);
+		if (rc == 0) {
+			rc = cfg_apply(sh, order[i].doc, &reboot);
+		}
 		if (rc < 0) {
-			return print_rc(sh, "apply device.json", rc);
+			shell_error(sh, "%s: %d (%s), active configuration kept", order[i].file, rc,
+				    uc_err_str(rc));
+			if (first_err == 0) {
+				first_err = rc;
+			}
+			continue;
 		}
-		if (reboot) {
-			shell_warn(sh, "device.json: reboot required for instance/network/port");
-		}
+		reboot_required = reboot_required || reboot;
+		shell_print(sh, "%s reloaded", order[i].file);
 	}
-	if ((doc & UC_CFG_IO) != 0U) {
-		rc = uc_io_apply_config();
-		if (rc < 0) {
-			return print_rc(sh, "apply io.json", rc);
-		}
-		shell_print(sh, "io.json: %d points bound", rc);
-	}
-#if defined(CONFIG_UC_APPS)
-	if ((doc & UC_CFG_APPS) != 0U) {
-		rc = uc_apps_reload();
-		if (rc < 0) {
-			return print_rc(sh, "apply apps.json", rc);
-		}
-	}
-#endif
 
-	shell_print(sh, "reloaded");
-	return 0;
+	if (reboot_required) {
+		shell_warn(sh, "device.json: reboot required for instance/network/port");
+	}
+	return first_err;
 }
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
@@ -675,7 +713,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(show, NULL, "Show the active configuration: show <device|io|apps>",
 		      cmd_cfg_show, 2, 0),
 	SHELL_CMD_ARG(reload, NULL,
-		      "Re-read and apply a document: reload <device|io|apps|all>",
+		      "Re-read and apply a document (a staged <doc>.json.new first): "
+		      "reload <device|io|apps|all>",
 		      cmd_cfg_reload, 2, 0),
 	SHELL_SUBCMD_SET_END);
 

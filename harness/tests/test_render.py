@@ -63,7 +63,11 @@ def test_hvac_documents() -> None:
     assert {p["key"]: p["value"] for p in link["params"]} == {
         "count": "1", "l0": "1001 0 1 2 10 poll 5000 0 1 0"}
     assert link["period_ms"] == 5000
+    assert link["heap_kb"] == 0 and link["stack_kb"] == 4  # uc-link does not allocate
     assert link["perms"] == ["bacnet.local", "bacnet.remote"]
+    # the bacnet section (password) is passed through to device.json
+    assert sup.device["bacnet"]["password"] == "hvac-demo-change-me"
+    assert out["actuator"].device["bacnet"]["password"] == "hvac-demo-change-me"
     act = out["actuator"]
     assert [a.name for a in act.app_list] == ["link"]
     assert act.io["points"][0]["channel"] == "ao0"

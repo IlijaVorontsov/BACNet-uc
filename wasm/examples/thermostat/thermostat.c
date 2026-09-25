@@ -17,7 +17,8 @@
  *   sp_instance     setpoint analog-value created by the app, default 1
  *   sp_min, sp_max  accepted setpoint range, default 5..35
  *   out_device      default local      out_type        default 1 (AO)
- *   out_instance    default 1          out_priority    default 0 (none)
+ *   out_instance    default 1          out_priority    default 0 (none;
+ *                                      commandable outputs AO/BO/MSO only)
  *   action          "heat" (default): output rises when too cold,
  *                   "cool": output rises when too warm
  *   kp              proportional gain in %/K, default 20
@@ -40,8 +41,9 @@
  *                             I is kept within [out_min, out_max]
  *   u = clamp(P + I, out_min, out_max)
  * A setpoint written by a BACnet client arrives through uc_app_on_write;
- * the effective Present_Value (priority array) is re-read every tick, so
- * a relinquish is noticed as well. With permission "kv" the setpoint is
+ * the Present_Value is also re-read every tick (the setpoint analog-value
+ * has no priority array on BACnet-uc nodes: every write sets it, a
+ * relinquish changes nothing). With permission "kv" the setpoint is
  * persisted and survives restarts.
  *
  * Permissions: bacnet.local; bacnet.remote for remote sensor/output;
@@ -389,7 +391,7 @@ UC_EXPORT(uc_app_tick) void uc_app_tick(uint64_t now_ms)
 	} else if (rc > 0) {
 		g.sensor_err_logged = 0;
 	}
-	sp_refresh("priority array");
+	sp_refresh("present value");
 	control_step(now_ms);
 	out_apply(now_ms);
 	status_log(now_ms);
@@ -425,12 +427,13 @@ void uc_app_on_write(uint32_t type, uint32_t instance, uint32_t prop, uint32_t p
 UC_EXPORT(uc_app_deinit) void uc_app_deinit(void)
 {
 	uc_point_stop(&g.sensor);
-	if (g.out_priority != UC_PRIORITY_NONE) {
+	if ((g.out_priority != UC_PRIORITY_NONE) && uc_obj_is_commandable(g.out_type)) {
 		/* hand the output back to lower priorities */
 		(void)uc_pv_relinquish_dev(g.out_device, g.out_type, g.out_instance, g.out_priority,
 					   g.timeout_ms);
 	} else {
-		/* no priority to give back: leave the output in the fail-safe state */
+		/* no priority to give back (none, or a value object without
+		 * priority array): leave the output in the fail-safe state */
 		(void)uc_pv_write_dev(g.out_device, g.out_type, g.out_instance,
 				      g.out_binary ? 0.0 : g.fail_output, UC_PRIORITY_NONE,
 				      g.timeout_ms);

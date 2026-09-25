@@ -50,7 +50,7 @@ flowchart LR
         mcp["mcp_server.py<br/>36 tools, 4 resources, 3 prompts"]
         cli["cli.py<br/>bacnet-uc"]
         inv["inventory.py<br/>.bacnet-uc/inventory.yaml"]
-        man["manifest.py / render.py<br/>planner.py / testrunner.py"]
+        man["manifest.py / render.py<br/>planner.py / testrunner.py<br/>budget.py"]
         node["node.py<br/>(per-node connection, lock)"]
         wb["wasm_build.py"]
         fw["firmware.py"]
@@ -88,7 +88,7 @@ flowchart LR
 | Protocol front ends | `mcp_server.py`, `cli.py` | MCP tools/resources/prompts; the CLI calls the same tool functions (`server.harness_tools`) and prints YAML or JSON |
 | Context | `HarnessContext` in `mcp_server.py` | inventory, connection pool, per-node `asyncio.Lock`, loaded systems, running simulations, artifact builder |
 | Node access | `node.py`, `smp/`, `bacnet/` | SMP v2 client (UDP, serial framing), BACnet/IP client (Who-Is, ReadProperty, WriteProperty), SHA-256 based uploads |
-| System model | `manifest.py`, `render.py`, `planner.py`, `testrunner.py` | load/validate manifests, render per-node documents, diff against live state, apply, run acceptance tests |
+| System model | `manifest.py`, `render.py`, `planner.py`, `testrunner.py`, `budget.py` | load/validate manifests, render per-node documents, WAMR pool budget per node, diff against live state, apply, run acceptance tests |
 | Toolchains | `wasm_build.py`, `firmware.py` | `uc-cc`/clang, ABI check, `uc-aot`/wamrc; `west build`, `west flash`, MCUboot image inspection |
 | Simulation | `sim.py` | `native_sim` processes in network namespaces, on the host, or under docker compose |
 | Test double | `testing/fake_node.py` | in-process node (SMP + BACnet/IP over real UDP sockets) used by the harness test suite |
@@ -98,7 +98,7 @@ flowchart LR
 | Path | Protocol | Used for | Details |
 |------|----------|----------|---------|
 | MCP client → server | MCP over stdio (default) or streamable HTTP (`--http`, default `127.0.0.1:8000/mcp`) | all tools | official MCP Python SDK (`MCPServer` with mcp >= 2, `FastMCP` with mcp 1.x) |
-| harness → node, management | SMP v2 over UDP port 1337, or over the console UART (shell transport framing, 115200 8N1, needs the `serial` extra) | configuration, files, apps, IO, logs, firmware images | requests are retried with the same sequence number; default timeout 3 s, 2 retries in the MCP server context |
+| harness → node, management | SMP v2 over UDP port 1337, or over the console UART (shell transport framing, 115200 8N1, frames up to 1152 bytes without line pacing; needs the `serial` extra) | configuration (staged `*.json.new` uploads), files, apps, IO, logs, firmware images | requests are retried with the same sequence number; default timeout 3 s, 2 retries in the MCP server context |
 | harness → node, verification | BACnet/IP (unsegmented confirmed requests, max APDU 1476) | `bacnet_read`, `bacnet_write`, test `expect`/`write` | `via="auto"` falls back to SMP `prop_read`/`prop_write` when BACnet/IP is unavailable (no address, timeout); a BACnet Error/Reject/Abort is returned as a tool error |
 | harness → toolchains | subprocess | `build_app`, `build_firmware`, `flash_firmware` | clang/wasm-ld, wamrc, west |
 
@@ -122,7 +122,7 @@ depending on the error, `issues` (JSON-pointer paths), `group`/`rc`/`rc_name`
 | Tool | Purpose | Key arguments | Hints | Gate |
 |------|---------|---------------|-------|------|
 | `list_nodes` | inventory entries, nodes of loaded manifests, running simulations | – | ro, idem, closed | |
-| `add_node` | add or replace an inventory entry, probe it with `node_info` | `name`, `transport?` (`udp`), `host?`, `port?` (1337), `device?`, `baud?` (115200), `bacnet_address?`, `board?`, `replace?` (false), `probe?` (true) | idem, closed | |
+| `add_node` | add or replace an inventory entry, probe it with `node_info` | `name`, `transport?` (`udp`\|`serial`\|`sim`, default `udp`), `host?`, `port?` (1337), `device?`, `baud?` (115200), `bacnet_address?`, `board?`, `replace?` (false), `probe?` (true) | idem, closed | |
 | `remove_node` | remove an inventory entry (the node is not touched) | `name` | destr, idem, closed | |
 | `discover_devices` | Who-Is / I-Am | `broadcast?` (255.255.255.255), `low?`, `high?`, `timeout_s?` (3), `target?` (unicast Who-Is) | ro | |
 
@@ -132,17 +132,17 @@ depending on the error, `issues` (JSON-pointer paths), `group`/`rc`/`rc_name`
 |------|---------|---------------|-------|------|
 | `node_info` | firmware, board, API version, device identity, network, FS usage, apps, WASM runtime | `node` | ro, idem | |
 | `get_config` | read `/lfs/cfg/<doc>.json` (`exists=false`: firmware defaults) | `node`, `doc` (`device`\|`io`\|`apps`) | ro, idem | |
-| `set_config` | schema-validated upload of a whole document, then `uc_node reload` | `node`, `doc`, `content`, `reload?` (true), `force?` (false) | destr, idem | schema validation before upload |
-| `reload_config` | `uc_node reload` of one or all documents | `node`, `doc?` (`all`) | idem | |
+| `set_config` | schema-validated upload of a whole document as `/lfs/cfg/<doc>.json.new`, then `uc_node reload` (the node activates it, or rejects and deletes it: rc `INVALID`); after an `io` reload the node's apps that use its IO objects are restarted (`restarted_apps`) | `node`, `doc`, `content`, `reload?` (true), `force?` (false) | destr, idem | schema validation before upload; firmware validation at the reload |
+| `reload_config` | `uc_node reload` of one or all documents (a staged `.new` is activated first); `io`/`all` restart the apps that use IO objects | `node`, `doc?` (`all`) | idem | |
 
 ### 3.3 IO
 
 | Tool | Purpose | Key arguments | Hints | Gate |
 |------|---------|---------------|-------|------|
 | `io_catalog` | channels from the node's devicetree catalog: name, kind, hw, description, forced, bound object | `node` | ro, idem | |
-| `configure_io` | merge or replace `io.json` points, validated against schema, catalog and app-owned objects; upload + reload | `node`, `points`, `mode?` (`merge`\|`replace`), `dry_run?` (false) | destr, idem | `dry_run` |
+| `configure_io` | merge or replace `io.json` points, validated against schema, catalog and app-owned objects; staged upload + reload, then restart of the apps that use the node's IO objects (`restarted_apps`) | `node`, `points`, `mode?` (`merge`\|`replace`), `dry_run?` (false) | destr, idem | `dry_run` |
 | `io_read` | raw channel values (di/do 0\|1, ai mV, ao %) | `node`, `channel?` | ro | |
-| `io_write` | drive an output channel directly | `node`, `channel`, `value` | destr, idem | firmware rejects inputs (rc `PERM`) |
+| `io_write` | drive an output channel directly (on a bound channel until the object's Present_Value changes) | `node`, `channel`, `value` | destr, idem | firmware rejects inputs (rc `PERM`) |
 | `io_force` | force a channel (test stimulus) until released | `node`, `channel`, `value` | destr, idem | |
 | `io_release` | release a forced channel | `node`, `channel` | destr, idem | |
 
@@ -150,9 +150,9 @@ depending on the error, `issues` (JSON-pointer paths), `group`/`rc`/`rc_name`
 
 | Tool | Purpose | Key arguments | Hints | Gate |
 |------|---------|---------------|-------|------|
-| `bacnet_read` | ReadProperty | `node`, `object` (`analog-input:1`), `property?` (`present-value`), `index?`, `via?` (`auto`\|`bacnet`\|`smp`) | ro | |
-| `bacnet_write` | WriteProperty with read-back; `null` relinquishes | `node`, `object`, `value`, `property?`, `priority?`, `index?`, `via?` | destr | |
-| `list_objects` | objects with name, owner (`system`, `io`, `app:<name>`) and present value | `node` | ro, idem | |
+| `bacnet_read` | ReadProperty (or SMP `prop_read`); `index` 0 is the array size; over SMP an array or list without `index` comes back whole (read element by element when it does not fit one SMP response) | `node`, `object` (`analog-input:1`), `property?` (`present-value`), `index?`, `via?` (`auto`\|`bacnet`\|`smp`) | ro | |
+| `bacnet_write` | WriteProperty with read-back; `null` relinquishes | `node`, `object`, `value` (`null` relinquishes), `property?` (`present-value`), `priority?`, `index?`, `via?` (`auto`\|`bacnet`\|`smp`) | destr | |
+| `list_objects` | objects with name, owner (`system`, `io`, `app:<name>`, `network`) and present value | `node` | ro, idem | |
 
 ### 3.5 Applications
 
@@ -160,7 +160,7 @@ depending on the error, `issues` (JSON-pointer paths), `group`/`rc`/`rc_name`
 |------|---------|---------------|-------|------|
 | `sdk_info` | host API parsed from `bacnet_uc.h` (prototypes, permissions), exports, error codes, libc subset, compiler flags, example sources | – | ro, idem, closed | |
 | `build_app` | C to `.wasm` (+ `.aot`), ABI check, derived permissions | `name`, `source_path?` or `source?` (inline C), `aot_board?`, `opt?` (`-Oz`), `defines?`, `output_dir?` (`.bacnet-uc/apps`) | idem, closed | ABI check rejects the module |
-| `deploy_app` | upload to `/lfs/apps/<name>.wasm\|.aot` if the hash differs, `uc_app install`, start | `node`, `name`, `module_path`, `autostart?` (true), `period_ms?` (1000), `heap_kb?` (8), `stack_kb?` (4), `perms?` (derived from imports), `params?`, `force?` | destr, idem | ABI check; firmware checks sha256, size, magic, API major |
+| `deploy_app` | upload to `/lfs/apps/<name>.wasm\|.aot` if the hash differs, `uc_app install` (or, when the install request would exceed one SMP request, an `apps.json` entry and `reload apps`: `installed_via`), start | `node`, `name`, `module_path`, `autostart?` (true), `period_ms?` (1000), `heap_kb?` (8), `stack_kb?` (4), `perms?` (derived from imports), `params?`, `force?` (false) | destr, idem | ABI check; firmware checks sha256, size, magic, API major |
 | `app_control` | start, stop, restart, remove | `node`, `name`, `action`, `delete_file?` (true) | destr | |
 | `list_apps` | apps with state and counters | `node` | ro, idem | |
 | `app_status` | one app: state, ticks, events, errors, `last_error`, uptime | `node`, `name` | ro, idem | |
@@ -171,7 +171,7 @@ depending on the error, `issues` (JSON-pointer paths), `group`/`rc`/`rc_name`
 
 | Tool | Purpose | Key arguments | Hints | Gate |
 |------|---------|---------------|-------|------|
-| `build_firmware` | `west build` of `firmware/` | `board`, `pristine?`, `sysbuild?` (MCUboot), `snippets?`, `extra_conf?`, `cmake_args?`, `build_dir?` (`.bacnet-uc/build/fw-<board>`) | idem, closed | |
+| `build_firmware` | `west build` of `firmware/` | `board` (`nucleo_f767zi`\|`frdm_mcxn947/mcxn947/cpu0`\|`native_sim/native/64`), `pristine?` (false), `sysbuild?` (false; true = MCUboot), `snippets?`, `extra_conf?`, `cmake_args?`, `build_dir?` (`.bacnet-uc/build/fw-<board>`) | idem, closed | |
 | `flash_firmware` | `west flash` of a locally attached board | `build_dir`, `runner?`, `confirm?` (false) | destr | `confirm=true`; otherwise returns the command it would run |
 | `update_firmware` | OTA over SMP: upload `zephyr.signed.bin`, test boot, reset, wait, confirm | `node`, `build_dir`, `confirm?` (false), `make_permanent?` (true), `timeout_s?` (90) | destr | `confirm=true`; MCUboot reverts an unconfirmed image |
 
@@ -179,9 +179,9 @@ depending on the error, `issues` (JSON-pointer paths), `group`/`rc`/`rc_name`
 
 | Tool | Purpose | Key arguments | Hints | Gate |
 |------|---------|---------------|-------|------|
-| `validate_system` | schema, placeholders, semantic checks, rendered document hashes | `system` (manifest path), `live_catalogs?` (false) | ro, idem | |
-| `plan_system` | diff manifest vs. live nodes; list of actions and notes (builds apps, cached) | `system`, `prune?` (false) | ro | |
-| `apply_system` | execute the plan: device → IO → apps → links; reboot nodes that need it | `system`, `dry_run?` (**true**), `prune?` (false), `reboot?` (true) | destr | dry run by default |
+| `validate_system` | schema, placeholders, semantic checks (object collisions, link priorities, value objects), rendered document hashes, WAMR pool budget per node (`wamr_pool`; builds the apps, warning above 90 %) | `system` (manifest path), `live_catalogs?` (false) | ro, idem | |
+| `plan_system` | diff manifest vs. live nodes; list of actions (`push_config`, `reload`, `remove_app`, `deploy_app`, `start_app`, `restart_app`) and notes (builds apps, cached) | `system`, `prune?` (false) | ro | |
+| `apply_system` | execute the plan: device → IO → apps → links (then app restarts); reboot nodes that need it | `system`, `dry_run?` (**true**), `prune?` (false), `reboot?` (true) | destr | dry run by default |
 | `run_system_tests` | manifest acceptance tests (force, release, write, wait, expect) | `system`, `tests?`, `stop_on_failure?` (true) | destr | forced channels are released after each test |
 | `system_status` | per node: reachability, firmware, identity, uptime, app states, pending actions | `system` | ro | |
 
@@ -189,7 +189,7 @@ depending on the error, `issues` (JSON-pointer paths), `group`/`rc`/`rc_name`
 
 | Tool | Purpose | Key arguments | Hints | Gate |
 |------|---------|---------------|-------|------|
-| `sim_start` | start the manifest's `transport: sim` nodes as `native_sim` processes, add them to the inventory | `system`, `firmware_exe?`, `mode?` (`netns`\|`host`\|`compose`), `erase_flash?`, `apply_config?` | destr | `netns` needs root |
+| `sim_start` | start the manifest's `transport: sim` nodes as `native_sim` processes, add them to the inventory | `system`, `firmware_exe?`, `mode?` (`netns`\|`host`\|`compose`, default `netns`), `erase_flash?` (false), `apply_config?` (false) | destr | `netns` needs root |
 | `sim_stop` | stop the processes, remove the network, drop the inventory entries (flash images kept) | `system` (manifest or name) | destr, idem | |
 | `sim_status` | mode, addresses, pids, liveness, console log tails | `system?` | ro, idem, closed | |
 
@@ -232,7 +232,7 @@ sequenceDiagram
     H-->>A: exists=false (firmware defaults)
     A->>H: set_config("sensor", "device", {schema:1, device:{instance:1001, name:"uc-sensor"}})
     H->>H: validate against device.schema.json
-    H->>N: fs upload device.json, uc_node reload device
+    H->>N: fs upload /lfs/cfg/device.json.new, uc_node reload device
     N-->>H: reboot_required=true (instance changed)
     A->>H: node_shell("sensor", "kernel reboot cold") or apply_system(reboot=true)
     A->>H: node_info("sensor")
@@ -264,8 +264,9 @@ sequenceDiagram
     H->>H: schema + catalog + collision checks, merge
     H-->>A: resulting io.json, changes {added:[ai0]}
     A->>H: configure_io(..., dry_run=false)
-    H->>N: fs upload /lfs/cfg/io.json (skipped if SHA-256 equal), uc_node reload io
-    N->>N: delete and re-create IO-owned objects
+    H->>N: fs upload /lfs/cfg/io.json.new (skipped if SHA-256 equal), uc_node reload io
+    N->>N: activate io.json, delete and re-create IO-owned objects
+    H->>N: restart apps that use the node's IO objects
     A->>H: list_objects("sensor")
     H-->>A: analog-input:1 owner io
     A->>H: io_force("sensor", "ai0", 215)
@@ -279,7 +280,7 @@ sequenceDiagram
 |-------|----------|------------|
 | catalog | `firmware/boards/io/<board>.dtsi`, binding [`dts/bindings/uc,io-channels.yaml`](../dts/bindings/uc,io-channels.yaml); served by `uc_io catalog` | build time (devicetree) |
 | points | `io.json` ([`schemas/io.schema.json`](../schemas/io.schema.json)) | `configure_io`: schema; channel exists; channel bound once; object bound once; object type allowed for the channel kind (di → binary-input\|multi-state-input, do → binary-output\|binary-value, ai → analog-input, ao → analog-output\|analog-value); object not owned by an app |
-| objects | BACnet objects with owner `io` | firmware on `reload io`; `list_objects` |
+| objects | BACnet objects with owner `io` | firmware on `reload io` (points it cannot bind are skipped and logged); `list_objects` |
 | values | Present_Value = raw × `scale` + `offset` (analog) | `io_force` + `bacnet_read` for inputs; `bacnet_write` + `io_read` for outputs |
 
 Details of scaling, debouncing and forcing: [io.md](io.md).
@@ -332,7 +333,7 @@ sequenceDiagram
     A->>H: plan_system("systems/hvac.yaml")
     H->>H: build apps (content-hash cache), render documents
     H->>N: node_info, fs hash of documents and modules, uc_app list, objects
-    H-->>A: actions (push_config, reload, deploy_app, start_app, remove_app), notes
+    H-->>A: actions (push_config, reload, deploy_app, start_app, remove_app, restart_app), notes
     A->>H: apply_system("systems/hvac.yaml")
     H-->>A: dry run: the same actions with status "dry-run"
     A->>H: apply_system("systems/hvac.yaml", dry_run=false)
@@ -467,7 +468,9 @@ that is not allowed by a permission rule). Controls:
 | Explicit confirmation for flashing and OTA: `flash_firmware` and `update_firmware` do nothing without `confirm=true` and return what they would do | `mcp_server.py` | Implemented |
 | MCUboot test boot: an OTA image that does not answer after reset is not confirmed and is reverted at the next reset | `update_firmware`, MCUboot | Implemented (sysbuild builds only) |
 | Remote shell off by default: `node_shell` fails unless the server was started with `BACNET_UC_ALLOW_SHELL=1` / `--allow-shell` | `mcp_server.py` | Implemented |
-| Validation before upload: documents against the JSON schemas; IO points against the live catalog; modules against the ABI; manifests with semantic checks | `set_config`, `configure_io`, `build_app`/`deploy_app`, `validate_system` | Implemented |
+| Validation before upload: documents against the JSON schemas; IO points against the live catalog; modules against the ABI; manifests with semantic checks and a WAMR pool budget | `set_config`, `configure_io`, `build_app`/`deploy_app`, `validate_system` | Implemented |
+| Staged configuration: documents are uploaded as `<doc>.json.new`; the node validates and activates them atomically at the reload, an invalid or half-transferred document never replaces the active one | `node.push_config`, firmware | Implemented |
+| Apps that depend on re-created IO objects are restarted after an `io.json` reload, so linked outputs do not stay at Relinquish_Default | `set_config`, `configure_io`, `reload_config`, planner action `restart_app` | Implemented |
 | Failure containment in apply: after a failed action the node's remaining actions are skipped; other nodes continue | `planner.apply` | Implemented |
 | Serialisation per node (no interleaved uploads) | per-node `asyncio.Lock` | Implemented |
 | Test cleanup: forced channels are released at the end of each test | `testrunner` | Implemented |
@@ -527,32 +530,48 @@ The CLI runs every tool headless, so the same checks an agent performs run in
 CI. Exit status: 0 success, 1 failure (error, invalid manifest, failed apply
 or test), 2 usage error.
 
-Example GitHub Actions workflow (a recipe; the repository does not contain a
-workflow file yet). The command sequence after the set-up steps was run
-locally as described in [section 12](#12-verification).
+### 8.1 The repository's workflow
+
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on pushes to
+`main`, on pull requests and by hand. It has not run on GitHub yet: the jobs'
+commands were run locally, the workflow file was checked with `actionlint`.
+
+| Job | Runner steps | Checks |
+|-----|--------------|--------|
+| `harness` (Python 3.11 and 3.12) | `pip install -e 'harness[dev,serial,sim]'`, clang + lld | `ruff check src tests`; `pytest -q -rs` (the e2e tests are skipped here) |
+| `wasm-sdk` | WAMR sources at `WAMR-2.4.5`, clang, lld, CMake, Ninja; wamrc from the WAMR 2.4.5 release | `make -C BACNet-uc/wasm check` (examples, host tests, AOT, WAMR runner validation); without wamrc `make all test validate` |
+| `firmware` | `zephyrproject-rtos/action-zephyr-setup@v1` (west workspace, Zephyr SDK 1.0.1, `arm-zephyr-eabi`) | pristine builds of `native_sim/native/64`, `nucleo_f767zi` and `frdm_mcxn947/mcxn947/cpu0` with `-DCONFIG_COMPILER_WARNINGS_AS_ERRORS=y`; unit tests (`-t run`, must print `PROJECT EXECUTION SUCCESSFUL`); uploads `zephyr.exe` of `native_sim` |
+| `e2e` (needs `firmware`) | the `native_sim` firmware artifact, the harness | `sudo ... harness/tests/e2e/run-isolated.sh -m e2e tests/e2e`; fails if any e2e test was skipped |
+
+### 8.2 End-to-end tests
+
+`harness/tests/e2e/` (pytest marker `e2e`) runs the harness against the real
+`native_sim` firmware given by `BACNET_UC_FIRMWARE`; without it the tests are
+skipped.
+
+| File | Tests | Content |
+|------|------:|---------|
+| `test_single_node.py` | 9 | one node in `host` mode: `node_info` and the SMP size limits; staged `device.json` (activation, an invalid staged file deleted, reboot in place); IO forcing observed over BACnet/IP (a point on an unknown channel skipped, force rules); `prop_read`/`prop_write` rules (whole arrays, priority 6, invalid values); `bacnet.password` for DCC/ReinitializeDevice; SMP over the console pty with full-size frames; deploying the example apps; a large manifest installed through `apps.json`; the `uc-link` restart after an `io.json` reload |
+| `test_sim_demo.py` | 1 | [`sim-demo.yaml`](../harness/examples/systems/sim-demo.yaml) through the CLI in `netns` mode: `sim up`, `validate`, `plan`, `apply` (reboots), re-plan in sync, the three manifest tests, IO drift followed by `push_config io` and `restart_app`, `status`, `sim down` |
+
+```sh
+cd BACNet-uc/harness
+sudo PYTHON=$(command -v python) BACNET_UC_FIRMWARE=/path/to/build-native/zephyr/zephyr.exe \
+    tests/e2e/run-isolated.sh            # default arguments: -m e2e tests/e2e
+```
+
+`run-isolated.sh` runs pytest in new network and mount namespaces with a
+private `/run/netns`, so the ports 1337/47808, the bridge `bnuc0` and the
+namespace names cannot collide with other simulations on the machine, and
+nothing is left behind. Result for the current state: 10 passed in about 22 s.
+
+### 8.3 Custom systems in CI
+
+A project that keeps its own manifests can run them with the same commands
+(a recipe, not part of `ci.yml`; the commands were run locally as described
+in [section 12](#12-verification)):
 
 ```yaml
-# .github/workflows/system-tests.yml (example)
-name: system-tests
-on: [pull_request]
-jobs:
-  sim:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-        with: {path: ws/BACNet-uc}
-      - uses: actions/setup-python@v5
-        with: {python-version: "3.12"}
-      - name: Toolchains
-        run: |
-          sudo apt-get update && sudo apt-get install -y clang lld ninja-build device-tree-compiler
-          pip install west
-          cd ws && west init -l BACNet-uc && west update --narrow -o=--depth=1
-          pip install -r zephyr/scripts/requirements-base.txt
-          pip install -e 'BACNet-uc/harness[dev,sim]'
-          # Zephyr SDK minimal bundle (host tools); see docs/getting-started.md
-      - name: Harness unit tests
-        run: cd ws/BACNet-uc/harness && python -m pytest -q
       - name: Validate manifests
         run: |
           cd ws/BACNet-uc
@@ -576,11 +595,13 @@ jobs:
 
 Notes:
 
-- `sim up` in `netns` mode needs root. `system apply` needs root as well,
-  because it restarts simulated nodes (kill and re-spawn inside their
-  namespaces) after identity or address changes; `sim down` stops
-  root-owned processes. `system test`, `plan` and `status` only talk to the
-  nodes through the bridge `bnuc0` (`10.47.0.254`) and run unprivileged.
+- `sim up` in `netns` mode needs root. `system apply` as root restarts
+  simulated nodes by killing and re-spawning the process inside its
+  namespace after identity or address changes; without root it reboots them
+  over SMP (the `native_sim` firmware restarts its process in place).
+  `sim down` stops root-owned processes. `system test`, `plan` and `status`
+  only talk to the nodes through the bridge `bnuc0` (`10.47.0.254`) and run
+  unprivileged.
 - `BACNET_UC_HOME` defaults to the current directory: run all commands in the
   same directory (with `sudo -E`, so that the same environment is used).
 - Hardware-in-the-loop CI uses the same commands with a manifest whose nodes
@@ -597,6 +618,8 @@ Notes:
 | Build support | `firmware.BOARDS` in `firmware.py`, `build_firmware` `board` literal in `mcp_server.py` |
 | AOT target (if the firmware enables AOT) | `wasm_build.AOT_TARGETS`, `wasm/sdk/uc-aot` |
 | Offline catalog validation | nothing: `manifest.py` reads `firmware/boards/io/<board_key>.dtsi` |
+| WAMR pool budget | nothing: `budget.py` reads `CONFIG_UC_APP_POOL_SIZE` from `firmware/boards/<board_key>.conf` |
+| CI | a build step in the `firmware` job of `.github/workflows/ci.yml` |
 
 ### 9.2 A new tool group
 
@@ -650,9 +673,11 @@ A server started separately with `--http` is added with
 | SMP has no authentication in the default firmware | anyone who reaches UDP 1337 has the same power as the harness; see [security.md](security.md) |
 | `discover_devices` binds UDP 47808 (shared) to see broadcast I-Ams | do not combine with a host-mode simulation on the same host |
 | `native_sim` nodes cannot send or receive broadcasts (NSOS) | the harness renders static bindings; Who-Is discovery of simulated nodes needs `target=` |
-| AOT modules need firmware with `CONFIG_WAMR_AOT=y` (off; see [wasm-runtime.md](wasm-runtime.md#21-aot-and-the-mpu)) | `aot: true` in a manifest fails at install with rc `UNSUPPORTED` on the current firmware |
+| AOT modules need firmware built with `CONFIG_WAMR_AOT=y`, on the boards also `CONFIG_WAMR_AOT_MPU_EXEC=y` (both off by default; see [wasm-runtime.md](wasm-runtime.md#21-aot-and-the-mpu)) | `aot: true` in a manifest fails at install with rc `UNSUPPORTED` on the default firmware; `node_info` `wasm.aot` tells whether a node loads AOT files |
 | One manifest per target | simulation and hardware variants are separate files (overlay **Planned**) |
-| The planner does not model the WAMR pool | a node with too many or too large apps fails at start (`last_error` names the WAMR message), not at validation; pool budgeting in `validate_system` is **Planned** |
+| The WAMR pool budget is an estimate | `validate_system` predicts each node's pool use from the built modules and warns above 90 % of `CONFIG_UC_APP_POOL_SIZE`; the constants are fitted to `native_sim` (64-bit) measurements, so they are conservative for the boards, and Thumb AOT files are not calibrated. A node that runs out still fails the start (`NO_MEM`, `last_error`) |
+| Value objects ignore priorities | AV, BV and MSV on BACnet-uc nodes have no priority array: `validate_system` rejects two links to one value object and priority 6 on outputs, and warns about a priority or a `null` test write on a value object |
+| A staged document waits for the next reload | a `set_config(reload=false)` leaves `<doc>.json.new` on the node, and the next reload or boot activates it even if a later `set_config` was skipped because the active document already matched |
 | No partial apply per node | `apply_system` applies all nodes of a manifest; use a manifest with fewer nodes for a canary ([distributed-apps.md](distributed-apps.md#11-versioning-and-rollout)) |
 
 ## 12. Verification
@@ -661,9 +686,11 @@ What was checked for this document, and how:
 
 | Check | Command / method | Result |
 |-------|------------------|--------|
-| Tool names, arguments, annotations, resources, prompts | `create_server()` then `list_tools()`, `list_resource_templates()`, `list_resources()`, `list_prompts()` with the installed MCP SDK (mcp 2.2.0) | 36 tools, tables above match |
-| stdio server and shell gate | MCP SDK stdio client against `/opt/zvenv/bin/bacnet-uc-mcp`: `initialize`, `list_tools`, `list_nodes`, `node_shell` | 36 tools; `node_shell` returns the "disabled" tool error |
-| `claude mcp add` | run in a scratch directory | writes `.mcp.json` with the `stdio` entry shown above |
-| Single-node CLI flow (section 5.1-5.3 equivalents) | `native_sim/native/64` build, one node in a private network namespace; `bacnet-uc node add/info`, `io catalog/configure/force/read`, `prop read/write`, `app build/deploy/status`, `node logs/objects` | all succeeded; `analog-input:1` read 21.5 after forcing `ai0` to 2150 mV with scale 0.01 |
-| Distributed flow | copy of `harness/examples/systems/sim-demo.yaml` (renamed nodes) in `netns` mode: `sim up --erase`, `system plan`, `system apply --no-dry-run`, `system status`, `system test`, `sim down` | 6 actions applied, both nodes rebooted, `in_sync: true`, 3 of 3 tests passed |
-| Harness test suite | `cd harness && python -m pytest -q` | 544 passed |
+| Tool names, arguments, defaults, annotations, resources, prompts | `create_server()`, then `list_tools()`, `list_resource_templates()`, `list_resources()`, `list_prompts()` through the in-memory `mcp.Client` of the installed MCP SDK (mcp 2.2.0) | 36 tools, 3 resource templates + 1 resource, 3 prompts; the tables of sections 3 and 4 match |
+| stdio server and shell gate | MCP SDK stdio client against `bacnet-uc-mcp --home <dir>`: `initialize`, `list_tools`, `node_info` of a `native_sim` node, `node_shell` | 36 tools; `node_info` answered; `node_shell` returns the "disabled" tool error |
+| `claude mcp add` | the command of section 10 in a scratch directory | writes `.mcp.json` with the `stdio` entry and `BACNET_UC_HOME` |
+| Single-node CLI flow (sections 5.1-5.3 equivalents) | `native_sim/native/64` build, one node in a private network namespace; the quick start of the top-level README and [getting-started.md](getting-started.md) sections 4-10 | all succeeded; `analog-input:1` read 21.5 after forcing `ai0` to 2150 mV with scale 0.01 |
+| Distributed flow | `harness/examples/systems/sim-demo.yaml` in `netns` mode inside private network and mount namespaces: `sim up --erase`, `system plan`, `system apply --no-dry-run`, `system status`, `system test`, `sim down` | 6 actions applied, both nodes rebooted, `in_sync: true`, 3 of 3 tests passed |
+| Harness test suite | `cd harness && python -m pytest -q` (in a private network namespace) | 596 passed, 10 skipped (the e2e tests without a firmware); `ruff check src tests` clean |
+| End-to-end tests | `sudo PYTHON=... BACNET_UC_FIRMWARE=<build>/zephyr/zephyr.exe tests/e2e/run-isolated.sh` | 10 passed |
+| CI workflow | not run on GitHub; its commands were run locally by the harness integration | - |

@@ -17,7 +17,15 @@
  * The current value is delivered once after subscribing, later only
  * changes. Callbacks run in the BACnet thread with cov_lock held, so once
  * uc_bn_cov_unsubscribe() returns, the callback of that subscription is
- * neither running nor called again.
+ * neither running nor called again. cov_lock is recursive: a callback may
+ * (un)subscribe; it must not wait for anything a uc_bn_cov_*() caller in
+ * another thread may hold.
+ *
+ * Confirmations (SubscribeCOV ack, ReadProperty-ACK, Error/Reject/Abort)
+ * are accepted only from the address the request was sent to. That
+ * address is taken from the address cache again before every new request,
+ * so a subscription follows a device that was re-bound (I-Am from a new
+ * address, changed static binding).
  */
 #include <errno.h>
 #include <math.h>
@@ -32,6 +40,7 @@
 #include "bacnet/bacapp.h"
 #include "bacnet/apdu.h"
 #include "bacnet/cov.h"
+#include "bacnet/basic/binding/address.h"
 #include "bacnet/basic/services.h"
 #include "bacnet/basic/tsm/tsm.h"
 
@@ -162,6 +171,28 @@ static bool cov_src_match(const struct cov_sub *s, const BACNET_ADDRESS *src)
 	return (src == NULL) || bacnet_address_same(&s->dest, src);
 }
 
+/* Take the device's current address from the address cache while no
+ * request of the subscription is outstanding (replies are matched against
+ * s->dest). Keeps the old address when the device is not in the cache. */
+static void cov_dest_refresh(struct cov_sub *s)
+{
+	BACNET_ADDRESS dest;
+	unsigned int max_apdu = 0;
+
+	if ((s->sub_invoke != 0) || (s->read_invoke != 0)) {
+		return;
+	}
+	memset(&dest, 0, sizeof(dest));
+	if (!address_get_by_device(s->device, &max_apdu, &dest)) {
+		return;
+	}
+	if (!bacnet_address_same(&dest, &s->dest)) {
+		LOG_INF("sub %d: device %u re-bound", cov_id(s), s->device);
+		s->dest = dest;
+	}
+	s->max_apdu = max_apdu;
+}
+
 static uint8_t cov_send_subscribe(struct cov_sub *s, bool cancel)
 {
 	BACNET_SUBSCRIBE_COV_DATA data;
@@ -180,7 +211,10 @@ static uint8_t cov_send_subscribe(struct cov_sub *s, bool cancel)
 
 static void cov_subscribe_start(struct cov_sub *s, int64_t now)
 {
-	uint8_t id = cov_send_subscribe(s, false);
+	uint8_t id;
+
+	cov_dest_refresh(s);
+	id = cov_send_subscribe(s, false);
 
 	if (id == 0) {
 		/* no TSM slot: try again shortly */
@@ -192,7 +226,10 @@ static void cov_subscribe_start(struct cov_sub *s, int64_t now)
 
 static void cov_poll_start(struct cov_sub *s)
 {
-	uint8_t id = Send_Read_Property_Request_Address(
+	uint8_t id;
+
+	cov_dest_refresh(s);
+	id = Send_Read_Property_Request_Address(
 		&s->dest, (uint16_t)MIN(s->max_apdu, UINT16_MAX), (BACNET_OBJECT_TYPE)s->type,
 		s->instance, PROP_PRESENT_VALUE, BACNET_ARRAY_ALL);
 

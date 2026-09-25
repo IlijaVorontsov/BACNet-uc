@@ -255,8 +255,21 @@ class SmpClient:
         if off != total:
             raise HarnessError(f"fs upload {path}: node reports offset {off}, expected {total}")
 
-    async def fs_download(self, path: str, progress: ProgressCallback | None = None) -> bytes:
-        """Download ``path`` (FS group ``file`` read)."""
+    async def fs_download(self, path: str, progress: ProgressCallback | None = None, *,
+                          fresh: bool = True) -> bytes:
+        """Download ``path`` (FS group ``file`` read).
+
+        Zephyr's FS group keeps the file of a download open between requests
+        (until ``CONFIG_MCUMGR_GRP_FS_FILE_AUTOMATIC_IDLE_CLOSE_TIME``) and a new
+        download of the same file continues on that handle with the length
+        it had at the first open: a file that grows (a log file) would come
+        back truncated. With ``fresh`` (default) the handle is closed first.
+        """
+        if fresh:
+            try:
+                await self.fs_close()
+            except SmpError:
+                pass  # close command not supported: nothing to reset
         rsp = await self.read(g.GROUP_FS, g.FS_FILE, {"name": path, "off": 0})
         total = rsp.get("len")
         if not isinstance(total, int):

@@ -55,7 +55,9 @@ extern "C" {
 
 #define UC_NAME_MAX      64 /* object names, descriptions (incl. NUL) */
 #define UC_APP_NAME_MAX  24 /* incl. NUL */
-#define UC_PATH_MAX      64 /* incl. NUL */
+/* incl. NUL; fits /lfs/data/<23-char app>/<31-char key> plus a ".tmp" or
+ * ".new" suffix (69 chars) */
+#define UC_PATH_MAX      96
 #define UC_CHANNEL_NAME_MAX 16 /* incl. NUL */
 
 /* Owner of a local BACnet object (who created it, who gets write events). */
@@ -104,7 +106,11 @@ int uc_value_to_double(const BACNET_APPLICATION_DATA_VALUE *v, double *out);
 /** Build the application value a property of an object type expects from a
  *  double (uses bacapp_known_property_tag(); binary present values become
  *  ENUMERATED 0/1, multi-state present values UNSIGNED). -EBADMSG if the
- *  property is not numeric. */
+ *  property is not numeric; -EINVAL for NaN/Inf, for a binary present value
+ *  (present-value, relinquish-default, priority-array) other than 0 or 1,
+ *  for a non-integral value of an UNSIGNED/SIGNED/ENUMERATED property, for a
+ *  negative UNSIGNED/ENUMERATED value and for values out of the datatype's
+ *  range (REAL: |in| > FLT_MAX). */
 int uc_value_from_double(uint16_t object_type, uint32_t property, double in,
 			 BACNET_APPLICATION_DATA_VALUE *out);
 

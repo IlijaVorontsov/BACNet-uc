@@ -8,6 +8,12 @@
  *
  * The object implementations keep a pointer to the object name (zero
  * copy, bacnet_character_cstring_set()), so names live in the owner table.
+ *
+ * CreateObject/DeleteObject from the network: without
+ * CONFIG_UC_BACNET_REMOTE_CREATE_DELETE both services are unregistered
+ * (Reject unrecognized-service). With it, clients may create the supported
+ * object types (owner UC_OWNER_NETWORK) and delete only those; system, io
+ * and app objects answer Error object/object-deletion-not-permitted.
  */
 #include <errno.h>
 #include <math.h>
@@ -20,12 +26,19 @@
 #include <zephyr/sys/util.h>
 
 #include "bacnet/bacdef.h"
+#include "bacnet/apdu.h"
 #include "bacnet/bacapp.h"
+#include "bacnet/bacerror.h"
 #include "bacnet/bacstr.h"
 #include "bacnet/create_object.h"
 #include "bacnet/delete_object.h"
+#include "bacnet/npdu.h"
+#include "bacnet/proplist.h"
 #include "bacnet/rp.h"
 #include "bacnet/wp.h"
+#include "bacnet/basic/services.h"
+#include "bacnet/basic/tsm/tsm.h"
+#include "bacnet/datalink/datalink.h"
 #include "bacnet/basic/object/device.h"
 #include "bacnet/basic/object/ai.h"
 #include "bacnet/basic/object/ao.h"
@@ -155,8 +168,37 @@ static void owner_free(struct owner_entry *e)
 	k_spin_unlock(&owner_lock, key);
 }
 
-/* Owner of an existing object; drops entries of objects that were deleted
- * behind our back (DeleteObject service). BACnet thread only. */
+/* Take a free entry for (type, instance). An entry left for the same
+ * object id is dropped first: callers only allocate for objects that do
+ * not exist. NULL when the table is full. BACnet thread only. */
+static struct owner_entry *owner_alloc_locked(uint16_t type, uint32_t instance, uint8_t owner)
+{
+	struct owner_entry *e = owner_find(type, instance);
+	k_spinlock_key_t key;
+
+	if (e != NULL) {
+		owner_free(e);
+		e = NULL;
+	}
+	key = k_spin_lock(&owner_lock);
+	for (size_t i = 0; i < ARRAY_SIZE(owners); i++) {
+		if (!owners[i].used) {
+			e = &owners[i];
+			e->used = true;
+			e->owner = owner;
+			e->type = type;
+			e->instance = instance;
+			e->name[0] = '\0';
+			break;
+		}
+	}
+	k_spin_unlock(&owner_lock, key);
+
+	return e;
+}
+
+/* Owner of an existing object; drops entries of objects that no longer
+ * exist. BACnet thread only. */
 static uint8_t owner_of_locked(uint16_t type, uint32_t instance)
 {
 	struct owner_entry *e;
@@ -264,6 +306,8 @@ static bool bn_store_callback(BACNET_WRITE_PROPERTY_DATA *wp)
 	return true;
 }
 
+static void net_services_init_locked(void);
+
 void uc_bn_local_init_locked(void)
 {
 	k_spinlock_key_t key = k_spin_lock(&owner_lock);
@@ -273,6 +317,7 @@ void uc_bn_local_init_locked(void)
 	/* Replaces the store callback of bacnet_basic_init() (which only
 	 * forwards to bacnet_basic_store_callback_set(); not used here). */
 	Device_Write_Property_Store_Callback_Set(bn_store_callback);
+	net_services_init_locked();
 }
 
 /* ---------------------------------------------------------------------- */
@@ -301,7 +346,6 @@ int uc_bn_obj_create_locked(uint16_t type, uint32_t instance, const char *name, 
 {
 	const struct obj_ops *ops = obj_ops_find(type);
 	struct owner_entry *e;
-	k_spinlock_key_t key;
 
 	if ((ops == NULL) || (instance >= BACNET_MAX_INSTANCE)) {
 		return -EINVAL;
@@ -310,31 +354,11 @@ int uc_bn_obj_create_locked(uint16_t type, uint32_t instance, const char *name, 
 		return -EINVAL;
 	}
 
-	e = owner_find(type, instance);
 	if (Device_Valid_Object_Id((BACNET_OBJECT_TYPE)type, instance)) {
-		uint8_t current = (e != NULL) ? e->owner : UC_OWNER_NONE;
-
-		return (current == owner) ? 0 : -EEXIST;
-	}
-	if (e != NULL) {
-		/* stale: the object was deleted through the network */
-		owner_free(e);
+		return (owner_of_locked(type, instance) == owner) ? 0 : -EEXIST;
 	}
 
-	key = k_spin_lock(&owner_lock);
-	e = NULL;
-	for (size_t i = 0; i < ARRAY_SIZE(owners); i++) {
-		if (!owners[i].used) {
-			e = &owners[i];
-			e->used = true;
-			e->owner = owner;
-			e->type = type;
-			e->instance = instance;
-			e->name[0] = '\0';
-			break;
-		}
-	}
-	k_spin_unlock(&owner_lock, key);
+	e = owner_alloc_locked(type, instance, owner);
 	if (e == NULL) {
 		return -ENOSPC;
 	}
@@ -451,8 +475,12 @@ static void obj_delete_owned_fn(void *arg)
 		}
 		if (uc_bn_obj_delete_locked(e->type, e->instance, a->owner) == 0) {
 			count++;
+		} else if (e->used &&
+			   Device_Valid_Object_Id((BACNET_OBJECT_TYPE)e->type, e->instance)) {
+			/* keep the entry: the object references its name */
+			LOG_WRN("%u:%u of owner %u not deleted", e->type, e->instance, e->owner);
 		} else if (e->used) {
-			/* object vanished or cannot be deleted: forget it */
+			/* the object vanished: forget it */
 			owner_free(e);
 		}
 	}
@@ -473,6 +501,160 @@ int uc_bn_obj_delete_owned(uint8_t owner)
 }
 
 /* ---------------------------------------------------------------------- */
+/* Network CreateObject / DeleteObject                                     */
+/* ---------------------------------------------------------------------- */
+
+/* Encode the NPDU of a reply to src into Handler_Transmit_Buffer. */
+static int reply_npdu_encode(BACNET_ADDRESS *src, uint8_t priority, BACNET_NPDU_DATA *npdu_data)
+{
+	BACNET_ADDRESS my_address;
+
+	datalink_get_my_address(&my_address);
+	npdu_encode_npdu_data(npdu_data, false, (BACNET_MESSAGE_PRIORITY)priority);
+
+	return npdu_encode_pdu(&Handler_Transmit_Buffer[0], src, &my_address, npdu_data);
+}
+
+static void reply_send(BACNET_ADDRESS *src, BACNET_NPDU_DATA *npdu_data, int pdu_len)
+{
+	if (datalink_send_pdu(src, npdu_data, &Handler_Transmit_Buffer[0], (unsigned int)pdu_len) <=
+	    0) {
+		LOG_DBG("reply not sent");
+	}
+}
+
+void uc_bn_reply_error(BACNET_ADDRESS *src, const BACNET_CONFIRMED_SERVICE_DATA *service_data,
+		       BACNET_CONFIRMED_SERVICE service, BACNET_ERROR_CLASS error_class,
+		       BACNET_ERROR_CODE error_code)
+{
+	BACNET_NPDU_DATA npdu_data;
+	int len = reply_npdu_encode(src, service_data->priority, &npdu_data);
+
+	len += bacerror_encode_apdu(&Handler_Transmit_Buffer[len], service_data->invoke_id,
+				    service, error_class, error_code);
+	reply_send(src, &npdu_data, len);
+}
+
+#if defined(CONFIG_UC_BACNET_REMOTE_CREATE_DELETE)
+/* CreateObject: like handler_create_object(), but only for the object
+ * types of obj_ops_table and with an owner entry (UC_OWNER_NETWORK) for
+ * every created object. Malformed or segmented requests are left to the
+ * stack's handler (Reject/Abort). */
+static void net_create_object_handler(uint8_t *service_request, uint16_t service_len,
+				      BACNET_ADDRESS *src,
+				      BACNET_CONFIRMED_SERVICE_DATA *service_data)
+{
+	BACNET_CREATE_OBJECT_DATA *data = &create_data;
+	BACNET_NPDU_DATA npdu_data;
+	struct owner_entry *e = NULL;
+	k_spinlock_key_t key;
+	uint16_t type;
+	int len;
+
+	memset(data, 0, sizeof(*data));
+	if ((service_len == 0) || service_data->segmented_message ||
+	    (create_object_decode_service_request(service_request, service_len, data) <= 0)) {
+		handler_create_object(service_request, service_len, src, service_data);
+		return;
+	}
+	type = (uint16_t)data->object_type;
+	if (obj_ops_find(type) == NULL) {
+		data->error_class = ERROR_CLASS_OBJECT;
+		data->error_code = ERROR_CODE_DYNAMIC_CREATION_NOT_SUPPORTED;
+	} else if (Device_Valid_Object_Id(data->object_type, data->object_instance)) {
+		data->error_class = ERROR_CLASS_OBJECT;
+		data->error_code = ERROR_CODE_OBJECT_IDENTIFIER_ALREADY_EXISTS;
+	} else {
+		/* the instance of a CreateObject by type is known afterwards */
+		e = owner_alloc_locked(type, data->object_instance, UC_OWNER_NETWORK);
+		if (e == NULL) {
+			data->error_class = ERROR_CLASS_RESOURCES;
+			data->error_code = ERROR_CODE_NO_SPACE_FOR_OBJECT;
+		}
+	}
+
+	len = reply_npdu_encode(src, service_data->priority, &npdu_data);
+	if ((e != NULL) && Device_Create_Object(data) &&
+	    Device_Valid_Object_Id(data->object_type, data->object_instance)) {
+		/* drop a left-over entry of a former object with this id */
+		for (size_t i = 0; i < ARRAY_SIZE(owners); i++) {
+			if ((&owners[i] != e) && owners[i].used && (owners[i].type == type) &&
+			    (owners[i].instance == data->object_instance)) {
+				owner_free(&owners[i]);
+			}
+		}
+		key = k_spin_lock(&owner_lock);
+		e->instance = data->object_instance;
+		k_spin_unlock(&owner_lock, key);
+		LOG_INF("CreateObject %s %u from the network", uc_obj_type_to_str(type),
+			data->object_instance);
+		len += create_object_ack_encode(&Handler_Transmit_Buffer[len],
+						service_data->invoke_id, data);
+	} else {
+		if (e != NULL) {
+			owner_free(e);
+		}
+		LOG_WRN("CreateObject %s %u from the network refused (%u/%u)",
+			uc_obj_type_to_str(type), data->object_instance, data->error_class,
+			data->error_code);
+		len += create_object_error_ack_encode(&Handler_Transmit_Buffer[len],
+						      service_data->invoke_id, data);
+	}
+	reply_send(src, &npdu_data, len);
+}
+
+/* DeleteObject: only objects created with CreateObject (UC_OWNER_NETWORK);
+ * the owner table entry is released with the object. */
+static void net_delete_object_handler(uint8_t *service_request, uint16_t service_len,
+				      BACNET_ADDRESS *src,
+				      BACNET_CONFIRMED_SERVICE_DATA *service_data)
+{
+	BACNET_DELETE_OBJECT_DATA data = { 0 };
+	struct owner_entry *e;
+	uint16_t type;
+	uint8_t owner;
+
+	if ((service_len == 0) || service_data->segmented_message ||
+	    (delete_object_decode_service_request(service_request, service_len, &data) <= 0) ||
+	    !Device_Valid_Object_Id(data.object_type, data.object_instance)) {
+		/* Reject/Abort, or Error unknown-object/unsupported-object-type */
+		handler_delete_object(service_request, service_len, src, service_data);
+		return;
+	}
+	type = (uint16_t)data.object_type;
+	owner = owner_of_locked(type, data.object_instance);
+	if (owner != UC_OWNER_NETWORK) {
+		LOG_WRN("DeleteObject %s %u from the network refused (owner %u)",
+			uc_obj_type_to_str(type), data.object_instance, owner);
+		uc_bn_reply_error(src, service_data, SERVICE_CONFIRMED_DELETE_OBJECT,
+				  ERROR_CLASS_OBJECT, ERROR_CODE_OBJECT_DELETION_NOT_PERMITTED);
+		return;
+	}
+	handler_delete_object(service_request, service_len, src, service_data);
+	e = owner_find(type, data.object_instance);
+	if ((e != NULL) && !Device_Valid_Object_Id(data.object_type, data.object_instance)) {
+		owner_free(e);
+		LOG_INF("DeleteObject %s %u from the network", uc_obj_type_to_str(type),
+			data.object_instance);
+	}
+}
+#endif /* CONFIG_UC_BACNET_REMOTE_CREATE_DELETE */
+
+/* Replace the stack's CreateObject/DeleteObject handlers registered by
+ * bacnet_basic_init(). Without a handler apdu_handler() answers Reject
+ * unrecognized-service, and Protocol_Services_Supported omits them. */
+static void net_services_init_locked(void)
+{
+#if defined(CONFIG_UC_BACNET_REMOTE_CREATE_DELETE)
+	apdu_set_confirmed_handler(SERVICE_CONFIRMED_CREATE_OBJECT, net_create_object_handler);
+	apdu_set_confirmed_handler(SERVICE_CONFIRMED_DELETE_OBJECT, net_delete_object_handler);
+#else
+	apdu_set_confirmed_handler(SERVICE_CONFIRMED_CREATE_OBJECT, NULL);
+	apdu_set_confirmed_handler(SERVICE_CONFIRMED_DELETE_OBJECT, NULL);
+#endif
+}
+
+/* ---------------------------------------------------------------------- */
 /* Property access                                                         */
 /* ---------------------------------------------------------------------- */
 
@@ -480,13 +662,22 @@ int uc_bn_obj_delete_owned(uint8_t owner)
 static uint8_t rp_buf[MAX_APDU];
 static BACNET_WRITE_PROPERTY_DATA wp_data;
 
-int uc_bn_prop_read_locked(uint16_t type, uint32_t instance, uint32_t prop, int32_t index,
-			   BACNET_APPLICATION_DATA_VALUE *out)
+/* An array index is only valid for BACnetARRAY properties (like the
+ * ReadProperty/WriteProperty handlers: property-is-not-an-array). */
+static bool prop_index_ok(uint16_t type, uint32_t prop, int32_t index)
+{
+	return (index < 0) || property_list_bacnet_array_member((BACNET_OBJECT_TYPE)type,
+								 (BACNET_PROPERTY_ID)prop);
+}
+
+/* Device_Read_Property() into rp_buf: the encoded length (0 for an empty
+ * array or list) or a negative errno. */
+static int prop_read_raw_locked(uint16_t type, uint32_t instance, uint32_t prop, int32_t index)
 {
 	BACNET_READ_PROPERTY_DATA rp = { 0 };
 	int len;
 
-	if (out == NULL) {
+	if (!prop_index_ok(type, prop, index)) {
 		return -EINVAL;
 	}
 	rp.object_type = (BACNET_OBJECT_TYPE)type;
@@ -501,18 +692,47 @@ int uc_bn_prop_read_locked(uint16_t type, uint32_t instance, uint32_t prop, int3
 		if (len == BACNET_STATUS_ERROR) {
 			return uc_bn_local_err(rp.error_class, rp.error_code);
 		}
-		/* abort/reject: e.g. value larger than one APDU */
+		/* abort (value larger than one APDU) or reject */
+		return (len == BACNET_STATUS_ABORT) ? -ENOSPC : -EINVAL;
+	}
+
+	return len;
+}
+
+int uc_bn_prop_read_locked(uint16_t type, uint32_t instance, uint32_t prop, int32_t index,
+			   BACNET_APPLICATION_DATA_VALUE *out)
+{
+	int len;
+
+	if (out == NULL) {
 		return -EINVAL;
 	}
-	if (len == 0) {
-		return -EBADMSG;
+	len = prop_read_raw_locked(type, instance, prop, index);
+	if (len < 0) {
+		return len;
 	}
-	if (bacapp_decode_application_data(rp_buf, (uint32_t)len, out) <= 0) {
+	if ((len == 0) || (bacapp_decode_application_data(rp_buf, (uint32_t)len, out) <= 0)) {
 		return -EBADMSG;
 	}
 	out->next = NULL;
 
 	return 0;
+}
+
+static int prop_read_encoded_locked(uint16_t type, uint32_t instance, uint32_t prop,
+				    int32_t index, uint8_t *buf, size_t size)
+{
+	int len = prop_read_raw_locked(type, instance, prop, index);
+
+	if (len < 0) {
+		return len;
+	}
+	if ((size_t)len > size) {
+		return -ENOSPC;
+	}
+	memcpy(buf, rp_buf, (size_t)len);
+
+	return len;
 }
 
 int uc_bn_prop_write_locked(uint16_t type, uint32_t instance, uint32_t prop, int32_t index,
@@ -534,7 +754,7 @@ int uc_bn_prop_write_locked(uint16_t type, uint32_t instance, uint32_t prop, int
 		null_value.tag = BACNET_APPLICATION_TAG_NULL;
 		value = &null_value;
 	}
-	if (value->context_specific) {
+	if (value->context_specific || !prop_index_ok(type, prop, index)) {
 		return -EINVAL;
 	}
 
@@ -550,6 +770,17 @@ int uc_bn_prop_write_locked(uint16_t type, uint32_t instance, uint32_t prop, int
 		return -EBADMSG;
 	}
 	wp_data.application_data_len = len;
+
+#if (BACNET_PROTOCOL_REVISION >= 21)
+	/* Like handler_write_property() (135 clause 15.9.2): a NULL written to
+	 * the present value of an object without priority array (AV, BV, MSV
+	 * of this stack) changes nothing and succeeds. Unlike the handler, only
+	 * for an existing object. */
+	if (Device_Valid_Object_Id((BACNET_OBJECT_TYPE)type, instance) &&
+	    write_property_relinquish_bypass(&wp_data, Device_Objects_Property_List_Member)) {
+		return 0;
+	}
+#endif
 
 	local_writer = writer_owner;
 	local_write_active = true;
@@ -570,6 +801,8 @@ struct prop_args {
 	int32_t index;
 	BACNET_APPLICATION_DATA_VALUE *out;
 	const BACNET_APPLICATION_DATA_VALUE *value;
+	uint8_t *buf;
+	size_t size;
 	uint8_t priority;
 	uint8_t writer;
 	int rc;
@@ -595,6 +828,31 @@ int uc_bn_prop_read(uint16_t type, uint32_t instance, uint32_t prop, int32_t ind
 		return -EINVAL;
 	}
 	rc = uc_bn_call(prop_read_fn, &a);
+
+	return (rc != 0) ? rc : a.rc;
+}
+
+static void prop_read_encoded_fn(void *arg)
+{
+	struct prop_args *a = arg;
+
+	a->rc = prop_read_encoded_locked(a->type, a->instance, a->prop, a->index, a->buf,
+					 a->size);
+}
+
+int uc_bn_prop_read_encoded(uint16_t type, uint32_t instance, uint32_t prop, int32_t index,
+			    uint8_t *buf, size_t size)
+{
+	struct prop_args a = {
+		.type = type, .instance = instance, .prop = prop, .index = index, .buf = buf,
+		.size = size, .rc = -EIO,
+	};
+	int rc;
+
+	if ((buf == NULL) || (size == 0)) {
+		return -EINVAL;
+	}
+	rc = uc_bn_call(prop_read_encoded_fn, &a);
 
 	return (rc != 0) ? rc : a.rc;
 }

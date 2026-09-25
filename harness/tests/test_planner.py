@@ -192,6 +192,70 @@ def test_reboot_notes(setup: Any) -> None:
     assert "after device.json" in p.notes[0].message
 
 
+def test_io_push_restarts_dependent_apps(setup: Any) -> None:
+    """The link on b reads a's IO object analog-input:1: re-created by the
+    io.json push on a, so the link is restarted after the apps phase."""
+    s, renders, arts = setup
+    live = synced_live(s, renders, arts)
+    live["a"].config_sha256["io"] = "00" * 32
+    p = pl.plan(s, live, renders=renders, artifacts=arts)
+    assert kinds(p) == [("a", "push_config", "io"), ("b", "restart_app", "link")]
+    restart = p.ordered()[1]
+    assert restart.phase == pl.PHASE_LINKS and restart.data["objects"] == ["a/analog-input:1"]
+    assert "re-created IO objects a/analog-input:1" in restart.describe()
+    assert p.to_dict()["actions"][1]["kind"] == "restart_app"
+    # an app that is (re)deployed anyway is not restarted as well
+    live["b"].files_sha256["/lfs/apps/link.wasm"] = "11" * 32
+    p = pl.plan(s, live, renders=renders, artifacts=arts)
+    assert ("b", "restart_app", "link") not in kinds(p)
+    # nor one that is not installed / not reachable
+    live = synced_live(s, renders, arts)
+    live["a"].config_sha256["io"] = "00" * 32
+    del live["b"].apps_status["link"]
+    assert ("b", "restart_app", "link") not in kinds(pl.plan(s, live, renders=renders,
+                                                             artifacts=arts))
+
+
+def test_io_dependents() -> None:
+    doc = {
+        "apiVersion": "bacnet-uc/v1", "kind": "System", "metadata": {"name": "d"},
+        "nodes": [
+            {"name": "s", "board": "native_sim/native/64", "transport": {"kind": "sim"},
+             "device": {"instance": 1, "name": "s"},
+             "io": [{"channel": "ai0", "type": "analog-input", "instance": 1}]},
+            {"name": "o", "board": "native_sim/native/64", "transport": {"kind": "sim"},
+             "device": {"instance": 2, "name": "o"},
+             "io": [{"channel": "ao0", "type": "analog-output", "instance": 1},
+                    {"channel": "do0", "type": "binary-output", "instance": 3}]},
+        ],
+        "apps": [
+            {"name": "thermostat", "node": "o", "wasm": "t.wasm",
+             "params": {"sensor_device": 1, "out_instance": 1}},
+            {"name": "alarm", "node": "s", "wasm": "alarm.wasm", "params": {"src_instance": 1}},
+            {"name": "blinky", "node": "o", "wasm": "blinky.wasm",
+             "params": {"type": 4, "instance": 3}},
+        ],
+        "links": [{"from": "s/analog-input:1", "to": "o/analog-value:9", "mode": "poll"}],
+    }
+    s = m.load_system_dict(doc, check_files=False)
+    assert pl.io_dependents(s, {"s"}) == {
+        ("o", "thermostat"): ["s/analog-input:1"], ("s", "alarm"): ["s/analog-input:1"],
+        ("o", "link"): ["s/analog-input:1"]}
+    assert pl.io_dependents(s, {"o"}) == {
+        ("o", "thermostat"): ["o/analog-output:1"], ("o", "blinky"): ["o/binary-output:3"]}
+
+
+async def test_apply_restart_action(setup: Any) -> None:
+    s, renders, arts = setup
+    live = synced_live(s, renders, arts)
+    live["a"].config_sha256["io"] = "00" * 32
+    p = pl.plan(s, live, renders=renders, artifacts=arts)
+    log: list[str] = []
+    rep = await pl.apply(p, {"a": RecordingNode("a", log), "b": RecordingNode("b", log)})
+    assert rep.ok and log == ["a:push io", "b:restart link"]
+    assert rep.results[1].detail == {"name": "link", "state": "running"}
+
+
 def test_plan_renders_itself(setup: Any) -> None:
     s, _, arts = setup
     p = pl.plan(s, {n: pl.LiveState(node=n) for n in ("a", "b")}, artifacts=arts)
@@ -235,6 +299,10 @@ class RecordingNode:
     async def start_app(self, name: str) -> dict[str, Any]:
         self._rec(f"start {name}")
         return {"name": name}
+
+    async def restart_app(self, name: str) -> dict[str, Any]:
+        self._rec(f"restart {name}")
+        return {"name": name, "state": "running"}
 
     async def reboot(self) -> None:
         self.reboots += 1
@@ -358,7 +426,9 @@ async def test_plan_apply_fake_nodes(make_fake_node: Callable[..., Awaitable[Fak
         await nodes["b"].stop_app("thermostat")
         await nodes["a"].push_config("io", {"schema": 1, "points": []})
         p3, _, _, _ = await pl.plan_system(system, nodes, artifacts=arts)
-        assert kinds(p3) == [("a", "push_config", "io"), ("b", "start_app", "thermostat")]
+        # the link on b reads a's re-created analog-input:1: restarted
+        assert kinds(p3) == [("a", "push_config", "io"), ("b", "start_app", "thermostat"),
+                             ("b", "restart_app", "link")]
         assert (await pl.apply(p3, nodes)).ok
         assert (await pl.plan_system(system, nodes, artifacts=arts))[0].empty
     finally:

@@ -158,7 +158,7 @@ static void test_counter_object_and_reset(void)
 	UC_CHECK_NEAR(uc_stub_obj_pv(AV, 11), 2.0, 0);
 	UC_CHECK(!uc_stub_obj_prio(AV, 11, 8, &v));
 
-	/* writing 0 resets it, the priority slot is cleared again */
+	/* writing 0 resets it (an analog-value has no priority array) */
 	uc_stub_client_write(AV, 11, PV, 0.0, 8);
 	uc_stub_run(0);
 	UC_CHECK_NEAR(uc_stub_obj_pv(AV, 11), 0.0, 0);

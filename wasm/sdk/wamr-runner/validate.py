@@ -15,7 +15,11 @@ For every scenario (SCENARIOS below):
      file when build/aot/native_sim_native_64/<app>.aot exists.
   3. With --iwasm: WAMR's iwasm loads every module (and AOT file) with the
      natives from libuc_bacnet_stub.so and calls uc_app_api_version.
-  4. A bounds probe documents WAMR's linear memory rounding (see README).
+  4. The pool block holding the linear memory covers the range WAMR
+     bounds-checks (firmware fix modules/wasm-micro-runtime/
+     wamr_linear_memory.c, which the runner uses): in every scenario, and in
+     a bounds probe whose memory is not page aligned, where an access at
+     the last checked byte must work and one at the bound must trap.
 Exit status 1 when a check fails.
 """
 
@@ -89,9 +93,11 @@ def first_diff(a: str, b: str) -> str:
     return "length differs"
 
 
-def bounds_probe(runner: str, uc_cc: str, tmp: Path) -> str:
-    """Write just behind the allocated linear memory of a module whose size
-    is not page aligned; WAMR 2.4.5 accepts it (bounds rounded to 4 KiB)."""
+def bounds_probe(runner: str, uc_cc: str, tmp: Path, failures: list[str]) -> str:
+    """Access the linear memory of a module whose size is not page aligned
+    at its size, at the last byte WAMR 2.4.5 accepts (bounds rounded to
+    4 KiB) and at the bound. The first two must work inside the pool block
+    (which must cover the bounds), the last must trap."""
     src = tmp / "bounds_probe.c"
     src.write_text(
         "#include <bacnet_uc.h>\nUC_APP_DECLARE()\n"
@@ -105,12 +111,24 @@ def bounds_probe(runner: str, uc_cc: str, tmp: Path) -> str:
     info = uc_check.check_file(str(wasm), heap_bytes=HEAP).info
     linear, bounds = info["linear_memory_bytes"], info["linear_memory_bounds_bytes"]
     results = []
-    for addr in (linear, bounds - 1, bounds):
+    block = 0
+    for addr, expect_trap in ((linear, False), (bounds - 1, False), (bounds, True)):
         r = run([runner, str(wasm), "--json", "-p", f"addr={addr}", "--run", "0"])
-        trapped = '"trapped": true' in r.stdout
-        results.append(f"{addr}: {'trap' if trapped else 'accepted'}")
-    return (f"module memory {linear} B (not page aligned), WAMR bounds {bounds} B; "
-            f"write at {', '.join(results)}")
+        try:
+            res = json.loads(r.stdout.strip().splitlines()[-1])
+        except (IndexError, json.JSONDecodeError):
+            failures.append(f"bounds probe {addr}: runner failed: {r.stderr.strip()}")
+            continue
+        block = res["linear_block_bytes"]
+        if res["bounds_bytes"] != bounds or block < bounds:
+            failures.append(f"bounds probe: block {block} B, bounds {res['bounds_bytes']} B, "
+                            f"predicted bounds {bounds} B")
+        if res["trapped"] != expect_trap:
+            failures.append(f"bounds probe: access at {addr} "
+                            f"{'did not trap' if expect_trap else 'trapped'}")
+        results.append(f"{addr}: {'trap' if res['trapped'] else 'ok'}")
+    return (f"module memory {linear} B (not page aligned), WAMR bounds {bounds} B, "
+            f"pool block {block} B; access at {', '.join(results)}")
 
 
 def main(argv: list[str]) -> int:
@@ -128,8 +146,9 @@ def main(argv: list[str]) -> int:
     failures: list[str] = []
     rows: list[dict] = []
 
-    print(f"{'scenario':24} {'module B':>8} {'memory':>7} {'bounds':>7} {'pool mod':>8} "
-          f"{'inst':>5} {'env':>5} {'ticks':>5} {'events':>6}  wasm=native  aot=native")
+    print(f"{'scenario':24} {'module B':>8} {'memory':>7} {'bounds':>7} {'block':>7} "
+          f"{'pool mod':>8} {'inst':>5} {'env':>5} {'ticks':>5} {'events':>6}  "
+          "wasm=native  aot=native")
     for name, module, sargs in SCENARIOS:
         wasm = build / f"{module}.wasm"
         native = build / "host" / f"scenario_{module}"
@@ -150,8 +169,11 @@ def main(argv: list[str]) -> int:
             failures.append(f"{name}: linear memory {res['linear_memory_bytes']} B, predicted "
                             f"{predicted} B")
         if res["bounds_bytes"] != res["linear_memory_bytes"]:
-            failures.append(f"{name}: WAMR bounds {res['bounds_bytes']} B != allocated "
+            failures.append(f"{name}: WAMR bounds {res['bounds_bytes']} B != linear memory "
                             f"{res['linear_memory_bytes']} B")
+        if res["linear_block_bytes"] < res["bounds_bytes"]:
+            failures.append(f"{name}: pool block {res['linear_block_bytes']} B < WAMR bounds "
+                            f"{res['bounds_bytes']} B")
 
         dump_w = run(base + ["--dump"]).stdout
         dump_n = run([str(native), *sargs, "--dump"]).stdout
@@ -170,8 +192,9 @@ def main(argv: list[str]) -> int:
         if args.verbose:
             print(dump_w)
         print(f"{name:24} {res['file_bytes']:8} {res['linear_memory_bytes']:7} "
-              f"{res['bounds_bytes']:7} {res['pool_module']:8} {res['pool_instance']:5} "
-              f"{res['pool_exec_env']:5} {res['ticks']:5} {res['events']:6}  "
+              f"{res['bounds_bytes']:7} {res['linear_block_bytes']:7} {res['pool_module']:8} "
+              f"{res['pool_instance']:5} {res['pool_exec_env']:5} {res['ticks']:5} "
+              f"{res['events']:6}  "
               f"{'yes' if same else 'NO':11}  {same_aot}")
         rows.append({"scenario": name, "module": module, **res, "predicted": predicted,
                      "wasm_equals_native": same, "aot_equals_native": same_aot})
@@ -188,7 +211,8 @@ def main(argv: list[str]) -> int:
                 failures.append(f"iwasm {m}: {r.stdout.strip()} {r.stderr.strip()}")
 
     with tempfile.TemporaryDirectory(prefix="uc-probe-") as tmp:
-        print("bounds probe:", bounds_probe(args.runner, str(SDK / "uc-cc"), Path(tmp)))
+        print("bounds probe:", bounds_probe(args.runner, str(SDK / "uc-cc"), Path(tmp),
+                                            failures))
 
     if args.json:
         Path(args.json).write_text(json.dumps(rows, indent=2) + "\n", encoding="utf-8")

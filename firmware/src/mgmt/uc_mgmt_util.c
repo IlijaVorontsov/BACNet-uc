@@ -331,6 +331,36 @@ bool uc_mgmt_dec_value(zcbor_state_t *zsd, struct uc_mgmt_value *out)
 	}
 }
 
+/* A number for a property: finite, 0/1 for the present value of a binary
+ * object, integral for integer datatypes. */
+static int number_to_bacnet(double num, uint16_t type, uint32_t prop,
+			    BACNET_APPLICATION_DATA_VALUE *out)
+{
+	int rc;
+
+	if (!isfinite(num)) {
+		return -EINVAL;
+	}
+	if (uc_obj_type_is_binary(type) &&
+	    ((prop == PROP_PRESENT_VALUE) || (prop == PROP_RELINQUISH_DEFAULT) ||
+	     (prop == PROP_PRIORITY_ARRAY)) &&
+	    (num != 0.0) && (num != 1.0)) {
+		return -EINVAL;
+	}
+	rc = uc_value_from_double(type, prop, num, out);
+	if (rc < 0) {
+		return rc;
+	}
+	switch (out->tag) {
+	case BACNET_APPLICATION_TAG_UNSIGNED_INT:
+	case BACNET_APPLICATION_TAG_SIGNED_INT:
+	case BACNET_APPLICATION_TAG_ENUMERATED:
+		return (trunc(num) == num) ? 0 : -EINVAL;
+	default:
+		return 0;
+	}
+}
+
 int uc_mgmt_value_to_bacnet(const struct uc_mgmt_value *in, uint16_t type, uint32_t prop,
 			    BACNET_APPLICATION_DATA_VALUE *out)
 {
@@ -338,9 +368,9 @@ int uc_mgmt_value_to_bacnet(const struct uc_mgmt_value *in, uint16_t type, uint3
 
 	switch (in->kind) {
 	case UC_MGMT_VAL_NUMBER:
-		return uc_value_from_double(type, prop, in->number, out);
+		return number_to_bacnet(in->number, type, prop, out);
 	case UC_MGMT_VAL_BOOL:
-		return uc_value_from_double(type, prop, in->boolean ? 1.0 : 0.0, out);
+		return number_to_bacnet(in->boolean ? 1.0 : 0.0, type, prop, out);
 	case UC_MGMT_VAL_TEXT:
 		out->tag = BACNET_APPLICATION_TAG_CHARACTER_STRING;
 		if (!characterstring_init_ansi(&out->type.Character_String, in->text)) {

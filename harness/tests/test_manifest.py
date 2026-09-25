@@ -398,8 +398,8 @@ def test_link_destination_collisions() -> None:
     doc = base_doc()
     doc["links"] = [
         {"from": "a/analog-input:1", "to": "b/analog-value:1"},  # thermostat setpoint
-        {"from": "a/analog-input:1", "to": "b/analog-value:9"},
-        {"from": "a/binary-input:1", "to": "b/analog-value:9"},
+        {"from": "a/analog-input:1", "to": "b/analog-output:1", "priority": 8},
+        {"from": "a/binary-input:1", "to": "b/analog-output:1", "priority": 8},
         {"from": "a/binary-input:1", "to": "b/binary-output:7"},  # not an IO point
     ]
     errs = errors(doc)
@@ -409,6 +409,36 @@ def test_link_destination_collisions() -> None:
     assert any(w.path == "/links/3/to" and "neither an IO point" in w.message for w in ws)
     doc["links"][2]["priority"] = 9
     assert not errors(doc)
+
+
+def test_link_value_object_priorities() -> None:
+    """Value objects have no priority array: one writer only, priority ignored."""
+    doc = base_doc()
+    doc["links"] = [
+        {"from": "a/analog-input:1", "to": "b/analog-value:9"},
+        {"from": "a/binary-input:1", "to": "b/analog-value:9", "priority": 9},
+    ]
+    assert_error(doc, "/links/1/to", "value object has no priority array")
+    ws = warnings(doc)
+    assert any(w.path == "/links/1/priority" and "ignored" in w.message for w in ws)
+    doc["links"] = [{"from": "a/analog-input:1", "to": "b/analog-output:1", "priority": 6}]
+    assert_error(doc, "/links/0/priority", "reserved for minimum on/off")
+    doc["links"][0]["priority"] = 8
+    assert not errors(doc) and not [w for w in warnings(doc) if "priority" in w.path]
+
+
+def test_test_write_value_object_warnings() -> None:
+    doc = base_doc()
+    doc["tests"][0]["steps"] = [
+        {"write": {"point": "b/analog-value:1", "value": 23.0, "priority": 8}},
+        {"write": {"point": "b/analog-value:1", "value": None, "priority": 8}},
+        {"write": {"point": "b/analog-value:1", "value": 21.0}},
+        {"write": {"point": "b/analog-output:1", "value": 5, "priority": 6}},
+    ]
+    ws = {w.path for w in warnings(doc)}
+    assert "/tests/0/steps/0/write/priority" in ws and "/tests/0/steps/1/write/value" in ws
+    assert not any(p.startswith("/tests/0/steps/2") for p in ws)
+    assert_error(doc, "/tests/0/steps/3/write/priority", "reserved")
 
 
 def test_link_source_warning() -> None:
@@ -472,3 +502,27 @@ def test_validate_document_other_schemas() -> None:
     with pytest.raises(m.HarnessError):
         m.load_schema("nope")
     assert m.schema_names() == ["apps", "device", "io", "system"]
+
+
+def test_app_points_and_objects_in_use() -> None:
+    link = m.app_points("uc-link", {"count": "2", "l0": "11 0 1 1 1 cov 1000 8 1 0",
+                                    "l1": "12 3 1 5 7 poll 500 0 1 0"})
+    assert link == [m.PointRef(11, 0, 1, "input"), m.PointRef(None, 1, 1, "output"),
+                    m.PointRef(12, 3, 1, "input"), m.PointRef(None, 5, 7, "output")]
+    th = m.app_points("thermostat", {"sensor_device": "local", "out_device": "4294967295"})
+    assert [(r.device, r.key) for r in th] == [(None, (0, 1)), (None, (1, 1))]
+    assert m.app_points("blinky", {"channel": "do0"}) == []
+    assert m.app_points(None, {"a": 1}) == []
+    entries = [
+        {"name": "link", "file": "/lfs/apps/link.wasm",
+         "params": [{"key": "count", "value": "1"},
+                    {"key": "l0", "value": "11 0 1 1 1 cov 1000 8 1 0"}]},
+        {"name": "alarm", "file": "/lfs/apps/alarm.wasm", "params": {"src_device": "11"}},
+        {"name": "t2", "file": "/lfs/apps/thermostat.wasm",
+         "params": [{"key": "sensor_device", "value": "99"},
+                    {"key": "out_device", "value": "99"}]},
+        {"name": "custom", "file": "/lfs/apps/custom.wasm"},
+    ]
+    assert m.apps_using_objects(entries, {(0, 1)}, 11) == ["link", "alarm"]
+    assert m.apps_using_objects(entries, {(1, 1)}, 11) == ["link"]
+    assert m.apps_using_objects(entries, set(), 11) == []

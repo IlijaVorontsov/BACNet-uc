@@ -2,8 +2,9 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * Unit tests of uc_config.c: parsing of the documented examples, defaults
- * for absent fields, schema violations, apps.json encode/parse round trip
- * and the cache (init, reload, set_apps) on top of the storage stub.
+ * for absent fields, schema violations, apps.json encode/parse round trip,
+ * the cache (init, reload, set_apps), staged <doc>.new documents and the
+ * device.json log level, on top of the storage stub.
  */
 
 #include <errno.h>
@@ -11,6 +12,8 @@
 #include <string.h>
 
 #include <zephyr/logging/log.h>
+#include <zephyr/logging/log_backend.h>
+#include <zephyr/logging/log_ctrl.h>
 #include <zephyr/ztest.h>
 
 #include "bacnet/bacenum.h"
@@ -19,6 +22,15 @@
 #include "uc/uc_storage.h"
 
 #include "storage_stub.h"
+
+/* A log source compiled with all levels: the runtime filter set from
+ * device.json "log.level" is observable on it.
+ */
+LOG_MODULE_REGISTER(test_config, LOG_LEVEL_DBG);
+
+#define DEVICE_NEW UC_FILE_DEVICE_CFG UC_CFG_STAGED_SUFFIX
+#define IO_NEW     UC_FILE_IO_CFG UC_CFG_STAGED_SUFFIX
+#define APPS_NEW   UC_FILE_APPS_CFG UC_CFG_STAGED_SUFFIX
 
 /* schemas/examples/<doc>.json, embedded by CMake */
 static const char example_device[] = {
@@ -91,6 +103,7 @@ ZTEST(uc_config, test_defaults)
 	zassert_equal(dev.apdu_retries, 3);
 	zassert_false(dev.fd_enabled);
 	zassert_equal(dev.binding_count, 0);
+	zassert_str_equal(dev.bacnet_password, "");
 	zassert_equal(dev.log_level, LOG_LEVEL_INF);
 
 	uc_config_io_point_defaults(&pt);
@@ -137,6 +150,7 @@ ZTEST(uc_config, test_device_example)
 	zassert_equal(dev.bindings[0].device, 1002);
 	zassert_str_equal(dev.bindings[0].address, "192.168.10.52");
 	zassert_equal(dev.bindings[0].port, 47808);
+	zassert_str_equal(dev.bacnet_password, "");
 	zassert_equal(dev.log_level, LOG_LEVEL_INF);
 }
 
@@ -163,7 +177,8 @@ ZTEST(uc_config, test_device_optional_fields)
 		"\"bacnet\":{\"udp_port\":47809,\"apdu_timeout_ms\":100,\"apdu_retries\":0,"
 		"\"foreign_device\":{\"bbmd\":\"10.0.0.1\",\"ttl_s\":120},"
 		"\"static_bindings\":[{\"device\":7,\"address\":\"127.0.0.1\"},"
-		"{\"device\":8,\"address\":\"127.0.0.1\",\"port\":47810}]},"
+		"{\"device\":8,\"address\":\"127.0.0.1\",\"port\":47810}],"
+		"\"password\":\"Open Sesame~20chars!\"},"
 		"\"log\":{\"level\":\"dbg\"},\"x-unknown\":{\"ignored\":[1,2]}}"));
 	zassert_equal(dev.instance, 0);
 	zassert_str_equal(dev.name, "a\"b");
@@ -182,7 +197,16 @@ ZTEST(uc_config, test_device_optional_fields)
 	zassert_equal(dev.bindings[0].port, 47808);
 	zassert_equal(dev.bindings[1].device, 8);
 	zassert_equal(dev.bindings[1].port, 47810);
+	zassert_str_equal(dev.bacnet_password, "Open Sesame~20chars!");
 	zassert_equal(dev.log_level, LOG_LEVEL_DBG);
+
+	zassert_ok(parse_device("{\"schema\":1,\"device\":{\"instance\":1,\"name\":\"n\"},"
+				"\"bacnet\":{\"password\":\"x\"}}"));
+	zassert_str_equal(dev.bacnet_password, "x");
+	/* "" is "not configured" (the schema requires 1..20 characters) */
+	zassert_ok(parse_device("{\"schema\":1,\"device\":{\"instance\":1,\"name\":\"n\"},"
+				"\"bacnet\":{\"password\":\"\"}}"));
+	zassert_str_equal(dev.bacnet_password, "");
 
 	/* static without address falls back to DHCP */
 	zassert_ok(parse_device("{\"schema\":1,\"device\":{\"instance\":1,\"name\":\"n\"},"
@@ -235,12 +259,25 @@ ZTEST(uc_config, test_device_invalid)
 		"{\"schema\":1,\"device\":{\"instance\":1,\"name\":\"n\"},"
 		"\"bacnet\":{\"static_bindings\":[{\"address\":\"10.0.0.1\"}]}}",
 		"{\"schema\":1,\"device\":{\"instance\":1,\"name\":\"n\"},\"log\":{\"level\":\"trace\"}}",
+		/* bacnet.password: 1..20 printable ASCII characters */
+		"{\"schema\":1,\"device\":{\"instance\":1,\"name\":\"n\"},"
+		"\"bacnet\":{\"password\":\"012345678901234567890\"}}",
+		"{\"schema\":1,\"device\":{\"instance\":1,\"name\":\"n\"},"
+		"\"bacnet\":{\"password\":\"tab\\there\"}}",
+		"{\"schema\":1,\"device\":{\"instance\":1,\"name\":\"n\"},"
+		"\"bacnet\":{\"password\":\"p\u00e4ss\"}}",
+		"{\"schema\":1,\"device\":{\"instance\":1,\"name\":\"n\"},"
+		"\"bacnet\":{\"password\":\"0123456789012345678901234567890123456789"
+		"012345678901234567890123456789\"}}",
+		"{\"schema\":1,\"device\":{\"instance\":1,\"name\":\"n\"},"
+		"\"bacnet\":{\"password\":1234}}",
 	};
 
 	for (size_t i = 0; i < ARRAY_SIZE(bad); i++) {
 		zassert_equal(parse_device(bad[i]), -EINVAL, "document %u accepted", (unsigned)i);
 		/* *out holds defaults after a rejection */
 		zassert_equal(dev.instance, CONFIG_UC_DEVICE_INSTANCE_DEFAULT);
+		zassert_str_equal(dev.bacnet_password, "");
 	}
 }
 
@@ -692,4 +729,221 @@ ZTEST(uc_config, test_set_apps)
 	zassert_equal(uc_config_set_apps(&apps2), -EIO);
 	uc_config_get_apps(&apps);
 	zassert_equal(apps.count, 2);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Staged documents (<doc>.new)                                            */
+/* ---------------------------------------------------------------------- */
+
+static const char io_empty[] = "{\"schema\":1,\"points\":[]}";
+static const char io_bad[] = "{\"schema\":1,\"points\":[{\"channel\":\"x\"}]}";
+
+ZTEST(uc_config, test_staged_valid)
+{
+	stub_fs_put(UC_FILE_DEVICE_CFG, example_device);
+	stub_fs_put(UC_FILE_IO_CFG, example_io);
+	zassert_ok(uc_config_init());
+	uc_config_get_io(&io);
+	zassert_equal(io.count, 4);
+
+	/* valid: renamed over the active document and used */
+	stub_fs_put(IO_NEW, io_empty);
+	zassert_ok(uc_config_reload(UC_CFG_IO));
+	uc_config_get_io(&io);
+	zassert_equal(io.count, 0);
+	zassert_is_null(stub_fs_get(IO_NEW));
+	zassert_str_equal(stub_fs_get(UC_FILE_IO_CFG), io_empty);
+
+	/* without a staged document the active one is re-read */
+	stub_fs_put(UC_FILE_IO_CFG, example_io);
+	zassert_ok(uc_config_reload(UC_CFG_IO));
+	uc_config_get_io(&io);
+	zassert_equal(io.count, 4);
+
+	/* staged without an active document */
+	zassert_ok(uc_storage_remove(UC_FILE_APPS_CFG));
+	stub_fs_put(APPS_NEW, example_apps);
+	zassert_ok(uc_config_reload(UC_CFG_APPS));
+	uc_config_get_apps(&apps);
+	zassert_equal(apps.count, 1);
+	zassert_is_null(stub_fs_get(APPS_NEW));
+	zassert_str_equal(stub_fs_get(UC_FILE_APPS_CFG), example_apps);
+
+	/* only the requested documents look at their staged file */
+	stub_fs_put(IO_NEW, io_empty);
+	zassert_ok(uc_config_reload(UC_CFG_DEVICE));
+	zassert_not_null(stub_fs_get(IO_NEW));
+	uc_config_get_io(&io);
+	zassert_equal(io.count, 4);
+}
+
+ZTEST(uc_config, test_staged_invalid)
+{
+	static char big[CONFIG_UC_CONFIG_DOC_MAX + 2];
+	static char limit_doc[CONFIG_UC_CONFIG_DOC_MAX];
+	int n;
+
+	stub_fs_put(UC_FILE_DEVICE_CFG, example_device);
+	stub_fs_put(UC_FILE_IO_CFG, example_io);
+	stub_fs_put(UC_FILE_APPS_CFG, example_apps);
+	zassert_ok(uc_config_init());
+
+	/* schema error: deleted, active configuration and file kept */
+	stub_fs_put(IO_NEW, io_bad);
+	zassert_equal(uc_config_reload(UC_CFG_IO), -EINVAL);
+	zassert_is_null(stub_fs_get(IO_NEW));
+	zassert_str_equal(stub_fs_get(UC_FILE_IO_CFG), example_io);
+	uc_config_get_io(&io);
+	zassert_equal(io.count, 4);
+
+	/* half-written upload (syntax error) */
+	stub_fs_put(IO_NEW, "{\"schema\":1,\"points\":[{\"chan");
+	zassert_equal(uc_config_reload(UC_CFG_IO), -EINVAL);
+	zassert_is_null(stub_fs_get(IO_NEW));
+	uc_config_get_io(&io);
+	zassert_equal(io.count, 4);
+
+	/* table limit exceeded: also -EINVAL for a staged document */
+	n = snprintf(limit_doc, sizeof(limit_doc), "{\"schema\":1,\"points\":[");
+	for (int i = 0; i <= CONFIG_UC_IO_POINTS_MAX; i++) {
+		n += snprintf(limit_doc + n, sizeof(limit_doc) - n,
+			      "%s{\"channel\":\"ai%d\",\"type\":\"analog-value\",\"instance\":%d}",
+			      (i == 0) ? "" : ",", i, i);
+	}
+	snprintf(limit_doc + n, sizeof(limit_doc) - n, "]}");
+	stub_fs_put(IO_NEW, limit_doc);
+	zassert_equal(uc_config_reload(UC_CFG_IO), -EINVAL);
+	zassert_is_null(stub_fs_get(IO_NEW));
+
+	/* larger than CONFIG_UC_CONFIG_DOC_MAX */
+	memset(big, ' ', sizeof(big) - 1);
+	memcpy(big, io_empty, strlen(io_empty));
+	stub_fs_put_len(IO_NEW, big, CONFIG_UC_CONFIG_DOC_MAX + 1);
+	zassert_equal(uc_config_reload(UC_CFG_IO), -EINVAL);
+	zassert_is_null(stub_fs_get(IO_NEW));
+	uc_config_get_io(&io);
+	zassert_equal(io.count, 4);
+
+	/* activation (rename) fails: nothing changes, the staged file stays for
+	 * another attempt
+	 */
+	stub_fs_put(IO_NEW, io_empty);
+	stub_fs_fail_next_rename(-EIO);
+	zassert_equal(uc_config_reload(UC_CFG_IO), -EIO);
+	zassert_not_null(stub_fs_get(IO_NEW));
+	zassert_str_equal(stub_fs_get(UC_FILE_IO_CFG), example_io);
+	uc_config_get_io(&io);
+	zassert_equal(io.count, 4);
+	zassert_ok(uc_config_reload(UC_CFG_IO));
+	uc_config_get_io(&io);
+	zassert_equal(io.count, 0);
+
+	/* "all": every document is processed, the first error is returned */
+	stub_fs_put(DEVICE_NEW, "{\"schema\":1,\"device\":{\"instance\":-5,\"name\":\"x\"}}");
+	stub_fs_put(APPS_NEW, "{\"schema\":1,\"apps\":[]}");
+	zassert_equal(uc_config_reload(UC_CFG_ALL), -EINVAL);
+	zassert_is_null(stub_fs_get(DEVICE_NEW));
+	zassert_is_null(stub_fs_get(APPS_NEW));
+	uc_config_get_device(&dev);
+	zassert_equal(dev.instance, 1001);
+	uc_config_get_apps(&apps);
+	zassert_equal(apps.count, 0);
+}
+
+ZTEST(uc_config, test_staged_at_boot)
+{
+	stub_fs_put(UC_FILE_DEVICE_CFG, example_device);
+	stub_fs_put(UC_FILE_IO_CFG, example_io);
+
+	/* a valid staged document is activated at boot as well */
+	stub_fs_put(DEVICE_NEW, "{\"schema\":1,\"device\":{\"instance\":42,\"name\":\"b\"}}");
+	/* a rejected one is deleted and the active document is used */
+	stub_fs_put(IO_NEW, io_bad);
+	zassert_ok(uc_config_init());
+
+	uc_config_get_device(&dev);
+	zassert_equal(dev.instance, 42);
+	zassert_is_null(stub_fs_get(DEVICE_NEW));
+	uc_config_get_io(&io);
+	zassert_equal(io.count, 4);
+	zassert_is_null(stub_fs_get(IO_NEW));
+	zassert_str_equal(stub_fs_get(UC_FILE_IO_CFG), example_io);
+}
+
+ZTEST(uc_config, test_storage_not_ready)
+{
+	stub_fs_put(UC_FILE_IO_CFG, example_io);
+	zassert_ok(uc_config_init());
+
+	/* without /lfs a reload keeps the cache and leaves staged files alone */
+	stub_fs_put(IO_NEW, io_empty);
+	stub_fs_set_ready(false);
+	zassert_equal(uc_config_reload(UC_CFG_IO), -ENODEV);
+	uc_config_get_io(&io);
+	zassert_equal(io.count, 4);
+	zassert_not_null(stub_fs_get(IO_NEW));
+
+	/* boot without /lfs: defaults */
+	zassert_equal(uc_config_init(), -ENODEV);
+	uc_config_get_io(&io);
+	zassert_equal(io.count, 0);
+	uc_config_get_device(&dev);
+	zassert_equal(dev.instance, CONFIG_UC_DEVICE_INSTANCE_DEFAULT);
+
+	stub_fs_set_ready(true);
+	zassert_ok(uc_config_reload(UC_CFG_IO));
+	uc_config_get_io(&io);
+	zassert_equal(io.count, 0);
+	zassert_is_null(stub_fs_get(IO_NEW));
+}
+
+/* ---------------------------------------------------------------------- */
+/* device.json log.level                                                   */
+/* ---------------------------------------------------------------------- */
+
+#define DEV_WITH_LEVEL(lvl)                                                                       \
+	"{\"schema\":1,\"device\":{\"instance\":3,\"name\":\"l\"},\"log\":{\"level\":\"" lvl "\"}}"
+
+static uint32_t runtime_level(void)
+{
+	int src = log_source_id_get("test_config");
+
+	zassert_true(src >= 0);
+	zassert_true(log_backend_count_get() > 0);
+	return log_filter_get(log_backend_get(0), Z_LOG_LOCAL_DOMAIN_ID, (int16_t)src, true);
+}
+
+ZTEST(uc_config, test_log_level_applied)
+{
+	Z_TEST_SKIP_IFNDEF(CONFIG_LOG_RUNTIME_FILTERING);
+
+	/* boot */
+	stub_fs_put(UC_FILE_DEVICE_CFG, DEV_WITH_LEVEL("wrn"));
+	zassert_ok(uc_config_init());
+	zassert_equal(runtime_level(), LOG_LEVEL_WRN);
+
+	/* reload of device.json */
+	stub_fs_put(UC_FILE_DEVICE_CFG, DEV_WITH_LEVEL("err"));
+	zassert_ok(uc_config_reload(UC_CFG_DEVICE));
+	zassert_equal(runtime_level(), LOG_LEVEL_ERR);
+
+	/* staged device.json */
+	stub_fs_put(DEVICE_NEW, DEV_WITH_LEVEL("dbg"));
+	zassert_ok(uc_config_reload(UC_CFG_ALL));
+	zassert_equal(runtime_level(), LOG_LEVEL_DBG);
+
+	/* a rejected device.json keeps the level */
+	stub_fs_put(UC_FILE_DEVICE_CFG, DEV_WITH_LEVEL("trace"));
+	zassert_equal(uc_config_reload(UC_CFG_DEVICE), -EINVAL);
+	zassert_equal(runtime_level(), LOG_LEVEL_DBG);
+
+	/* without log.level: default "inf" */
+	stub_fs_put(UC_FILE_DEVICE_CFG,
+		    "{\"schema\":1,\"device\":{\"instance\":3,\"name\":\"l\"}}");
+	zassert_ok(uc_config_reload(UC_CFG_DEVICE));
+	zassert_equal(runtime_level(), LOG_LEVEL_INF);
+
+	/* leave the default for the other tests */
+	stub_fs_reset();
+	zassert_ok(uc_config_init());
 }

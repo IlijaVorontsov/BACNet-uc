@@ -8,7 +8,8 @@
  *   type       object type, default 5 (binary-value)
  *   instance   object instance, default 1
  *   name       object name if the app creates the object, default "blinky"
- *   priority   write priority 1..16, 0 = none (default)
+ *   priority   write priority 1..16 for a commandable object (AO, BO,
+ *              MSO), 0 = none (default); value objects ignore it
  *   period_ms  toggle period, 10..3600000, default 1000
  *   on, off    values written for the two states, default 1 and 0
  *   channel    raw IO channel name ("do0"): toggle the channel instead
@@ -17,7 +18,8 @@
  * A value object type (AV, BV, MSV) that does not exist is created and
  * owned by the app. Other types (e.g. binary-output:1 bound to a LED in
  * io.json) must exist. On a regular stop the app relinquishes its
- * priority (or writes "off" without a priority / to a channel).
+ * priority of a commandable object, and writes "off" otherwise (value
+ * object, no priority, channel).
  *
  * Permissions: bacnet.local (object mode) or io (channel mode).
  */
@@ -144,7 +146,7 @@ UC_EXPORT(uc_app_tick) void uc_app_tick(uint64_t now_ms)
 
 UC_EXPORT(uc_app_deinit) void uc_app_deinit(void)
 {
-	if ((g.channel < 0) && (g.priority != UC_PRIORITY_NONE)) {
+	if ((g.channel < 0) && (g.priority != UC_PRIORITY_NONE) && uc_obj_is_commandable(g.type)) {
 		(void)uc_prop_write_null(g.type, g.instance, UC_PROP_PRESENT_VALUE, g.priority);
 	} else {
 		(void)output(false);

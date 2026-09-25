@@ -58,8 +58,8 @@ Internal flash (2 MiB, 8 KiB sectors):
 | 0x01_4000 | 984 KiB | `slot0_partition` | (overlapped) | firmware |
 | 0x10_A000 | 984 KiB | `slot1_partition` | unused | update image |
 
-MCUboot mode: **swap using offset** (the Zephyr 4.4 default; the twister
-scenario sets `SB_CONFIG_MCUBOOT_MODE_SWAP_USING_OFFSET=y` explicitly). The
+MCUboot mode: **swap using offset** (the Zephyr 4.4 default, which
+[`Kconfig.sysbuild`](../firmware/Kconfig.sysbuild) keeps for this board). The
 `slot1_partition` is also the code partition of cpu1 in Zephyr's dual-core
 samples; BACnet-uc does not use cpu1.
 
@@ -96,8 +96,8 @@ The fstab node `uc_lfs` (compatible `zephyr,fstab,littlefs`) of each overlay:
 | `cache-size` | 256 | 256 | 256 | 256 |
 | `lookahead-size` (bytes; ×8 blocks per scan) | 256 | 256 | 64 | 32 |
 | `block-cycles` (wear-leveling eviction) | 512 | 512 | 512 | 512 |
-| block size (from the flash page layout) | `CONFIG_SPI_NOR_FLASH_LAYOUT_PAGE_SIZE`: 64 KiB by default, 4 KiB recommended | 4 KiB | 4 KiB | 1 KiB |
-| block count | 256 (64 KiB) / 4096 (4 KiB) | 2048 | 395 | 64 |
+| block size (from the flash page layout) | 4 KiB (`CONFIG_SPI_NOR_FLASH_LAYOUT_PAGE_SIZE=4096`, default of the firmware Kconfig; Zephyr's own default is 64 KiB) | 4 KiB | 4 KiB | 1 KiB |
+| block count | 4096 | 2048 | 395 | 64 |
 | automount / format | `automount`, `no-format` | same | same | same |
 
 Global options in `prj.conf`: `CONFIG_FS_LITTLEFS_NUM_FILES=8` (open files:
@@ -107,9 +107,10 @@ equal the largest fstab `cache-size`).
 
 Mounting: the fstab entry is mounted during boot without formatting. If that
 fails (blank or corrupted flash), `uc_storage_init()` formats the partition
-with the same parameters and mounts again (`CONFIG_UC_STORAGE_FORMAT_ON_FAIL=y`).
-A first boot on blank flash therefore logs mount errors from the automount
-(`Corrupted dir pair at {0x0, 0x1}`, `fs mount error (-14)`) followed by
+with the same parameters and mounts it (`CONFIG_UC_STORAGE_FORMAT_ON_FAIL=y`).
+A first boot on blank flash therefore logs the automount's errors once
+(`Corrupted dir pair at {0x0, 0x1}`, `fs mount error (-14)`, `Error mounting
+filesystem`), then `/lfs not mounted at boot (no valid file system)`,
 `formatting /lfs` and `/lfs ready`.
 
 Small files are stored inline in their directory's metadata block. The
@@ -125,6 +126,7 @@ occupy a block of their own on the flash-backed volumes.
 | `/lfs/cfg/device.json` | SMP upload, harness | device identity, network, BACnet options |
 | `/lfs/cfg/io.json` | SMP upload, harness | IO point mapping |
 | `/lfs/cfg/apps.json` | firmware on `uc_app install/remove`; SMP upload | installed applications |
+| `/lfs/cfg/<doc>.json.new` | SMP upload, harness | staged document: activated (renamed over `<doc>.json`) by the next `uc_node reload` of that document or at boot, deleted when invalid ([management-protocol.md](management-protocol.md#staged-documents-jsonnew)) |
 | `/lfs/cfg/*.tmp` | firmware | transient: atomic replace of `apps.json` |
 | `/lfs/apps/<name>.wasm`, `.aot` | SMP upload | application modules (file name stem 1..40 characters of `[A-Za-z0-9_.-]`) |
 | `/lfs/data/<app>/<key>` | applications (`uc_kv_set`) | key/value store, one file per key; `<key>~` transient during a write |
@@ -146,13 +148,17 @@ LittleFS needs free blocks for copy-on-write; keep at least 10 % free
 |--------|--------|-----------------------------|
 | firmware (`apps.json`) | `uc_storage_write_file()`: write `<path>.tmp`, `fs_sync()`, rename over `<path>` (one metadata commit) | old or new file |
 | applications (kv) | write `<key>~`, rename | old or new value |
-| SMP file upload (group 8) | writes the destination file chunk by chunk | **partial file**: at the next boot the document is rejected and its defaults are used (for `device.json`: default instance, DHCP) |
+| SMP file upload (group 8) to `<doc>.json.new`, then `uc_node reload` (staged document) | the reload validates the staged file and renames it over `<doc>.json` (one metadata commit) | an interrupted upload leaves only a partial `.new` file: the next reload or boot rejects and deletes it, the active document stays |
+| SMP file upload (group 8) directly to `<doc>.json` | writes the destination file chunk by chunk | **partial file**: at the next boot the document is rejected and its defaults are used (for `device.json`: default instance, DHCP) |
 
 Power-safe upload of a configuration document over SMP: upload to
-`/lfs/cfg/<doc>.json.new`, then move it with the shell group
-(`fs mv /lfs/cfg/<doc>.json.new /lfs/cfg/<doc>.json`), then `uc_node reload`.
-LittleFS renames atomically. Documents are read at boot and on `reload`
-only; see [configuration.md](configuration.md#4-apply-and-reload-semantics).
+`/lfs/cfg/<doc>.json.new`, then send `uc_node reload` for that document (shell:
+`uc cfg reload <doc>`). The firmware activates a valid staged document with an
+atomic LittleFS rename, deletes an invalid one (rc `INVALID`, the active
+configuration stays), and also activates staged documents it finds at boot.
+The harness uploads every configuration document this way (`set_config`,
+`configure_io`, `apply_system`). Documents are read at boot and on
+`reload` only; see [configuration.md](configuration.md#4-apply-and-reload-semantics).
 
 ## 5. Logging
 
@@ -170,11 +176,11 @@ source `uc_app` as `"<app>: <message>"`.
 | mode | deferred (messages are formatted by the logging thread) | `CONFIG_LOG_MODE_DEFERRED` |
 | buffer | 4 KiB; the oldest messages are overwritten when full | `CONFIG_LOG_BUFFER_SIZE`, `CONFIG_LOG_MODE_OVERFLOW` |
 | processing | logging thread (priority 14) wakes every 1000 ms or after 10 pending messages | `CONFIG_LOG_PROCESS_THREAD_SLEEP_MS`, `CONFIG_LOG_PROCESS_TRIGGER_THRESHOLD` |
-| runtime level | `device.json` `log.level` (`err`, `wrn`, `inf`, `dbg`; default `inf`) applied to all sources at boot | `main.c`, `CONFIG_LOG_RUNTIME_FILTERING` |
+| runtime level | `device.json` `log.level` (`err`, `wrn`, `inf`, `dbg`; default `inf`) applied to all sources at boot and after every successful `reload device` | `uc_config.c`, `CONFIG_LOG_RUNTIME_FILTERING` |
 | timestamps | uptime `[hh:mm:ss.mmm,uuu]` | no wall clock yet |
 
-The runtime level is applied once at boot; `uc_node reload device` does not
-change it (reboot after changing `log.level`).
+A changed `log.level` takes effect with `uc_node reload device`
+(`uc_config: log level dbg (N sources)` in the log), without a reboot.
 
 ### 5.2 Backends
 
@@ -224,7 +230,10 @@ input.
 | syslog | the syslog server |
 
 A file that the backend is still writing can be downloaded; it contains the
-data up to the last sync (at most about one second old).
+data up to the last sync, normally at most about one second old. Open issue:
+the harness end-to-end tests on `native_sim` saw the latest message of an
+application reach `/lfs/log` only 5 s or more later, when the next message was
+logged (cause not found; the tests log one more line as a workaround).
 
 ## 6. Wear and power loss
 
@@ -249,16 +258,16 @@ the log backend therefore costs one block erase, plus metadata commits.
 | Log activity | Erases per day | Blocks | Lifetime estimate (perfect leveling, 100 000 cycles) |
 |--------------|---------------:|-------:|------------------------------------|
 | one batch per second, continuously (debug level, busy node) | 86 400 | MCXN947: 2048 × 4 KiB | ~6.5 years |
-| same | 86 400 | F767, 4 KiB blocks: 4096 | ~13 years |
-| same | 86 400 | F767, 64 KiB blocks (current default): 256 | **~10 months** |
+| same | 86 400 | F767, 4 KiB blocks (firmware default): 4096 | ~13 years |
+| same | 86 400 | F767 with Zephyr's default 64 KiB blocks: 256 | **~10 months** |
 | one batch per minute (info level, steady state) | 1 440 | any of the above | > 40 years |
 
 Recommendations:
 
 - Run production nodes at `log.level` `inf` or `wrn`; use `dbg` for
   diagnosis only.
-- On the F767 set `CONFIG_SPI_NOR_FLASH_LAYOUT_PAGE_SIZE=4096` so that
-  LittleFS uses 4 KiB blocks.
+- On the F767 keep `CONFIG_SPI_NOR_FLASH_LAYOUT_PAGE_SIZE=4096` (the
+  firmware default) so that LittleFS uses 4 KiB blocks.
 - For verbose logging use syslog and disable the file backend
   (`CONFIG_LOG_BACKEND_FS=n`), or raise `CONFIG_LOG_PROCESS_THREAD_SLEEP_MS`
   (fewer, larger syncs; more messages lost on power failure).
@@ -272,7 +281,7 @@ Recommendations:
 |------|-------------------------|
 | file system structure | LittleFS is power-loss resilient: metadata commits are atomic, a mount after power loss finds the last committed state |
 | `apps.json`, kv values | old or new version (atomic rename) |
-| documents uploaded over SMP | possibly partial, rejected at boot (section 4) |
+| documents uploaded over SMP | staged `<doc>.json.new`: a partial file is rejected and deleted, the active document stays; direct upload: possibly partial, rejected at boot (section 4) |
 | log files | messages not yet synced (up to ~1 s) are lost |
 | application modules being uploaded | partial file; `install` rejects it (size, magic, optional `sha256`); an installed app whose file was being replaced fails its next start |
 | firmware update (MCUboot) | swap is resumable; a test image that is not confirmed is reverted at the next reset |

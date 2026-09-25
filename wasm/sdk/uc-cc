@@ -39,11 +39,13 @@ PAGE = uc_abi.WAMR_OS_PAGE
 
 # PAGE_ALIGN_NOTE: WAMR 2.4.5 (wasm_allocate_linear_memory) rounds the
 # linear memory size used for bounds checks up to os_getpagesize() (4096 on
-# Zephyr without MMU) but, without hardware bounds checks, allocates only
-# the unrounded size from its pool (os_mmap -> BH_MALLOC). With __heap_base
-# page aligned and an app heap that is a multiple of 4 KiB (heap_kb % 4 ==
-# 0) both sizes agree. uc-cc therefore enlarges the aux stack by the gap
-# (the stack is placed first, so data and __heap_base move up).
+# Zephyr without MMU). Upstream it allocates only the unrounded size from
+# its pool on Zephyr; the firmware allocates the rounded size
+# (modules/wasm-micro-runtime/wamr_linear_memory.c), so any module is safe,
+# but the gap is pool memory the module cannot use for its stack. With
+# __heap_base page aligned and an app heap that is a multiple of 4 KiB
+# (heap_kb % 4 == 0) nothing is lost. uc-cc therefore enlarges the aux stack
+# by the gap (the stack is placed first, so data and __heap_base move up).
 PASSTHROUGH_PREFIXES = ("-W", "-f", "-std=", "-pedantic")
 
 

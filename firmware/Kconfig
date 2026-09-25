@@ -14,6 +14,16 @@ config UC_STORAGE_FORMAT_ON_FAIL
 	bool "Format /lfs when mounting fails"
 	default y
 
+# /lfs on a jedec,spi-nor flash (NUCLEO-F767ZI overlay): the flash page
+# size of the driver becomes the LittleFS block size. 4 KiB (the erase
+# sector of the W25Q family) instead of the driver's 64 KiB default gives
+# 4096 blocks on a 16 MiB chip and small files one 4 KiB block each. Set
+# here rather than in the board .conf so that builds without the flash node
+# (uc-ramfs snippet) do not warn about an unused assignment.
+config SPI_NOR_FLASH_LAYOUT_PAGE_SIZE
+	default 4096
+	depends on SPI_NOR
+
 # --- configuration documents -------------------------------------------
 
 config UC_CONFIG_DOC_MAX
@@ -64,8 +74,27 @@ config UC_BACNET_STATIC_BINDINGS_MAX
 	default 16
 
 config UC_BACNET_OBJECTS_MAX
-	int "Owner table size (objects created by IO and apps)"
+	int "Owner table size (objects created by IO, apps and CreateObject)"
 	default 64
+
+config UC_BACNET_REMOTE_CREATE_DELETE
+	bool "Accept CreateObject/DeleteObject from the network"
+	help
+	  n: both services are not registered; BACnet clients get a Reject
+	  (unrecognized-service) and Protocol_Services_Supported omits them.
+	  y: clients may create AI, AO, AV, BI, BO, BV, MSI, MSO and MSV
+	  objects (owner "network", one owner table entry each, RAM only) and
+	  delete only those. Objects of the system, of io.json and of
+	  applications answer Error object/object-deletion-not-permitted.
+
+config UC_BACNET_REQUIRE_PASSWORD
+	bool "Refuse ReinitializeDevice and DCC without a configured password"
+	default y
+	help
+	  ReinitializeDevice and DeviceCommunicationControl use device.json
+	  bacnet.password (1..20 characters) when it is set. Without one:
+	  y: both services answer Error security/password-failure;
+	  n: both services are accepted without a password (open device).
 
 config UC_NET_WAIT_MS
 	int "Time to wait for an IPv4 address before starting BACnet anyway (ms)"

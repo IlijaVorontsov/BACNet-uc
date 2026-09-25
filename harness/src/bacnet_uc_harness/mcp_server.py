@@ -29,6 +29,7 @@ from pydantic import Field
 
 from bacnet_uc_harness import __version__, firmware, paths
 from bacnet_uc_harness.bacnet.client import BacnetClient
+from bacnet_uc_harness.budget import system_budgets
 from bacnet_uc_harness.errors import BacnetError, HarnessError, HarnessTimeout, SmpError
 from bacnet_uc_harness.inventory import Inventory, InventoryNode
 from bacnet_uc_harness.manifest import (
@@ -94,7 +95,9 @@ Typical workflow:
    apply_system(dry_run=false), run_system_tests.
 Values: IO channels are raw (di/do 0|1, ai mV, ao %); BACnet objects carry
 engineering units after io.json scale/offset. Objects are written as
-'<type>:<instance>', e.g. 'analog-input:1'.
+'<type>:<instance>', e.g. 'analog-input:1'. Output objects (analog-/binary-/
+multi-state-output) are commandable (priority array, 6 is reserved); value
+objects have none: priorities are ignored and null (relinquish) does nothing.
 """
 
 T = TypeVar("T")
@@ -243,9 +246,13 @@ class HarnessContext:
         return system
 
     def rebooter(self, system: System) -> Callable[[str], Awaitable[Any]]:
+        """Reboot a node: simulated nodes are restarted by the simulation manager
+        when it may (root for netns), otherwise (and for boards) ``os reset``; the
+        native_sim firmware restarts its process in place (CONFIG_NATIVE_SIM_REBOOT)."""
         async def reboot(name: str) -> None:
             mgr = self.sim_for(system)
-            if mgr is not None and mgr.state is not None and name in mgr.state.nodes:
+            if mgr is not None and mgr.state is not None and name in mgr.state.nodes \
+                    and mgr.can_restart():
                 await asyncio.to_thread(mgr.restart, name)
                 return
             await (await self.node(name)).reboot()
@@ -518,13 +525,20 @@ def create_server(ctx: HarnessContext | None = None) -> Any:
         = True,
         force: Annotated[bool, Field(description="Upload even if identical")] = False,
     ) -> dict[str, Any]:
-        """Replace a configuration document on a node after schema validation, then reload
-        it. Changes of device instance, network or BACnet port report reboot_required=true
-        (reboot with app_control/apply_system or node_shell 'kernel reboot')."""
+        """Replace a configuration document on a node after schema validation: it is
+        uploaded as /lfs/cfg/<doc>.json.new and activated by the reload (the node rejects
+        an invalid document, deletes it and keeps its configuration: rc INVALID; without
+        reload the staged file waits for the next reload/boot). Changes of device
+        instance, network or BACnet port report reboot_required=true (reboot with
+        apply_system or node_shell 'kernel reboot'). After an io reload the apps of the
+        node that use its IO objects (stock apps, uc-link) are restarted."""
         _config_doc(doc)
         async with ctx.lock(node):
             n = await ctx.node(node)
-            return await n.push_config(doc, content, reload=reload, force=force)
+            out = await n.push_config(doc, content, reload=reload, force=force)
+            if doc == "io" and out.get("reloaded"):
+                out["restarted_apps"] = await n.restart_io_dependents()
+            return out
 
     @tool(idempotent=True)
     async def reload_config(
@@ -532,11 +546,16 @@ def create_server(ctx: HarnessContext | None = None) -> Any:
         doc: Annotated[Literal["device", "io", "apps", "all"], Field(
             description="Document(s) to re-read")] = "all",
     ) -> dict[str, Any]:
-        """Make a node re-read configuration documents from its file system."""
+        """Make a node re-read configuration documents from its file system (a staged
+        /lfs/cfg/<doc>.json.new is activated first). An io reload restarts the node's apps
+        that use its IO objects."""
         async with ctx.lock(node):
             n = await ctx.node(node)
             reboot = await n.reload(doc)
-        return {"node": node, "doc": doc, "reboot_required": reboot}
+            out: dict[str, Any] = {"node": node, "doc": doc, "reboot_required": reboot}
+            if doc in ("io", "all"):
+                out["restarted_apps"] = await n.restart_io_dependents()
+        return out
 
     # ---------------------------------------------------------------- IO
 
@@ -565,8 +584,10 @@ def create_server(ctx: HarnessContext | None = None) -> Any:
         = False,
     ) -> dict[str, Any]:
         """Bind IO channels to BACnet objects (io.json) on a node: validates the points
-        against the schema and the node's IO catalog, uploads io.json and reloads it (the
-        firmware re-creates the IO objects)."""
+        against the schema and the node's IO catalog, stages io.json and reloads it (the
+        firmware re-creates the IO objects), then restarts the node's apps that use its IO
+        objects (uc-link, stock apps) so outputs they drive do not stay at
+        Relinquish_Default."""
         async with ctx.lock(node):
             n = await ctx.node(node)
             catalog = await n.io_catalog()
@@ -592,6 +613,8 @@ def create_server(ctx: HarnessContext | None = None) -> Any:
                                    "changes": _points_changes(old, new), "dry_run": dry_run}
             if not dry_run:
                 out["result"] = await n.push_config("io", doc)
+                if out["result"].get("reloaded"):
+                    out["restarted_apps"] = await n.restart_io_dependents()
         return out
 
     @tool(read_only=True)
@@ -991,8 +1014,10 @@ def create_server(ctx: HarnessContext | None = None) -> Any:
                         "(errors) instead of the built-in board catalogs (warnings)")] = False,
     ) -> dict[str, Any]:
         """Validate a system manifest: JSON schema, placeholders ({{ nodes.<n>.device.
-        instance }}), unique names/instances, references, object collisions per node, IO
-        channels. Returns errors and warnings with JSON-pointer paths and a summary."""
+        instance }}), unique names/instances, references, object collisions per node, link
+        priorities, IO channels, and the WAMR pool budget per node (apps are built, cached;
+        warning when the estimated pool use exceeds 90 % of CONFIG_UC_APP_POOL_SIZE).
+        Returns errors and warnings with JSON-pointer paths, a summary and wamr_pool."""
         path = ctx.resolve_path(system)
         report = validation_report(path)
         if report["ok"]:
@@ -1005,7 +1030,24 @@ def create_server(ctx: HarnessContext | None = None) -> Any:
             report["documents"] = {n: {"sha256": {d: doc_sha256(v) for d, v in r.docs().items()},
                                        "apps": [a.name for a in r.app_list],
                                        "warnings": r.warnings} for n, r in renders.items()}
+            report["wamr_pool"] = await asyncio.to_thread(_pool_budget, sys_, report)
         return report
+
+    def _pool_budget(sys_: System, report: dict[str, Any]) -> dict[str, Any]:
+        """WAMR pool budgets; appends warnings to ``report``."""
+        builder = ctx.builder
+        try:
+            artifacts = builder.build_system(sys_)
+        except (HarnessError, OSError) as exc:
+            return {"error": f"apps could not be built, no pool estimate: {exc}"}
+        budgets = system_budgets(sys_, builder.wasm_for, artifacts)
+        index = {n.name: i for i, n in enumerate(sys_.nodes)}
+        for name, b in budgets.items():
+            msg = b.message()
+            if msg:
+                report["warnings"].append({"path": f"/nodes/{index[name]}", "message": msg,
+                                           "severity": "warning"})
+        return {name: b.to_dict() for name, b in budgets.items()}
 
     async def _plan(system: str, prune: bool) -> tuple[System, Any, dict[str, Node], Any]:
         sys_ = ctx.load_system(system)
@@ -1300,10 +1342,15 @@ Design and deploy this as a BACnet-uc distributed application:
    - apps: prefer the stock apps with params; reference other nodes' devices with
      "{{{{ nodes.<name>.device.instance }}}}",
    - links: '<node>/<type>:<instance>' -> writable destination (AO/AV/BO/BV/MSO/MSV);
-     realised by uc-link instances on the destination node (max 8 per instance),
-   - tests: force inputs, expect outputs with within_ms.
+     realised by uc-link instances on the destination node (max 8 per instance);
+     priority 1..16 (not 6) for output objects (AO/BO/MSO), 0 for value objects
+     (AV/BV/MSV have no priority array: one writer per value object),
+   - nodes: bacnet.password to allow DeviceCommunicationControl/ReinitializeDevice,
+   - tests: force inputs, expect outputs with within_ms; restore a value object by
+     writing the old value (a null write does not relinquish it).
    Keep at most 4 apps per node (CONFIG_UC_APPS_MAX default, uc-link counts).
-4. validate_system until there are no errors (check warnings too).
+4. validate_system until there are no errors (check warnings too, including the
+   WAMR pool budget per node in wamr_pool).
 5. plan_system, then apply_system with dry_run=false (reboot=true when device
    identities or addresses change).
 6. run_system_tests; on failures use debug_app / read_logs / list_objects, fix the
@@ -1322,7 +1369,8 @@ Commission node '{node}':
    units, scale/offset for analog inputs in mV) and apply it with configure_io.
 4. list_objects: verify the IO objects exist with the expected names.
 5. Exercise every point: io_force inputs and bacnet_read their objects; bacnet_write
-   outputs (priority 8) and io_read the channels; release forces and relinquish writes.
+   outputs (priority 8) and io_read the channels; release forces and relinquish writes
+   (value objects bound to outputs have no priority array: write the old value back).
 6. read_logs with grep '<err>|<wrn>' and report anything unusual.
 Summarise the final configuration.
 """

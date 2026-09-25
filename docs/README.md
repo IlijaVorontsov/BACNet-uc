@@ -44,10 +44,10 @@ compose distributed BACnet applications across nodes.
 
 | Document | Content |
 |----------|---------|
-| [harness-mcp.md](harness-mcp.md) | The MCP server: tools, resources, inventory, transports |
+| [harness-mcp.md](harness-mcp.md) | The MCP server: tools, resources, inventory, transports, safety model, CI workflow and end-to-end tests |
 | [distributed-apps.md](distributed-apps.md) | System manifests (`schemas/system.schema.json`), links, placement, planning and acceptance tests |
 | [simulation.md](simulation.md) | Running several `native_sim` nodes (host, network namespaces, containers) |
-| [security.md](security.md) | Threat model, SMP over DTLS, image signing, application permissions |
+| [security.md](security.md) | Threat model, current exposure, BACnet service policy (passwords, CreateObject/DeleteObject), SMP over DTLS (planned), image signing, application sandbox and AOT |
 | [roadmap.md](roadmap.md) | Planned work |
 
 ## Normative sources

@@ -20,7 +20,8 @@ documentation and are not encoded in Zephyr are marked as such.
 | CPU used | Cortex-M7, 216 MHz (PLL from the 8 MHz ST-LINK clock: /4 ×216 /2) | Cortex-M33 core 0, 150 MHz (PLL0); core 1 unused | host CPU |
 | FPU | double precision (FPv5); firmware built with `CONFIG_FP_HARDABI=y` | single precision; `CONFIG_FP_HARDABI=y` (double arithmetic in software) | host |
 | Internal flash | 2 MiB, single bank: 4 × 32 KiB, 1 × 128 KiB, 7 × 256 KiB sectors | 2 MiB dual bank, 8 KiB sectors, 16-byte write unit | simulated 2 MiB, 4 KiB erase blocks, file `flash.bin` |
-| RAM | 512 KiB: DTCM 128 KiB @ 0x2000_0000 + SRAM1/2 384 KiB @ 0x2002_0000 (`zephyr,sram`) | 512 KiB: SRAMX 96 KiB @ 0x0400_0000 + SRAM 416 KiB @ 0x2000_0000, of which Zephyr gives cpu0 320 KiB by default | host memory |
+| RAM | 512 KiB: DTCM 128 KiB @ 0x2000_0000 + SRAM1/2 384 KiB @ 0x2002_0000 (`zephyr,sram`) | 512 KiB: SRAMX 96 KiB @ 0x0400_0000 + SRAM A-H 416 KiB @ 0x2000_0000. Zephyr's default split gives cpu0 320 KiB; the firmware overlay gives cpu0 SRAM A-G, 384 KiB (cpu1 is not used, SRAM H stays unused) | host memory |
+| WAMR pool (chosen `uc,app-pool`) | 112 KiB in DTCM, next to the Ethernet DMA buffers | 96 KiB, all of SRAMX | 256 KiB of process memory |
 | External flash | none on the board; SPI NOR added for `/lfs` (section 4) | Winbond W25Q64JV, 8 MiB QSPI NOR on FlexSPI, 4 KiB sectors, memory mapped at 0x9000_0000 | - |
 | Ethernet | MAC with RMII, on-board PHY LAN8742A (per ST UM1974; Zephyr uses the generic MDIO PHY driver at address 0) | ENET QoS MAC with RMII, on-board PHY at MDIO address 0 (generic `ethernet-phy` driver) | host sockets (NSOS) |
 | MAC address | derived from the MCU unique ID by `eth_stm32_hal` | derived from the unique ID (`nxp,unique-mac` in the overlay; the board default is random) | - |
@@ -143,7 +144,7 @@ and can be read back.
 
 | Board | Default `/lfs` backing | Size | Erase block | Survives reset |
 |-------|------------------------|------|-------------|----------------|
-| NUCLEO-F767ZI | external SPI NOR W25Q128JV on SPI1 | 16 MiB | see note below | yes |
+| NUCLEO-F767ZI | external SPI NOR W25Q128JV on SPI1 | 16 MiB | 4 KiB | yes |
 | FRDM-MCXN947 | on-board W25Q64JV via FlexSPI, whole chip (`storage_partition`) | 8 MiB | 4 KiB | yes |
 | native_sim | flash simulator, partition @ 0x75000 | 1580 KiB | 4 KiB | yes (`flash.bin`, `--flash=<file>`) |
 | any, snippet `uc-ramfs` | RAM flash simulator | 64 KiB | 1 KiB | no |
@@ -171,10 +172,12 @@ the wires short (< 15 cm) or lower the frequency. For a different part, change
 
 Block size: Zephyr's LittleFS uses the page size of the flash driver's page
 layout as its block size. The `spi-nor` driver reports pages of
-`CONFIG_SPI_NOR_FLASH_LAYOUT_PAGE_SIZE` bytes, **65536 by default**. With the
-default, every file that does not fit inline in a directory entry occupies at
-least 64 KiB and every append after a sync erases a 64 KiB block. Set
-`CONFIG_SPI_NOR_FLASH_LAYOUT_PAGE_SIZE=4096` to get 4 KiB blocks (see
+`CONFIG_SPI_NOR_FLASH_LAYOUT_PAGE_SIZE` bytes; Zephyr's default is 65536,
+which would make every file that does not fit inline in a directory entry
+occupy at least 64 KiB and every append after a sync erase a 64 KiB block.
+The firmware Kconfig ([`firmware/Kconfig`](../firmware/Kconfig)) sets the
+default to **4096**, the W25Q sector size, whenever the SPI NOR driver is
+built: `/lfs` has 4096 blocks of 4 KiB (see
 [storage-and-logging.md](storage-and-logging.md#2-littlefs-parameters)).
 
 ### 4.2 RAM file system (snippet `uc-ramfs`)
@@ -185,15 +188,18 @@ west build -b nucleo_f767zi BACNet-uc/firmware -S uc-ramfs
 
 The snippet adds a 64 KiB RAM "flash" (1 KiB erase blocks) and mounts it at
 `/lfs` instead of the board's entry; on the F767 it also disables the SPI NOR
-node. `/lfs` is formatted at every boot, so configuration, applications and
+node (`snippets/uc-ramfs/boards/nucleo_f767zi.overlay`), so the SPI NOR
+driver is not built and no missing chip is probed. `/lfs` is formatted at every boot, so configuration, applications and
 logs are lost on reset. The snippet reduces the log files to 2 × 4 KiB and
 `CONFIG_UC_APP_MAX_FILE_SIZE` to 32 KiB. Intended for bring-up without the
 flash module and for tests driven by the harness, which re-deploys after a
 reset.
 
-RAM: the 64 KiB RAM disk adds to the static RAM use. At the time of writing
-the F767 build with `-S uc-ramfs` links only with the WAMR pool in DTCM
-(RAM 359 164 B of 384 KiB, see [architecture.md](architecture.md#62-measured-usage)).
+RAM: the 64 KiB RAM disk is paid for by a smaller kernel heap (64 → 48 KiB)
+and `malloc` arena (64 → 32 KiB), set by the snippet's `boards/ram.conf` for
+both boards. Both boards link with it: RAM 378 044 B (F767) and 376 456 B
+(MCXN947) of 384 KiB, about 15 KiB of margin
+([architecture.md](architecture.md#62-measured-usage)).
 
 ## 5. RS-485 add-on for BACnet MS/TP (Planned)
 

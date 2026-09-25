@@ -59,6 +59,13 @@
               "port": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 47808}
             }
           }
+        },
+        "password": {
+          "description": "Password required by DeviceCommunicationControl and ReinitializeDevice requests (BACnet CharacterString SIZE(1..20), printable ASCII). Absent: not configured.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20,
+          "pattern": "^[ -~]{1,20}$"
         }
       }
     },

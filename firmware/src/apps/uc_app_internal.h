@@ -134,13 +134,7 @@ bool uc_app_post_event(struct uc_app_slot *s, const struct uc_app_event *ev);
 void uc_app_wd_pause(struct uc_app_slot *s);
 void uc_app_wd_resume(struct uc_app_slot *s);
 
-/** Name of the installed app that owns objects of owner id owner
- *  (UC_OWNER_APP_BASE + slot). 0, -ENOENT (no app bound to that slot) or
- *  -ENOSPC (truncated). The slot index is not the uc_apps_status() index.
- *  Takes the manager lock: not from the BACnet thread (a manager call may
- *  hold it while an app thread waits for the BACnet executor).
- *  Proposed for uc_apps.h (the "objects" command of uc_node needs it). */
-int uc_apps_owner_name(uint8_t owner, char *buf, size_t size);
+/* uc_apps_owner_name() is public (uc_apps.h, included above). */
 
 /* ---------------------------------------------------------------------- */
 /* uc_app_host_api.c                                                       */

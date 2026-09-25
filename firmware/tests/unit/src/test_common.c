@@ -198,6 +198,8 @@ ZTEST(uc_common, test_value_from_double)
 	zassert_ok(uc_value_from_double(OBJECT_ANALOG_VALUE, PROP_PRESENT_VALUE, 21.25, &v));
 	zassert_equal(v.tag, BACNET_APPLICATION_TAG_REAL);
 	zassert_within((double)v.type.Real, 21.25, 1e-6);
+	zassert_ok(uc_value_from_double(OBJECT_ANALOG_OUTPUT, PROP_PRIORITY_ARRAY, -3.5, &v));
+	zassert_equal(v.tag, BACNET_APPLICATION_TAG_REAL);
 
 	/* binary PV -> ENUMERATED 0/1 */
 	zassert_ok(uc_value_from_double(OBJECT_BINARY_OUTPUT, PROP_PRESENT_VALUE, 1.0, &v));
@@ -205,24 +207,23 @@ ZTEST(uc_common, test_value_from_double)
 	zassert_equal(v.type.Enumerated, BINARY_ACTIVE);
 	zassert_ok(uc_value_from_double(OBJECT_BINARY_VALUE, PROP_PRESENT_VALUE, 0.0, &v));
 	zassert_equal(v.type.Enumerated, BINARY_INACTIVE);
-	zassert_ok(uc_value_from_double(OBJECT_BINARY_VALUE, PROP_RELINQUISH_DEFAULT, 5.0, &v));
+	zassert_ok(uc_value_from_double(OBJECT_BINARY_VALUE, PROP_RELINQUISH_DEFAULT, 1.0, &v));
 	zassert_equal(v.type.Enumerated, BINARY_ACTIVE);
+	zassert_ok(uc_value_from_double(OBJECT_BINARY_OUTPUT, PROP_PRIORITY_ARRAY, 0.0, &v));
+	zassert_equal(v.tag, BACNET_APPLICATION_TAG_ENUMERATED);
+	zassert_equal(v.type.Enumerated, BINARY_INACTIVE);
 
-	/* multi-state PV -> UNSIGNED, truncated toward zero */
-	zassert_ok(uc_value_from_double(OBJECT_MULTI_STATE_VALUE, PROP_PRESENT_VALUE, 3.7, &v));
+	/* multi-state PV -> UNSIGNED */
+	zassert_ok(uc_value_from_double(OBJECT_MULTI_STATE_VALUE, PROP_PRESENT_VALUE, 3.0, &v));
 	zassert_equal(v.tag, BACNET_APPLICATION_TAG_UNSIGNED_INT);
 	zassert_equal(v.type.Unsigned_Int, 3);
-	zassert_equal(uc_value_from_double(OBJECT_MULTI_STATE_VALUE, PROP_PRESENT_VALUE, -1.0,
-					   &v),
-		      -EINVAL);
-	zassert_equal(uc_value_from_double(OBJECT_MULTI_STATE_VALUE, PROP_PRESENT_VALUE, NAN,
-					   &v),
-		      -EINVAL);
 
 	/* other numeric properties */
 	zassert_ok(uc_value_from_double(OBJECT_ANALOG_INPUT, PROP_OUT_OF_SERVICE, 1.0, &v));
 	zassert_equal(v.tag, BACNET_APPLICATION_TAG_BOOLEAN);
 	zassert_true(v.type.Boolean);
+	zassert_ok(uc_value_from_double(OBJECT_ANALOG_INPUT, PROP_OUT_OF_SERVICE, 0.0, &v));
+	zassert_false(v.type.Boolean);
 	zassert_ok(uc_value_from_double(OBJECT_ANALOG_INPUT, PROP_COV_INCREMENT, 0.5, &v));
 	zassert_equal(v.tag, BACNET_APPLICATION_TAG_REAL);
 	zassert_ok(uc_value_from_double(OBJECT_ANALOG_INPUT, PROP_UNITS, 62.0, &v));
@@ -230,15 +231,81 @@ ZTEST(uc_common, test_value_from_double)
 	zassert_equal(v.type.Enumerated, 62);
 	zassert_ok(uc_value_from_double(OBJECT_MULTI_STATE_INPUT, PROP_NUMBER_OF_STATES, 4.0, &v));
 	zassert_equal(v.tag, BACNET_APPLICATION_TAG_UNSIGNED_INT);
-	zassert_ok(uc_value_from_double(OBJECT_DEVICE, PROP_UTC_OFFSET, -60.9, &v));
+	zassert_ok(uc_value_from_double(OBJECT_DEVICE, PROP_UTC_OFFSET, -60.0, &v));
 	zassert_equal(v.tag, BACNET_APPLICATION_TAG_SIGNED_INT);
 	zassert_equal(v.type.Signed_Int, -60);
+	zassert_ok(uc_value_from_double(OBJECT_DEVICE, PROP_APDU_TIMEOUT, 4294967295.0, &v));
+	zassert_equal(v.type.Unsigned_Int, 4294967295U);
 
-	/* not numeric */
+	/* not numeric (checked before the value) */
 	zassert_equal(uc_value_from_double(OBJECT_ANALOG_INPUT, PROP_OBJECT_NAME, 1.0, &v),
 		      -EBADMSG);
 	zassert_equal(uc_value_from_double(OBJECT_ANALOG_INPUT, PROP_STATUS_FLAGS, 1.0, &v),
 		      -EBADMSG);
+	zassert_equal(uc_value_from_double(OBJECT_ANALOG_INPUT, PROP_OBJECT_NAME, NAN, &v),
+		      -EBADMSG);
+	zassert_equal(uc_value_from_double(OBJECT_ANALOG_INPUT, PROP_PRESENT_VALUE, 1.0, NULL),
+		      -EINVAL);
+}
+
+/* Values the datatype of the property cannot represent: -EINVAL. */
+ZTEST(uc_common, test_value_from_double_rejects)
+{
+	static const struct {
+		uint16_t type;
+		uint32_t prop;
+		double value;
+	} bad[] = {
+		/* NaN / Inf for every numeric datatype */
+		{OBJECT_ANALOG_VALUE, PROP_PRESENT_VALUE, NAN},
+		{OBJECT_ANALOG_VALUE, PROP_PRESENT_VALUE, INFINITY},
+		{OBJECT_ANALOG_VALUE, PROP_COV_INCREMENT, -INFINITY},
+		{OBJECT_BINARY_VALUE, PROP_PRESENT_VALUE, NAN},
+		{OBJECT_MULTI_STATE_VALUE, PROP_PRESENT_VALUE, NAN},
+		{OBJECT_MULTI_STATE_VALUE, PROP_PRESENT_VALUE, INFINITY},
+		{OBJECT_ANALOG_INPUT, PROP_OUT_OF_SERVICE, NAN},
+		{OBJECT_ANALOG_INPUT, PROP_UNITS, INFINITY},
+		{OBJECT_DEVICE, PROP_UTC_OFFSET, -INFINITY},
+		/* REAL overflow */
+		{OBJECT_ANALOG_VALUE, PROP_PRESENT_VALUE, 1e39},
+		{OBJECT_ANALOG_VALUE, PROP_PRESENT_VALUE, -1e39},
+		/* binary PV: 0 or 1 only */
+		{OBJECT_BINARY_OUTPUT, PROP_PRESENT_VALUE, 2.0},
+		{OBJECT_BINARY_OUTPUT, PROP_PRESENT_VALUE, 0.5},
+		{OBJECT_BINARY_OUTPUT, PROP_PRESENT_VALUE, -1.0},
+		{OBJECT_BINARY_VALUE, PROP_RELINQUISH_DEFAULT, 5.0},
+		{OBJECT_BINARY_INPUT, PROP_PRIORITY_ARRAY, 0.1},
+		/* BOOLEAN: 0 or 1 only */
+		{OBJECT_ANALOG_INPUT, PROP_OUT_OF_SERVICE, 2.0},
+		{OBJECT_ANALOG_INPUT, PROP_OUT_OF_SERVICE, -1.0},
+		/* UNSIGNED: integral, 0..UINT32_MAX */
+		{OBJECT_MULTI_STATE_VALUE, PROP_PRESENT_VALUE, 3.7},
+		{OBJECT_MULTI_STATE_VALUE, PROP_PRESENT_VALUE, -1.0},
+		{OBJECT_MULTI_STATE_VALUE, PROP_PRESENT_VALUE, -0.5},
+		{OBJECT_MULTI_STATE_INPUT, PROP_NUMBER_OF_STATES, 4294967296.0},
+		/* ENUMERATED: integral, 0..UINT32_MAX */
+		{OBJECT_ANALOG_INPUT, PROP_UNITS, 62.5},
+		{OBJECT_ANALOG_INPUT, PROP_UNITS, -1.0},
+		{OBJECT_ANALOG_INPUT, PROP_UNITS, 4294967296.0},
+		/* SIGNED: integral, INT32 range */
+		{OBJECT_DEVICE, PROP_UTC_OFFSET, -60.9},
+		{OBJECT_DEVICE, PROP_UTC_OFFSET, 2147483648.0},
+		{OBJECT_DEVICE, PROP_UTC_OFFSET, -2147483649.0},
+	};
+	BACNET_APPLICATION_DATA_VALUE v;
+
+	for (size_t i = 0; i < ARRAY_SIZE(bad); i++) {
+		zassert_equal(uc_value_from_double(bad[i].type, bad[i].prop, bad[i].value, &v),
+			      -EINVAL, "entry %u accepted", (unsigned int)i);
+	}
+
+	/* limits that are still valid */
+	zassert_ok(uc_value_from_double(OBJECT_DEVICE, PROP_UTC_OFFSET, -2147483648.0, &v));
+	zassert_equal(v.type.Signed_Int, INT32_MIN);
+	zassert_ok(uc_value_from_double(OBJECT_MULTI_STATE_VALUE, PROP_PRESENT_VALUE, -0.0, &v));
+	zassert_equal(v.type.Unsigned_Int, 0);
+	zassert_ok(uc_value_from_double(OBJECT_BINARY_VALUE, PROP_PRESENT_VALUE, -0.0, &v));
+	zassert_equal(v.type.Enumerated, BINARY_INACTIVE);
 }
 
 ZTEST(uc_common, test_strlcpy)

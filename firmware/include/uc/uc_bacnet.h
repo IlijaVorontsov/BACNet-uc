@@ -32,6 +32,12 @@
 extern "C" {
 #endif
 
+/* Owner of objects created by a BACnet client with CreateObject (only with
+ * CONFIG_UC_BACNET_REMOTE_CREATE_DELETE). Complements the owner ids of
+ * uc_common.h (between UC_OWNER_IO and UC_OWNER_APP_BASE); reported as
+ * "network". Only these objects may be deleted with DeleteObject. */
+#define UC_OWNER_NETWORK 3u
+
 /* ---------------------------------------------------------------------- */
 /* Lifecycle                                                               */
 /* ---------------------------------------------------------------------- */
@@ -56,13 +62,22 @@ struct uc_bn_status {
 	char ipv4[16];
 	uint16_t udp_port;
 	uint32_t packets;
-	uint32_t objects;
+	uint32_t objects; /* snapshot, see uc_bn_obj_count() */
 	uint32_t uptime_s;
 };
 
+/** Snapshot published by the BACnet thread (at most 100 ms old); never
+ *  blocks. */
 void uc_bn_status_get(struct uc_bn_status *st);
 
-/** Apply the cached device.json: name/description/location immediately;
+/** Number of objects of the device (including the device object), counted
+ *  now in the BACnet thread. Falls back to the status snapshot when the
+ *  BACnet thread does not answer within 500 ms or was not started. */
+uint32_t uc_bn_obj_count(void);
+
+/** Apply the cached device.json: name/description/location, APDU options,
+ *  static bindings, foreign device registration and the ReinitializeDevice
+ *  / DeviceCommunicationControl password (bacnet.password) immediately;
  *  sets *reboot_required when instance, network or UDP port changed. */
 int uc_bn_apply_device_cfg(bool *reboot_required);
 
@@ -98,7 +113,7 @@ int uc_bn_obj_create_locked(uint16_t type, uint32_t instance,
 			    const char *name, uint8_t owner);
 
 /** Delete an object. owner must match (UC_OWNER_NONE deletes anything
- *  except UC_OWNER_SYSTEM objects). */
+ *  except UC_OWNER_SYSTEM objects). The owner table entry is released. */
 int uc_bn_obj_delete(uint16_t type, uint32_t instance, uint8_t owner);
 int uc_bn_obj_delete_locked(uint16_t type, uint32_t instance, uint8_t owner);
 
@@ -109,14 +124,25 @@ int uc_bn_obj_delete_owned(uint8_t owner);
 uint8_t uc_bn_obj_owner(uint16_t type, uint32_t instance);
 
 /** Read a property through Device_Read_Property() and decode the first
- *  application value. index < 0 means BACNET_ARRAY_ALL. */
+ *  application value. index < 0 means BACNET_ARRAY_ALL, 0 the array size;
+ *  an index on a property that is not a BACnetARRAY is -EINVAL. */
 int uc_bn_prop_read(uint16_t type, uint32_t instance, uint32_t prop,
 		    int32_t index, BACNET_APPLICATION_DATA_VALUE *out);
 int uc_bn_prop_read_locked(uint16_t type, uint32_t instance, uint32_t prop,
 			   int32_t index, BACNET_APPLICATION_DATA_VALUE *out);
 
+/** Read a property through Device_Read_Property() and copy its encoded
+ *  value (the application data of a ReadProperty-ACK: every element of an
+ *  array or list) into buf. index < 0 means BACNET_ARRAY_ALL, 0 the array
+ *  size; an index on a property that is not a BACnetARRAY is -EINVAL.
+ *  Returns the encoded length (0 for an empty list), -ENOSPC when the
+ *  value exceeds buf or one APDU, or the errors of uc_bn_prop_read(). */
+int uc_bn_prop_read_encoded(uint16_t type, uint32_t instance, uint32_t prop,
+			    int32_t index, uint8_t *buf, size_t size);
+
 /** Write a property through Device_Write_Property() (same checks and
- *  priority array semantics as a WriteProperty request). priority 0 means
+ *  priority array semantics as a WriteProperty request; an index on a
+ *  property that is not a BACnetARRAY is -EINVAL). priority 0 means
  *  "no priority". A NULL value relinquishes. Does not trigger the write
  *  hook for owner == writer loops: the hook receives writer_owner. */
 int uc_bn_prop_write(uint16_t type, uint32_t instance, uint32_t prop,
@@ -180,7 +206,13 @@ int uc_bn_remote_write(uint32_t device, uint16_t type, uint32_t instance,
 /* COV subscriptions for applications                                      */
 /* ---------------------------------------------------------------------- */
 
-/** Callback in the BACnet thread; must not block. */
+/** Callback in the BACnet thread with the (recursive) COV lock held; must
+ *  not block. It may call uc_bn_cov_subscribe()/uc_bn_cov_unsubscribe*()
+ *  (also for its own subscription), but must not take a lock that another
+ *  thread may hold while calling a uc_bn_cov_*() function (lock order:
+ *  COV lock first). Once uc_bn_cov_unsubscribe() returns in another
+ *  thread, the callback of that subscription is neither running nor
+ *  called again. */
 typedef void (*uc_bn_cov_cb_t)(void *ctx, int sub_id, uint32_t device,
 			       uint16_t type, uint32_t instance, uint32_t prop,
 			       double value);

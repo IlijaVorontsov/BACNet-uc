@@ -37,20 +37,18 @@ tests:
       - nucleo_f767zi
     extra_args:
       - SNIPPET=uc-ramfs
+  # MCUboot + signed firmware: sysbuild.conf, sysbuild/firmware.conf and
+  # sysbuild/mcuboot.conf are applied by sysbuild itself (F767: swap using
+  # scratch from Kconfig.sysbuild, MCXN947: swap using offset, the default).
   bacnet_uc.firmware.mcuboot.f767:
     sysbuild: true
     platform_allow:
       - nucleo_f767zi
     integration_platforms:
       - nucleo_f767zi
-    extra_args:
-      - EXTRA_CONF_FILE=overlay-mcuboot.conf
   bacnet_uc.firmware.mcuboot.mcxn947:
     sysbuild: true
     platform_allow:
       - frdm_mcxn947/mcxn947/cpu0
     integration_platforms:
       - frdm_mcxn947/mcxn947/cpu0
-    extra_args:
-      - EXTRA_CONF_FILE=overlay-mcuboot.conf
-      - SB_CONFIG_MCUBOOT_MODE_SWAP_USING_OFFSET=y

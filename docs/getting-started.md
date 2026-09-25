@@ -5,9 +5,10 @@ and a WebAssembly application, first on `native_sim` (no hardware), then on
 the NUCLEO-F767ZI and the FRDM-MCXN947, and finally with the MCP server for
 an AI agent.
 
-Commands marked with ✔ were run while writing this document (Zephyr 4.4.2,
-SDK 1.0.1, Python 3.12, clang 18, on x86-64 Linux); see the note at the end
-for what could not be run in that environment.
+Commands marked with ✔ were run as written for the current repository state
+(Zephyr 4.4.2, SDK 1.0.1, Python 3.12, clang 18, smpmgr 0.19.1, on x86-64
+Linux); see the note at the end for what could not be run in that
+environment.
 
 ## 1. Prerequisites
 
@@ -35,7 +36,7 @@ pip install west
 west init -l BACNet-uc                      # uses BACNet-uc/west.yml
 west update --narrow -o=--depth=1           # Zephyr v4.4.2, HALs, bacnet-stack, WAMR
 pip install -r zephyr/scripts/requirements-base.txt
-pip install -e 'BACNet-uc/harness[serial]'  # bacnet-uc CLI and bacnet-uc-mcp
+pip install -e 'BACNet-uc/harness[serial,sim]'   # bacnet-uc CLI and bacnet-uc-mcp
 ```
 
 Resulting layout:
@@ -76,17 +77,17 @@ free to choose; `-p always` forces a pristine build.
 ```sh
 cd bacnet-uc-ws
 west build -b native_sim/native/64       BACNet-uc/firmware -d build-native   # ✔
-west build -b nucleo_f767zi              BACNet-uc/firmware -d build-f767     # see "Verification notes"
-west build -b frdm_mcxn947/mcxn947/cpu0  BACNet-uc/firmware -d build-mcxn     # see "Verification notes"
+west build -b nucleo_f767zi              BACNet-uc/firmware -d build-f767     # ✔ RAM 91.5 %, DTCM 97.1 %
+west build -b frdm_mcxn947/mcxn947/cpu0  BACNet-uc/firmware -d build-mcxn     # ✔ RAM 91.1 %, SRAMX 100 %
 ```
 
 Variants:
 
 | Variant | Command |
 |---------|---------|
-| F767 without the SPI NOR module (volatile `/lfs`) | `west build -b nucleo_f767zi BACNet-uc/firmware -d build-f767-ram -S uc-ramfs` (adds 64 KiB of RAM use; see "Verification notes") |
+| F767 without the SPI NOR module (volatile `/lfs`) | `west build -b nucleo_f767zi BACNet-uc/firmware -d build-f767-ram -S uc-ramfs` ✔ (the 64 KiB RAM disk is taken from the kernel heap and the `malloc` arena; RAM 96.1 %) |
 | remote logging | `west build -b <board> BACNet-uc/firmware -d build-x -- -DEXTRA_CONF_FILE=overlay-syslog.conf '-DCONFIG_LOG_BACKEND_NET_SERVER="192.168.10.10:514"'` |
-| MCUboot + firmware update over SMP | `west build --sysbuild -b <board> BACNet-uc/firmware -d build-x-mcuboot` |
+| MCUboot + firmware update over SMP | `west build --sysbuild -b <board> BACNet-uc/firmware -d build-x-mcuboot` ✔ (both boards) |
 | all build scenarios (twister) | `west twister -T BACNet-uc/firmware -p native_sim/native/64 -p nucleo_f767zi -p frdm_mcxn947/mcxn947/cpu0` |
 
 The harness wraps the same commands: `bacnet-uc firmware build <board>
@@ -107,20 +108,29 @@ Expected output (abridged, ✔):
 
 ```
 uart connected to pseudotty: /dev/pts/0
+<err> littlefs: ...: Corrupted dir pair at {0x0, 0x1}   (first start only: blank flash,
+<err> fs: fs mount error (-14)                             the automount fails and
+<err> littlefs: Error mounting filesystem: at /lfs: -14    uc_storage formats /lfs)
+*** Booting Zephyr OS build ... ***
 <inf> uc_main: BACnet-uc 0.1.0 on native_sim/native/64, WASM API 1.0
-<wrn> uc_storage: formatting /lfs                    (first start only)
+<wrn> uc_storage: /lfs not mounted at boot (no valid file system)
+<wrn> uc_storage: formatting /lfs
 <inf> uc_storage: /lfs ready: 1580 KiB total, 1540 KiB free
 <inf> uc_config: /lfs/cfg/device.json not found, using defaults
 <inf> uc_io: IO catalog native_sim: 8 channel(s), 8 ready
 <inf> uc_app_mgr: WAMR fast interpreter, pool 262144 bytes (RAM), 0 apps installed
 <inf> uc_mgmt: SMP groups registered: 64 uc_app, 65 uc_io, 66 uc_node
 <inf> uc_main: ready: device 260001, IPv4 127.0.0.1, BACnet/IP UDP 47808, SMP UDP 1337
+<inf> uc_bn_node: ReinitializeDevice/DCC refused: no bacnet.password
 <inf> uc_bn_node: BACnet/IP 127.0.0.1:47808, device 260001
 ```
 
 The interactive shell is on the pseudo-terminal (`picocom /dev/pts/0`). Stop
-the node with Ctrl-C. Useful options: `--flash_erase` (start empty),
-`--flash_rm` (delete the file on exit). Several simulated nodes on one host
+the node with Ctrl-C. A reboot (`os reset`, `kernel reboot cold`, BACnet
+ReinitializeDevice) restarts the process in place with the same arguments
+(`native_sim_reboot: Restarting process.`). Useful options: `--flash_erase`
+(start empty; also applied again at every in-place restart), `--flash_rm`
+(delete the file on exit). Several simulated nodes on one host
 need network namespaces or containers: see [simulation.md](simulation.md) and
 `bacnet-uc sim up`.
 
@@ -175,9 +185,11 @@ smpmgr --ip 127.0.0.1 shell "uc info"
 ```
 fw:      0.1.0
 board:   native_sim/native/64 (io catalog: native_sim)
+uptime:  4 s
 device:  260001 "bacnet-uc" (bacnet ready)
 net:     ipv4 127.0.0.1, bacnet/ip udp 47808
-fs:      /lfs 1580 KiB total, 1532 KiB free
+bacnet:  0 packets, 2 objects
+fs:      /lfs 1580 KiB total, 1536 KiB free
 apps:    0 installed, 0 running
 wasm:    interp yes, aot no, pool 261368/261760 bytes free
 ```
@@ -209,9 +221,13 @@ network. `device-sim.json`:
 ```json
 {"schema": 1,
  "device": {"instance": 1001, "name": "uc-sim-1", "description": "native_sim node", "location": "desk"},
- "bacnet": {"udp_port": 47808},
+ "bacnet": {"udp_port": 47808, "password": "change-me"},
  "log": {"level": "inf"}}
 ```
+
+`bacnet.password` (1..20 characters) is what BACnet clients must send with
+DeviceCommunicationControl and ReinitializeDevice; without it the node
+refuses both ([bacnet.md](bacnet.md#7-network-security)).
 
 With the harness (validates against the schema, uploads, reloads) ✔:
 
@@ -219,25 +235,34 @@ With the harness (validates against the schema, uploads, reloads) ✔:
 bacnet-uc config set sim1 device device-sim.json    # ... reboot_required: true
 ```
 
-With plain SMP, power-safe (upload, atomic move, reload) ✔:
+With plain SMP, power-safe (upload as a staged `.new` document, reload: the
+node validates it and renames it over `device.json`, or deletes it if it is
+invalid) ✔:
 
 ```sh
 smpmgr --ip 127.0.0.1 --mtu 1024 file upload device-sim.json /lfs/cfg/device.json.new
-smpmgr --ip 127.0.0.1 shell "fs mv /lfs/cfg/device.json.new /lfs/cfg/device.json"
-smpmgr --ip 127.0.0.1 shell "uc cfg reload device"
+smpmgr --ip 127.0.0.1 shell "uc cfg reload device"     # device.json reloaded, reboot required ...
+smpmgr --ip 127.0.0.1 shell "uc cfg show device"       # ... password: configured
 ```
 
-The name is applied at once; the instance change reports `reboot required`.
-Restart the node (`smpmgr --ip <node> os reset` on a board; stop and start
-`zephyr.exe` on `native_sim`).
+The name, the password and the log level are applied at once; the instance
+change reports `reboot required`. Restart the node ✔:
+
+```sh
+smpmgr --ip 127.0.0.1 os reset                         # native_sim: the process restarts in place
+bacnet-uc node info sim1                               # device 1001 after a few seconds
+```
 
 ### IO points
 
 The example [`schemas/examples/io.json`](../schemas/examples/io.json) binds
-`di0`, `do0`, `ai0`, `ao0` of any of the three catalogs ✔:
+`di0`, `do0`, `ai0`, `ao0` of any of the three catalogs. From the workspace
+top (the paths below are relative to it; `BACNET_UC_HOME` still points at
+`~/uc-sim`) ✔:
 
 ```sh
-bacnet-uc config set sim1 io BACNet-uc/schemas/examples/io.json
+cd ~/bacnet-uc-ws
+bacnet-uc config set sim1 io BACNet-uc/schemas/examples/io.json   # staged upload + reload
 bacnet-uc io force sim1 ai0 2500                 # simulated 2500 mV
 bacnet-uc prop read sim1 analog-input:1          # 2500 * 0.1 - 50 = 200.0 (°C)
 bacnet-uc prop write sim1 binary-output:1 1 --priority 8
@@ -267,15 +292,17 @@ To build from C source with the harness: `bacnet-uc app build blinky
 BACNet-uc/wasm/examples/blinky/blinky.c -o out/` (runs `uc-cc`, prints
 imports, exports and the permissions the module needs) ✔.
 
-Deploy with plain SMP (upload module and `apps.json`, reload) ✔:
+Deploy with plain SMP (upload the module and a staged `apps.json`, reload) ✔:
 
 ```sh
 smpmgr --ip 127.0.0.1 --mtu 1024 file upload BACNet-uc/wasm/build/thermostat.wasm /lfs/apps/thermostat.wasm
 smpmgr --ip 127.0.0.1 --mtu 1024 file upload apps.json /lfs/cfg/apps.json.new
-smpmgr --ip 127.0.0.1 shell "fs mv /lfs/cfg/apps.json.new /lfs/cfg/apps.json"
 smpmgr --ip 127.0.0.1 shell "uc cfg reload apps"
-smpmgr --ip 127.0.0.1 shell "uc app list"
+smpmgr --ip 127.0.0.1 shell "uc app list"              # thermostat running
 ```
+
+The uploaded `apps.json` replaces the whole list, so the `blinky` installed
+above by the harness is stopped and removed by this reload.
 
 `apps.json` for the thermostat (sensor `analog-input:1` and output
 `analog-output:1` from the IO example; setpoint object created by the app):
@@ -334,29 +361,39 @@ distributed application from a manifest: [distributed-apps.md](distributed-apps.
 
 | Test | Command |
 |------|---------|
-| firmware unit tests (ztest, `native_sim`) | `west build -b native_sim/native/64 BACNet-uc/firmware/tests/unit -d build-unit -t run` ✔ |
+| firmware unit tests (ztest, `native_sim`) | `west build -b native_sim/native/64 BACNet-uc/firmware/tests/unit -d build-unit -t run` ✔ (32 tests: `uc_common` 10, `uc_config` 22) |
 | firmware build scenarios | `west twister -T BACNet-uc/firmware -p native_sim/native/64 -p nucleo_f767zi -p frdm_mcxn947/mcxn947/cpu0` |
-| WebAssembly SDK and examples | `make -C BACNet-uc/wasm check` |
-| harness | `cd BACNet-uc/harness && pip install -e '.[dev]' && pytest` |
+| WebAssembly SDK and examples | `make -C BACNet-uc/wasm check` (needs wamrc for the AOT part; `make -C BACNet-uc/wasm all test validate` without it) |
+| harness unit and integration tests | `cd BACNet-uc/harness && pip install -e '.[dev,serial,sim]' && python -m pytest -q` ✔ (596 passed; the 10 end-to-end tests are skipped without a firmware) |
+| harness end-to-end tests against `native_sim` (root: private network and mount namespaces) | `cd BACNet-uc/harness && sudo PYTHON=$(command -v python) BACNET_UC_FIRMWARE=$PWD/../../build-native/zephyr/zephyr.exe tests/e2e/run-isolated.sh` ✔ (10 passed) |
+
+The same jobs run in CI (`.github/workflows/ci.yml`, see
+[harness-mcp.md](harness-mcp.md#8-ci-usage)).
 
 ## Verification notes
 
-Run while writing this document:
+Run for the current repository state (build directories under `/tmp`
+instead of `build-*`, otherwise as written):
 
-- `west build` for all three boards. `native_sim/native/64` builds and runs.
-  **`nucleo_f767zi` and `frdm_mcxn947/mcxn947/cpu0` currently fail at the
-  final link with a RAM overflow** (29 564 and 60 648 bytes); they link with
-  the WAMR pool moved to DTCM/SRAMX as described in
-  [architecture.md](architecture.md#62-measured-usage). The F767 build with
-  `-S uc-ramfs` overflows by 97 020 bytes in the default configuration and
-  links with the DTCM pool (RAM 359 164 B of 384 KiB).
-- The `native_sim` walkthrough of sections 4 and 6..10: smpmgr 0.19.1 (echo,
-  shell, file upload/download, `fs mv`), the harness CLI (`node add/info/
-  discover/objects/logs`, `config set`, `io force/read`, `prop read/write`,
-  `app build/deploy/list`), `make -C BACNet-uc/wasm`, and the MCP server over
-  stdio (36 tools listed, `node_info` called).
-- Firmware unit tests: 26 of 26 passed (`uc_common` 9, `uc_config` 17).
+- `west build -p` for all three boards, 0 compiler warnings:
+  `native_sim/native/64` builds and runs; `nucleo_f767zi` (FLASH 497 944 B,
+  RAM 359 868 B of 384 KiB, DTCM 97.07 %) and `frdm_mcxn947/mcxn947/cpu0`
+  (FLASH 507 236 B, RAM 358 144 B, SRAMX 100 %) link. Also `-S uc-ramfs` on
+  both boards and `--sysbuild` (MCUboot) on both boards; numbers in
+  [architecture.md](architecture.md#62-measured-usage).
+- The `native_sim` walkthrough of sections 4 and 6..10 in a private network
+  namespace: smpmgr 0.19.1 (echo, shell, staged uploads with `--mtu 1024`, a
+  multi-frame upload without `--mtu` failing with rc 9, `os reset`, file
+  download), the harness CLI (`node add/info/discover/objects/logs`,
+  `config set`, `io force/read`, `prop read/write`, `app build/deploy/list`),
+  `make -C BACNet-uc/wasm` and `make -C BACNet-uc/wasm test`, and the MCP
+  server over stdio (36 tools listed, `node_info` called, `node_shell`
+  refused).
+- The quick start of the top-level [README](../README.md), including the
+  two-node `sim-demo` in network namespaces (3 of 3 tests passed).
+- Firmware unit tests: 32 of 32 passed (`uc_common` 10, `uc_config` 22).
 
-Not run while writing: flashing and the console on real boards (no hardware
-attached to the build machine), `mcumgr` (Go), the Claude Code registration
-commands, `west update` from scratch (the workspace existed).
+Not run: flashing and the console on real boards (no hardware attached to
+the build machine), `mcumgr` (Go), the Claude Code registration commands,
+the HTTP transport of the MCP server, `west update` from scratch (the
+workspace existed).

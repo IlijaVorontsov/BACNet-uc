@@ -22,8 +22,10 @@
  *   - The tick period is the smallest period_ms of all links (cov links
  *     included, as they may fall back to polling), at least 100 ms.
  *   - Destination write errors are logged once per error episode.
- *   - On a regular stop, destinations the app did not create and that
- *     were written with a priority are relinquished at that priority.
+ *   - On a regular stop, commandable destinations (AO, BO, MSO) the app
+ *     did not create and wrote with a priority are relinquished at that
+ *     priority. Value objects (AV, BV, MSV) ignore the priority and keep
+ *     their last value.
  *
  * Permissions: bacnet.local, bacnet.remote.
  */
@@ -398,7 +400,8 @@ UC_EXPORT(uc_app_deinit) void uc_app_deinit(void)
 			(void)uc_cov_unsubscribe(l->sub_id);
 			l->sub_id = -1;
 		}
-		if (!l->created && (l->priority != UC_PRIORITY_NONE)) {
+		if (!l->created && (l->priority != UC_PRIORITY_NONE) &&
+		    uc_obj_is_commandable(l->dst_type)) {
 			(void)uc_prop_write_null(l->dst_type, l->dst_instance,
 						 UC_PROP_PRESENT_VALUE, l->priority);
 		}

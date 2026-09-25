@@ -3,13 +3,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
 
 from bacnet_uc_harness.bacnet.client import BacnetClient
 from bacnet_uc_harness.errors import HarnessError, SmpError
+from bacnet_uc_harness.smp import groups as g
 from bacnet_uc_harness.smp.client import SmpClient
+from bacnet_uc_harness.smp.codec import encode_frame
 from bacnet_uc_harness.testing import FakeNode
 
 IO_JSON = {
@@ -112,32 +115,59 @@ async def test_io_reload_replaces_objects(fake_node: FakeNode, smp_client: SmpCl
 
 
 @pytest.mark.parametrize(
-    ("points", "rc_name"),
+    "points",
     [
-        ([{"channel": "zz", "type": "analog-input", "instance": 1}], "NOT_FOUND"),
-        ([{"channel": "ai0", "type": "binary-input", "instance": 1}], "INVALID"),
-        ([{"channel": "ai0", "type": "analog-input"}], "INVALID"),
-        (
-            [
-                {"channel": "ai0", "type": "analog-input", "instance": 1},
-                {"channel": "ai1", "type": "analog-input", "instance": 1},
-            ],
-            "EXISTS",
-        ),
-        ([{"channel": "ai0", "type": "analog-input", "instance": 1, "units": "nope"}], "INVALID"),
+        [{"channel": "ai0", "type": "analog-input"}],
+        [{"channel": "ai0", "type": "device", "instance": 1}],
+        [{"channel": "ai0", "type": "analog-input", "instance": 1, "units": "nope"}],
+        [{"channel": "ai0", "type": "analog-input", "instance": 4194303}],
+        [{"channel": "ao0", "type": "analog-output", "instance": 1, "min": 5, "max": 1}],
+        [{"channel": "ai0", "type": "analog-input", "instance": 1, "sample_ms": 5}],
+        [
+            {"channel": "ai0", "type": "analog-input", "instance": 1},
+            {"channel": "ai1", "type": "analog-input", "instance": 1},
+        ],
+        [{"channel": f"c{i}", "type": "binary-input", "instance": i} for i in range(33)],
     ],
 )
-async def test_io_reload_errors_keep_config(
-    fake_node: FakeNode, smp_client: SmpClient, points: list, rc_name: str
+async def test_io_reload_invalid_keeps_config(
+    fake_node: FakeNode, smp_client: SmpClient, points: list
 ) -> None:
+    """Parse-stage errors (uc_config_parse_io) reject the whole document."""
     await _upload_json(smp_client, "/lfs/cfg/io.json", IO_JSON)
     await smp_client.node_reload("io")
     before = sorted(fake_node.objects)
     await _upload_json(smp_client, "/lfs/cfg/io.json", {"schema": 1, "points": points})
     with pytest.raises(SmpError) as exc:
         await smp_client.node_reload("io")
-    assert (exc.value.group, exc.value.rc_name) == (66, rc_name)
+    assert (exc.value.group, exc.value.rc_name) == (66, "INVALID")
+    assert exc.value.response is not None and exc.value.response["reboot_required"] is False
     assert sorted(fake_node.objects) == before
+
+
+async def test_io_reload_skips_unbindable_points(
+    fake_node: FakeNode, smp_client: SmpClient
+) -> None:
+    """Points that cannot be bound are skipped, the others bound (uc_io.c)."""
+    fake_node.add_object("analog-value", 3, owner="app:x")
+    points = [
+        {"channel": "zz", "type": "analog-input", "instance": 5},  # unknown channel
+        {"channel": "ai0", "type": "binary-input", "instance": 1},  # kind mismatch
+        {"channel": "di0", "type": "binary-input", "instance": 2},
+        {"channel": "di0", "type": "binary-input", "instance": 3},  # channel bound twice
+        {"channel": "ao0", "type": "analog-value", "instance": 3},  # object of an app
+        {"channel": "ao1", "type": "analog-output", "instance": 1, "scale": 0},  # scale 0
+        {"channel": "ai1", "type": "analog-input", "instance": 1},
+    ]
+    await _upload_json(smp_client, "/lfs/cfg/io.json", {"schema": 1, "points": points})
+    assert await smp_client.node_reload("io") is False
+    io_objects = sorted(k for k, o in fake_node.owners.items() if o == "io")
+    assert io_objects == [(0, 1), (3, 2)]
+    assert fake_node.owners[(2, 3)] == "app:x"
+    cat = {c["name"]: c.get("object") for c in (await smp_client.io_catalog())["channels"]}
+    assert cat["di0"] == {"type": "binary-input", "instance": 2}
+    assert cat["ai1"] == {"type": "analog-input", "instance": 1}
+    assert cat["ai0"] is None and cat["ao0"] is None and cat["ao1"] is None
 
 
 async def test_reload_invalid_json(fake_node: FakeNode, smp_client: SmpClient) -> None:
@@ -151,6 +181,38 @@ async def test_reload_invalid_json(fake_node: FakeNode, smp_client: SmpClient) -
     # missing documents mean defaults
     fake_node.files.pop("/lfs/cfg/io.json")
     assert await smp_client.node_reload("all") is False
+
+
+async def test_staged_documents(fake_node: FakeNode, smp_client: SmpClient) -> None:
+    """``<doc>.json.new`` is activated by reload when valid, deleted when not."""
+    await _upload_json(smp_client, "/lfs/cfg/io.json", IO_JSON)
+    await smp_client.node_reload("io")
+    active = fake_node.files["/lfs/cfg/io.json"]
+    before = sorted(fake_node.objects)
+    # invalid: deleted, active document and objects kept
+    await smp_client.fs_upload("/lfs/cfg/io.json.new", b'{"schema":1,"points":[{"chan')
+    with pytest.raises(SmpError) as exc:
+        await smp_client.node_reload("io")
+    assert exc.value.rc_name == "INVALID"
+    assert "/lfs/cfg/io.json.new" not in fake_node.files
+    assert fake_node.files["/lfs/cfg/io.json"] == active
+    assert sorted(fake_node.objects) == before
+    # valid: renamed over the active document and applied
+    staged = {"schema": 1, "points": [{"channel": "di0", "type": "binary-input", "instance": 9}]}
+    await _upload_json(smp_client, "/lfs/cfg/io.json.new", staged)
+    await smp_client.node_reload("all")
+    assert "/lfs/cfg/io.json.new" not in fake_node.files
+    assert json.loads(fake_node.files["/lfs/cfg/io.json"]) == staged
+    assert (3, 9) in fake_node.objects
+    # at boot a staged document is activated as well
+    await _upload_json(
+        smp_client,
+        "/lfs/cfg/device.json.new",
+        {"schema": 1, "device": {"instance": 1007, "name": "s"}},
+    )
+    await smp_client.os_reset()
+    assert (await smp_client.node_info())["device"] == {"instance": 1007, "name": "s"}
+    assert "/lfs/cfg/device.json.new" not in fake_node.files
 
 
 async def test_device_reload_and_reboot(
@@ -262,3 +324,118 @@ def test_add_object_and_remove() -> None:
         node.add_object("mso", 1)
     node.remove_object("mso", 1)
     assert (14, 1) not in node.objects
+
+
+async def test_paging_stops_when_the_response_is_full(wasm_module: bytes) -> None:
+    """list/catalog/objects hold only what fits 1016 bytes of CBOR."""
+    catalog = tuple((f"ch{i}", "ai", 0.0, "x" * 90) for i in range(20))
+    node = FakeNode(catalog=catalog)
+    await node.start()
+    try:
+        from bacnet_uc_harness.smp.client import connect_udp
+
+        smp = await connect_udp(node.host, node.smp_port, timeout=1.0)
+        try:
+            page = await smp.read(g.GROUP_UC_IO, g.UC_IO_CATALOG, {})
+            assert page["total"] == 20 and 0 < len(page["channels"]) < 20
+            assert len(encode_frame(1, 65, 0, 0, page)) <= 1024
+            assert [c["id"] for c in (await smp.io_catalog())["channels"]] == list(range(20))
+            for i in range(12):
+                node.add_object("analog-value", i, f"{'long name ' * 6}{i}")
+            page = await smp.node_objects(count=100)
+            assert page["total"] == 14 and len(page["objects"]) < 14
+            assert len(await smp.node_objects_all()) == 14
+            assert (await smp.node_objects())["objects"].__len__() == 8  # default count
+        finally:
+            await smp.close()
+    finally:
+        await node.stop()
+
+
+async def test_io_force_requires_value_or_release(smp_client: SmpClient) -> None:
+    for req in ({"name": "ai0"}, {"name": "ai0", "value": 1.0, "release": True},
+                {"name": "ai0", "release": False}):
+        with pytest.raises(SmpError) as exc:
+            await smp_client.write(g.GROUP_UC_IO, g.UC_IO_FORCE, req)
+        assert exc.value.rc_name == "INVALID"
+    with pytest.raises(SmpError) as exc:
+        await smp_client.io_write("ai0", 1.0)
+    assert exc.value.rc_name == "PERM"
+
+
+@pytest.mark.parametrize("password", ["", "x" * 21, "tab\\there", "é"])
+async def test_device_password_parse_errors(smp_client: SmpClient, fake_node: FakeNode,
+                                            password: str) -> None:
+    doc = {"schema": 1, "device": {"instance": 1001, "name": "n"},
+           "bacnet": {"password": password.replace("\\t", "\t")}}
+    await _upload_json(smp_client, "/lfs/cfg/device.json.new", doc)
+    with pytest.raises(SmpError) as exc:
+        await smp_client.node_reload("device")
+    assert exc.value.rc_name == "INVALID"
+    assert "/lfs/cfg/device.json.new" not in fake_node.files
+
+
+async def test_password_services(fake_node: FakeNode, smp_client: SmpClient,
+                                 bacnet_client: BacnetClient) -> None:
+    from bacnet_uc_harness.errors import BacnetError
+
+    addr = fake_node.bacnet_address
+    # no password configured: refused (CONFIG_UC_BACNET_REQUIRE_PASSWORD=y)
+    with pytest.raises(BacnetError) as exc:
+        await bacnet_client.device_communication_control(addr, "disable", password="pw")
+    assert (exc.value.error_class_name, exc.value.error_code_name) == (
+        "security", "password-failure")
+    await _upload_json(smp_client, "/lfs/cfg/device.json", {
+        "schema": 1, "device": {"instance": 1001, "name": "n"},
+        "bacnet": {"password": "S3cret pw"}})
+    assert await smp_client.node_reload("device") is False  # applies without reboot
+    with pytest.raises(BacnetError):
+        await bacnet_client.device_communication_control(addr, "disable", password="wrong")
+    with pytest.raises(BacnetError):
+        await bacnet_client.reinitialize_device(addr, "warmstart")
+    await bacnet_client.device_communication_control(addr, "disable", 5, password="S3cret pw")
+    assert fake_node.dcc_state == "disable"
+    await bacnet_client.reinitialize_device(addr, "warmstart", password="S3cret pw")
+    assert fake_node.reinitialized == ["warmstart"]
+    await asyncio.sleep(0.05)
+    assert fake_node.resets == 1  # restarted after the SimpleACK
+    with pytest.raises(HarnessError):
+        await bacnet_client.reinitialize_device(addr, "reboot-now")
+    # without REQUIRE_PASSWORD an unconfigured password lets everything through
+    open_node = FakeNode(require_password=False)
+    open_node._check_password(None)
+
+
+async def test_reboot_required_relative_to_boot(fake_node: FakeNode,
+                                                smp_client: SmpClient) -> None:
+    base = {"schema": 1, "device": {"instance": 1001, "name": "n"}}
+    await _upload_json(smp_client, "/lfs/cfg/device.json",
+                       {**base, "network": {"dhcp": False, "ipv4": "10.0.0.5"}})
+    assert await smp_client.node_reload("device") is True
+    # back to what the node booted with (DHCP): no reboot needed any more
+    await _upload_json(smp_client, "/lfs/cfg/device.json", base)
+    assert await smp_client.node_reload("device") is False
+    # static bindings, APDU settings and the password apply at once
+    await _upload_json(smp_client, "/lfs/cfg/device.json", {**base, "bacnet": {
+        "apdu_retries": 1, "password": "p",
+        "static_bindings": [{"device": 7, "address": "10.0.0.7"}]}})
+    assert await smp_client.node_reload("device") is False
+    await _upload_json(smp_client, "/lfs/cfg/device.json",
+                       {**base, "bacnet": {"udp_port": 47809}})
+    assert await smp_client.node_reload("device") is True
+
+
+async def test_apps_json_parse_errors(fake_node: FakeNode, smp_client: SmpClient,
+                                      wasm_module: bytes) -> None:
+    fake_node.files["/lfs/apps/a.wasm"] = wasm_module
+    entry = {"name": "a", "file": "/lfs/apps/a.wasm"}
+    for doc in ({"schema": 1},  # "apps" is required
+                {"schema": 1, "apps": [entry] * 2},  # duplicate name
+                {"schema": 1, "apps": [{**entry, "name": f"a{i}"} for i in range(5)]},
+                {"schema": 1, "apps": [{**entry, "sha256": "zz"}]},
+                {"schema": 1, "apps": [{**entry, "perms": ["io", "io"]}]}):
+        await _upload_json(smp_client, "/lfs/cfg/apps.json.new", doc)
+        with pytest.raises(SmpError) as exc:
+            await smp_client.node_reload("apps")
+        assert exc.value.rc_name == "INVALID", doc
+    assert fake_node.apps == {}

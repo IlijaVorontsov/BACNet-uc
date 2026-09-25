@@ -1516,6 +1516,22 @@ SERVICE_CONFIRMED_READ_PROPERTY = 12
 SERVICE_CONFIRMED_READ_PROP_MULTIPLE = 14
 SERVICE_CONFIRMED_WRITE_PROPERTY = 15
 SERVICE_CONFIRMED_WRITE_PROP_MULTIPLE = 16
+SERVICE_CONFIRMED_DEVICE_COMMUNICATION_CONTROL = 17
+SERVICE_CONFIRMED_REINITIALIZE_DEVICE = 20
+
+#: DeviceCommunicationControl-Request enable-disable
+DCC_ENABLE_DISABLE: dict[str, int] = {"enable": 0, "disable": 1, "disable-initiation": 2}
+#: ReinitializeDevice-Request reinitialized-state-of-device
+REINITIALIZED_STATES: dict[str, int] = {
+    "coldstart": 0,
+    "warmstart": 1,
+    "start-backup": 2,
+    "end-backup": 3,
+    "start-restore": 4,
+    "end-restore": 5,
+    "abort-restore": 6,
+    "activate-changes": 7,
+}
 
 SERVICE_UNCONFIRMED_I_AM = 0
 SERVICE_UNCONFIRMED_I_HAVE = 1

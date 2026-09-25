@@ -61,15 +61,17 @@ tools (a BMS can read and override every point).
 | Event-driven transfer | SubscribeCOV + (Un)ConfirmedCOVNotification | `uc_cov_subscribe()`; `uc-link` `mode: cov`; thermostat and alarm sensor inputs | subscriber requests **unconfirmed** notifications, lifetime 300 s (`uc-link`, `uc_point.h`), renewed at lifetime/2; the current value is delivered once after subscribing |
 | Polling | ReadProperty | `uc_remote_read()`; `uc-link` `mode: poll`; COV fallback | the destination reads every `period_ms`; `uc-link` writes the destination only when the value changed |
 | COV fallback | ReadProperty | firmware COV module | a device that answers SubscribeCOV with Error/Reject/Abort is polled every `CONFIG_UC_BACNET_COV_POLL_MS` (2000 ms) for the lifetime of the subscription; after a timeout it is polled and SubscribeCOV is retried every 60 s ([bacnet.md](bacnet.md#52-client-for-applications)) |
-| Commanding | WriteProperty with priority | `uc_remote_write()`, `uc_prop_write()`; `uc-link` `priority` | commandable objects (AO, BO, BV, MSO) arbitrate writers through the priority array; writing NULL at a priority relinquishes it |
+| Commanding | WriteProperty with priority | `uc_remote_write()`, `uc_prop_write()`; `uc-link` `priority` | commandable objects (AO, BO, MSO) arbitrate writers through the priority array; writing NULL at a priority relinquishes it. Value objects (AV, BV, MSV) take every write whatever the priority; NULL changes nothing |
 | Discovery / binding | Who-Is / I-Am, static bindings | firmware client | static bindings from `device.json` first (the harness renders them), Who-Is otherwise |
 
 Priorities (convention from [bacnet.md](bacnet.md#34-priority-array-use-convention)):
 8 for the operator (BMS), 10..14 for applications and links, one distinct
-priority per writer of an output. Analog Value and Multi-state Value objects
-in the pinned bacnet-stack revision have **no priority array**: several
-writers to one AV/MSV overwrite each other regardless of priority. Use AO,
-BO, BV or MSO as a destination that more than one writer commands.
+priority per writer of an output; priority 6 is reserved and rejected.
+Analog Value, Binary Value and Multi-state Value objects of BACnet-uc nodes
+have **no priority array**: several writers to one AV/BV/MSV overwrite each
+other regardless of priority, and a relinquish (NULL) does not restore
+anything. Use AO, BO or MSO as a destination that more than one writer
+commands, and priority 0 for links to value objects.
 
 Value encoding across the application ABI is `double`
 ([`bacnet_uc.h`](../wasm/sdk/include/bacnet_uc.h)): REAL, UNSIGNED, SIGNED,
@@ -124,7 +126,7 @@ nodes:
 | `bacnet_address` | `host[:port]` of the BACnet/IP interface; default: transport host and 47808 | peers' static bindings; harness BACnet client |
 | `device` | `instance` (0..4194302, unique in the manifest), `name`, `description`, `location` | `device.json` `device` |
 | `network` | `dhcp`, `ipv4`, `netmask`, `gateway` | `device.json` `network` |
-| `bacnet` | `udp_port`, `apdu_timeout_ms`, `apdu_retries`, `foreign_device`, `static_bindings` | `device.json` `bacnet` (static bindings merged, section 5) |
+| `bacnet` | `udp_port`, `apdu_timeout_ms`, `apdu_retries`, `foreign_device`, `static_bindings`, `password` | `device.json` `bacnet` (static bindings merged, section 5; `password` enables DCC and ReinitializeDevice on the node) |
 | `io` | points as in `io.json` | `io.json` `points` |
 
 Here `ai0` is a 10 mV/K sensor: 215 mV × 0.1 = 21.5 °C. `cov_increment: 0.2`
@@ -159,10 +161,10 @@ apps:
 | `name` | – | `^[a-z0-9_-]{1,23}$`, unique per node |
 | `node` | – | placement |
 | `source` / `wasm` | – | exactly one: C source (built with the SDK, relative to the manifest) or a prebuilt module |
-| `aot` | false | also compile ahead of time for the node's board (needs firmware with `CONFIG_WAMR_AOT=y`, currently off) |
+| `aot` | false | also compile ahead of time for the node's board and deploy the `.aot` (needs firmware built with `CONFIG_WAMR_AOT=y`, on the boards also `CONFIG_WAMR_AOT_MPU_EXEC=y`; both off by default) |
 | `autostart` | true | start on install and at boot |
 | `period_ms` | 1000 | `uc_app_tick` period, 0 = events only |
-| `heap_kb`, `stack_kb` | 8, 4 | app heap and WAMR stack (from the node's WAMR pool) |
+| `heap_kb`, `stack_kb` | 8, 4 | app heap and WAMR stack (from the node's WAMR pool); none of the stock apps allocates, `heap_kb: 0` saves 8 KiB of pool per app (generated `uc-link` instances get 0) |
 | `perms` | derived | `bacnet.local`, `bacnet.remote`, `io`, `kv`; derived from the stock app's parameters or from the module's imports when omitted (the thermostat above gets `bacnet.local`, `bacnet.remote`, `kv`) |
 | `params` | – | string, number or boolean values; rendered as strings (max 16 per app, keys `[A-Za-z0-9_.-]{1,23}`, values ≤ 95 characters) |
 
@@ -175,9 +177,10 @@ links:
     mode: cov
     priority: 8
   - from: sensor/analog-input:1       # temperature mirror on the supervisor
-    to: supervisor/analog-value:10
+    to: supervisor/analog-value:10    # a value object: priority 0
     mode: poll
     period_ms: 5000
+    priority: 0
 ```
 
 | Field | Default | Meaning |
@@ -186,7 +189,7 @@ links:
 | `to` | – | destination on a node of the manifest; must be writable: AO, AV, BO, BV, MSO, MSV |
 | `mode` | `cov` | `cov`: SubscribeCOV with polling fallback; `poll`: ReadProperty every `period_ms` |
 | `period_ms` | 1000 | poll period, and the fallback poll period of a `cov` link (min 100) |
-| `priority` | 0 | write priority 1..16 for commandable destinations, 0 = no priority |
+| `priority` | 0 | write priority 1..16 for commandable destinations (AO, BO, MSO; not 6), 0 = no priority; value objects (AV, BV, MSV) ignore it: use 0 |
 | `scale`, `offset` | 1, 0 | destination = source × `scale` + `offset` |
 
 The example's fan link uses priority 8; with the priority convention of
@@ -210,7 +213,7 @@ tests:
 |------|--------|--------|
 | `force` | `node`, `channel`, `value` | `uc_io force` (raw value: di/do 0\|1, ai mV, ao %) |
 | `release` | `node`, `channel` | release the force |
-| `write` | `point`, `property?` (`present-value`), `value` (`null` relinquishes), `priority?` | WriteProperty (SMP `prop_write` fallback) |
+| `write` | `point`, `property?` (`present-value`), `value` (`null` relinquishes; no effect on value objects), `priority?` | WriteProperty (SMP `prop_write` fallback) |
 | `wait` | milliseconds | sleep |
 | `expect` | `point`, `property?`, `op` (`eq`, `ne`, `gt`, `ge`, `lt`, `le`, `approx`), `value`, `tolerance?` (0.01), `within_ms?` (0) | read every 200 ms until the comparison holds or `within_ms` elapsed |
 
@@ -224,9 +227,10 @@ forced are released when the test ends, also after a failure.
 |------|-------------|--------|
 | A link runs on its **destination** node | construction (`render.py`) | the write is local; only the read crosses the network, and it is repeated (COV renewal, polling) until it succeeds |
 | At most `CONFIG_UC_APPS_MAX` (default 4) apps per node, counting generated `uc-link` instances | `validate_system` warning above 4, error above 8 | one firmware slot (thread, event queue) per app |
-| The node's WAMR pool must hold all its apps | not checked (**Planned**) | 128 KiB (F767), 96 KiB (MCXN947), 256 KiB (`native_sim`); the examples need ~39..54 KiB each with `heap_kb: 8` ([wasm-runtime.md](wasm-runtime.md#5-memory-model)) |
+| The node's WAMR pool must hold all its apps | `validate_system` estimate, warning above 90 % (`wamr_pool` in the report; the firmware answers `NO_MEM` when an app does not fit) | 112 KiB (F767), 96 KiB (MCXN947), 256 KiB (`native_sim`); the examples need 28..44 KiB each with `heap_kb: 0` and 38..54 KiB with `heap_kb: 8` (`native_sim` figures, [wasm-runtime.md](wasm-runtime.md#5-memory-model)) |
 | Object instances do not collide between IO points, stock apps and link destinations | `validate_system` error | a second creator gets `UC_ERR_EXISTS` |
-| At most one link per destination object and priority | `validate_system` error | two writers at one priority overwrite each other |
+| At most one link per destination object and priority; at most one link per value object (AV, BV, MSV) | `validate_system` error | two writers at one priority, or two writers of an object without priority array, overwrite each other |
+| No priority 6 on outputs (links, test writes; also on analog-value in tests) | `validate_system` error; a priority or a `null` write on a value object is a warning | the node rejects priority 6 (write-access-denied); value objects ignore priorities |
 | Place a controller on the node that owns its **output** | recommendation | the output path stays local; on loss of a remote sensor the controller can drive its fail-safe value (the thermostat does, `stale_ms`/`fail_output`); a remote writer that loses the network can neither update nor relinquish its command |
 | Keep latency-critical interlocks inside one node | recommendation | see the timing budget (section 6); inter-node paths depend on the LAN and on COV behaviour of the peer |
 | Put sensor-only nodes on the board with the matching IO | recommendation | nodes without apps have the smallest failure surface |
@@ -272,7 +276,7 @@ JSON):
               {"key": "sp_instance", "value": "1"}, {"key": "kp", "value": "20"},
               {"key": "ti_s", "value": "600"}, {"key": "poll_ms", "value": "5000"}]},
   {"name": "link", "file": "/lfs/apps/link.wasm", "autostart": true,
-   "period_ms": 5000, "heap_kb": 8, "stack_kb": 4,
+   "period_ms": 5000, "heap_kb": 0, "stack_kb": 4,
    "perms": ["bacnet.local", "bacnet.remote"],
    "params": [{"key": "count", "value": "1"},
               {"key": "l0", "value": "1001 0 1 2 10 poll 5000 0 1 0"}]}]}
@@ -285,7 +289,8 @@ and its `device.json`:
  "device": {"instance": 1003, "name": "uc-supervisor", "location": "Lab 1"},
  "network": {"dhcp": false, "ipv4": "192.168.10.53", "netmask": "255.255.255.0",
              "gateway": "192.168.10.1"},
- "bacnet": {"static_bindings": [{"device": 1001, "address": "192.168.10.51", "port": 47808},
+ "bacnet": {"password": "hvac-demo-change-me",
+            "static_bindings": [{"device": 1001, "address": "192.168.10.51", "port": 47808},
                                 {"device": 1002, "address": "192.168.10.52", "port": 47808}]}}
 ```
 
@@ -310,7 +315,8 @@ than 8 links target the node. Parameters follow
 | `scale`, `offset` | `scale`, `offset` (shortest decimal text) |
 
 The instance's `period_ms` is the smallest link period of the chunk (at least
-100 ms); its permissions are `bacnet.local` and `bacnet.remote`.
+100 ms); its permissions are `bacnet.local` and `bacnet.remote`, `heap_kb` 0
+(uc-link does not allocate).
 
 ```mermaid
 sequenceDiagram
@@ -339,7 +345,7 @@ Behaviour details that matter for a system:
 | `uc_cov_subscribe` fails (no free subscription slot, bad device) | link polled with its `period_ms`; subscription retried every 30 s |
 | source device rejects COV | handled below the app: the firmware polls every 2 s and delivers changes as COV events |
 | poll read fails | destination keeps its last value; error logged once per error episode |
-| regular stop | unsubscribes; relinquishes destinations it did not create and wrote with a priority |
+| regular stop | unsubscribes; relinquishes commandable destinations (AO, BO, MSO) it did not create and wrote with a priority; destinations it created are deleted by the host |
 | trap or watchdog stop | no `uc_app_deinit`: commands stay in the priority array; objects it created are deleted |
 
 ## 7. Planning and apply
@@ -351,7 +357,7 @@ flowchart TD
     B --> R["render device/io/apps.json<br/>per node"]
     R --> L["fetch live state per node:<br/>node info, fs hash of documents<br/>and modules, apps.json, uc_app list, objects"]
     L --> D["diff -> actions + notes"]
-    D --> A["apply by phase:<br/>1 device, 2 io, 3 apps, 4 links"]
+    D --> A["apply by phase:<br/>1 device, 2 io, 3 apps, 4 links<br/>(+ app restarts)"]
     A --> RB["reboot nodes that need it,<br/>wait until they answer"]
 ```
 
@@ -363,6 +369,7 @@ flowchart TD
 | `remove_app` | installed but not in the manifest, only with `prune` (otherwise a warning note) | 3 apps |
 | `deploy_app` | not installed; module hash differs (upload + install); manifest fields differ (install only) | 3 apps (`uc-link`: 4 links) |
 | `start_app` | installed and current, `autostart`, but not running (e.g. `failed`) | 3 apps / 4 links |
+| `restart_app` | the app (stock app or `uc-link` instance, on any node) reads or writes an IO object of a node whose `io.json` is pushed or reloaded in this plan, and it is not deployed or started anyway: the reload re-creates the IO objects, so outputs fall back to Relinquish_Default and subscriptions to the old objects are gone | 4 links (after the others) |
 | note `reboot_required` | device instance, BACnet UDP port or static IPv4 differ from what the node runs | – |
 | note `unreachable` | the node does not answer | – |
 
@@ -370,8 +377,14 @@ Within a phase the nodes are processed in manifest order; all nodes finish
 phase 1 before any node starts phase 2, and so on. After a failed action the
 remaining actions of **that node** are skipped; other nodes continue. With
 `reboot=true` (default) nodes that report `reboot_required` are reset at the
-end (SMP `os reset`, or a process restart for simulated nodes) and the
-harness waits until they answer.
+end and the harness waits until they answer: boards with SMP `os reset`;
+simulated nodes by the simulation manager (kill and re-spawn) when it may
+(root for `netns`), otherwise also with `os reset`, which restarts the
+`native_sim` process in place.
+
+Configuration documents are uploaded as staged `<doc>.json.new` files and
+activated by the reload; if the node rejects a document (rc `INVALID`) it
+deletes the staged file and keeps its configuration, and the action fails.
 
 ## 8. Timing and latency budget
 
@@ -393,7 +406,7 @@ their own threads at lower priority ([architecture.md](architecture.md#3-threads
 
 With `sample_ms: 10` on both points and `debounce_ms: 10` the worst case is
 about 55 ms. The simulated two-node test `switch-drives-lamp` (two edges,
-harness polling every 200 ms) completed in 493 ms.
+harness polling every 200 ms) completed in 488 ms.
 
 ### 8.2 Poll link and COV fallback
 
@@ -424,7 +437,7 @@ harness's 200 ms read interval.
 | source node offline | COV renewals and polls time out; `uc-link` destinations **hold the last value** (no stale marking); thermostat enters fail-safe after `stale_ms` (60 s) and writes `fail_output` (0 %) | `system_status` (unreachable), app `errors`, logs of `uc_bn_cov`/`uc_app` | implement staleness in consuming apps (thermostat pattern); `alarm` app warns on stale input |
 | destination (actuator) node reboots | Present_Values and priority arrays are RAM-only: outputs start at Relinquish_Default (0 / inactive); a remote writer rewrites only on change or after its refresh interval (thermostat `refresh_ms` 60 s) | uptime in `node_info` | local controllers (placement rule); planned persistence of output priority arrays |
 | writer node offline | its command stays in the destination's priority array indefinitely | `system_status` | place writers on the output's node; operator relinquish via `bacnet_write(value=null, priority=p)` |
-| `io.json` changed on a destination node (`reload io`) | all IO objects are deleted and re-created, so their priority arrays are cleared; `uc-link` writes a destination again only when the source value changes (COV event or a changed poll result), so a linked output stays at Relinquish_Default until then | test failures after an IO change | restart the node's `uc-link` instance after an IO change (`app_control(action="restart")`); the planner does not do this automatically (open issue) |
+| `io.json` changed on a destination node (`reload io`) | all IO objects are deleted and re-created, so their priority arrays are cleared; `uc-link` writes a destination again only when the source value changes (COV event or a changed poll result), so a linked output stays at Relinquish_Default until then | test failures after an IO change | the harness restarts every app that uses the re-created objects: `set_config`/`configure_io`/`reload_config` (`restarted_apps`) and the planner (`restart_app`). After an out-of-band IO change restart them by hand (`app_control(action="restart")`) |
 | app trap or watchdog | app state `failed`, owned objects deleted, subscriptions cancelled, **no** `uc_app_deinit` (commands stay); no automatic restart | `list_apps`, `system_status`, `last_error`; `plan_system` proposes `start_app` | `apply_system` restarts it; fix the cause first |
 | app floods events | queue (16) full: events dropped and counted as errors | `errors` counter | reduce COV traffic (`cov_increment`), slower polls |
 | COV subscription table of the source full (16 entries for all subscribers) | SubscribeCOV rejected → subscriber polls every 2 s | logs (`uc_bn_cov`) | fewer COV links per source; `mode: poll` for slow values |
@@ -538,7 +551,7 @@ are **Planned**. In simulation they can be scripted around the CLI
 | objects created by IO and apps, per node | 64 | `CONFIG_UC_BACNET_OBJECTS_MAX` |
 | IO points per node | 32 | `CONFIG_UC_IO_POINTS_MAX`, `io.schema.json` |
 | configuration document size | 8192 bytes | `CONFIG_UC_CONFIG_DOC_MAX` |
-| WAMR pool | 128 KiB / 96 KiB / 256 KiB | `CONFIG_UC_APP_POOL_SIZE` per board |
+| WAMR pool | 112 KiB / 96 KiB / 256 KiB | `CONFIG_UC_APP_POOL_SIZE` per board |
 | events queued per app | 16 | `CONFIG_UC_APP_EVENT_QUEUE_LEN` |
 
 Consequences: a sensor node that feeds more than 16 COV links (from all

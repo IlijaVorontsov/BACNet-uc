@@ -40,9 +40,9 @@ implements all of them plus the data-sharing extensions listed below.
 | DS-COV-B | Implemented | `handler_cov_subscribe`, 16 subscriptions (`CONFIG_BACNET_BASIC_COV_SUBSCRIPTIONS_SIZE`), confirmed and unconfirmed notifications, for AI, AO, AV, BI, BO, BV, MSI, MSO, MSV |
 | DM-DDB-B | Implemented | Who-Is answered with a unicast I-Am to the requester; I-Am broadcast at start-up and when the instance changes |
 | DM-DOB-B | Implemented | Who-Has / I-Have |
-| DM-DCC-B | Implemented | DeviceCommunicationControl; password is the bacnet-stack default `filister` (**Planned**: configurable in `device.json`) |
-| DM-RD-B | Implemented | ReinitializeDevice COLDSTART/WARMSTART reboot the node after `CONFIG_BACNET_REINIT_REBOOT_DELAY` (3 s); no password is required (**Planned**: configurable) |
-| DM-OCD-B | Present, not claimed | CreateObject/DeleteObject are answered by the stack. IO- and application-owned objects are not protected against a network DeleteObject yet (**Planned**: reject deletion of owned objects) |
+| DM-DCC-B | Implemented | DeviceCommunicationControl with the password `device.json` `bacnet.password` (it replaces the bacnet-stack default `filister`). Without a configured password every request is refused with Error security/password-failure (`CONFIG_UC_BACNET_REQUIRE_PASSWORD=y`, default) |
+| DM-RD-B | Implemented | ReinitializeDevice COLDSTART/WARMSTART with the same password; the node reboots after `CONFIG_BACNET_REINIT_REBOOT_DELAY` (3 s). Without a configured password: refused like DCC |
+| DM-OCD-B | Build option, not claimed | default: CreateObject and DeleteObject are not registered, clients get Reject unrecognized-service. With `CONFIG_UC_BACNET_REMOTE_CREATE_DELETE=y` clients may create AI, AO, AV, BI, BO, BV, MSI, MSO and MSV objects (owner `network`) and delete only those ([3.2](#32-ownership)) |
 | DS-COVP-B | Planned | SubscribeCOVProperty not registered |
 | DM-TS-B, DM-UTC-B | Planned | the bacnet-stack time synchronization handlers are compiled only with `BACNET_TIME_MASTER`; the node has no wall-clock time base yet (log timestamps are uptime) |
 | DM-BR-B | Not planned for B-ASC | backup/restore (`CONFIG_BACNET_BASIC_BACKUP_RESTORE`) is off; configuration backup is done over SMP |
@@ -71,17 +71,22 @@ implements all of them plus the data-sharing extensions listed below.
 | Analog Value (AV) | 2 | `io.json` (`ao` channel), applications, `uc-link` | **no** (see note) | yes |
 | Binary Input (BI) | 3 | `io.json` (`di` channel), applications | no | only when Out_Of_Service |
 | Binary Output (BO) | 4 | `io.json` (`do` channel), applications | yes | yes |
-| Binary Value (BV) | 5 | `io.json` (`do` channel), applications, `uc-link` | yes | yes |
+| Binary Value (BV) | 5 | `io.json` (`do` channel), applications, `uc-link` | **no** (see note) | yes |
 | Multi-state Input (MSI) | 13 | `io.json` (`di` channel: states "Inactive"=1, "Active"=2), applications | no | only when Out_Of_Service |
 | Multi-state Output (MSO) | 14 | applications | yes | yes |
 | Multi-state Value (MSV) | 19 | applications, `uc-link` | **no** (see note) | yes |
 
-Note on AV and MSV: the bacnet-stack implementations of Analog Value and
-Multi-state Value in the pinned revision have no Priority_Array. A write with
-a priority simply replaces Present_Value (last writer wins; priority 6 is
-rejected), and a NULL write (relinquish) is rejected with an invalid-datatype
-error (`UC_ERR_TYPE` for `uc_prop_write_null()`). Use AO/BO/MSO or BV
-where several writers must be arbitrated by priority.
+Note on the value objects AV, BV and MSV: in the pinned bacnet-stack
+revision and build they have no Priority_Array and no Relinquish_Default
+(reading them gives unknown-property). A write with a priority simply
+replaces Present_Value (last writer wins); AV rejects priority 6 with
+write-access-denied, BV and MSV accept it. A NULL write (relinquish) to their
+Present_Value succeeds and changes nothing (ASHRAE 135 clause 15.9.2), over the
+network as well as for local writes (`uc_prop_write_null()`, SMP `prop_write`
+with `null`, `uc-link`). Use AO, BO or MSO where several writers must be
+arbitrated by priority. (bacnet-stack can make BV commandable with the
+compile option `BACNET_OBJECT_BINARY_VALUE_COMMANDABLE`; the firmware does not
+set it.)
 
 Object instances are 0..4194302. Object_Name must be unique within the device
 (ASHRAE 135 clause 12.1.5). The firmware logs a duplicate
@@ -91,24 +96,28 @@ it, so choose unique names in `io.json` and in applications.
 ### 3.2 Ownership
 
 Every object has an owner recorded in the firmware's owner table
-(`CONFIG_UC_BACNET_OBJECTS_MAX` = 64 entries). The owner is reported by
-`uc_node objects` and `uc obj list`.
+(`CONFIG_UC_BACNET_OBJECTS_MAX` = 64 entries for IO, application and network
+objects). The owner is reported by `uc_node objects` and `uc obj list`.
 
 | Owner | Objects | Created | Deleted |
 |-------|---------|---------|---------|
 | `system` | Device, Network Port | at stack start | never |
 | `io` | objects bound in `io.json` | at boot and on `uc_node reload io` | all `io` objects are deleted and re-created on every IO reload |
 | `app:<name>` | objects created with `uc_obj_create()` | by the application, typically in `uc_app_init()` | by `uc_obj_delete()` or automatically when the application stops, fails or is removed |
-| none | objects created over the network with CreateObject | by a BACnet client | by a BACnet client |
+| `network` | objects created over the network with CreateObject (only with `CONFIG_UC_BACNET_REMOTE_CREATE_DELETE=y`; RAM only) | by a BACnet client | by a BACnet client (DeleteObject) |
 
 Rules:
 
 1. **Creation conflicts.** Creating an object that exists with another owner
-   fails (`-EEXIST`, `UC_ERR_EXISTS`). An application creating an object it
+   fails (`-EEXIST`, `UC_ERR_EXISTS`; CreateObject answers
+   object-identifier-already-exists). An application creating an object it
    already owns gets `UC_OK`. An `io.json` point whose object is already
-   owned by an application is skipped with an error log.
+   owned by an application or by `network` is skipped with an error log.
 2. **Deletion.** Only the owner deletes its objects; the management
-   interface and `io` reloads delete only `io` objects.
+   interface and `io` reloads delete only `io` objects. A network DeleteObject
+   of a `system`, `io` or application object answers Error
+   object/object-deletion-not-permitted (with the option off, DeleteObject is
+   not supported at all).
 3. **Writes are not restricted by ownership.** Any BACnet client, the
    management interface (`uc_node prop_write`) and any application with the
    `bacnet.local` permission can write any writable property, subject to the
@@ -138,16 +147,19 @@ applications:
 |---------:|--------|
 | 1..2 | manual life safety, automatic life safety (not used by BACnet-uc) |
 | 5 | critical equipment control (reserved for safety interlocks in applications) |
-| 6 | minimum on/off (reserved by ASHRAE 135; rejected by the stack) |
+| 6 | minimum on/off (reserved by ASHRAE 135; rejected by the stack for AO, BO, MSO and AV) |
 | 8 | manual operator (BMS workstation) |
 | 10..14 | applications (one distinct priority per writer of an output) |
 | 16 | default (writes without priority) |
 
-An application that commands an output at a priority relinquishes it
-(`uc_prop_write_null()` / `uc_remote_write_null()`) when it stops; the
-examples do this in `uc_app_deinit()`. If an application fails (trap,
-watchdog), `uc_app_deinit()` is not called and its command stays in the
-priority array until overwritten or relinquished by another writer.
+The priorities apply to the commandable objects AO, BO and MSO; AV, BV and
+MSV ignore them ([3.1](#31-object-types)). An application that commands an
+output at a priority relinquishes it (`uc_prop_write_null()` /
+`uc_remote_write_null()`) when it stops; the examples do this in
+`uc_app_deinit()` for AO/BO/MSO and write their off or fail-safe value to a
+value object instead. If an application fails (trap, watchdog),
+`uc_app_deinit()` is not called and its command stays in the priority array
+until overwritten or relinquished by another writer.
 
 ### 3.5 Persistence
 
@@ -158,7 +170,7 @@ priority array until overwritten or relinquished by another writer.
 | Application objects | yes, while the application is installed with autostart | re-created by the application at every start |
 | Present_Value, priority arrays, Out_Of_Service | **no** | RAM only; outputs start at Relinquish_Default after a reset (**Planned**: persist priority arrays of IO outputs with the bacnet-stack store callback and Zephyr settings) |
 | Application state | on request | `uc_kv_set()` (`/lfs/data/<app>/<key>`) |
-| Objects created by CreateObject | no | |
+| Objects created by CreateObject (build option) | no | RAM only, gone after a reset |
 | Address bindings learned from I-Am | no | static bindings in `device.json` are re-installed at boot |
 
 ## 4. Data flows inside the node
@@ -233,6 +245,12 @@ stateDiagram-v2
   process identifier is the subscription slot. Confirmed notifications are
   accepted as well.
 - Lifetime: default 300 s when 0 is passed, minimum 10 s.
+- Before every SubscribeCOV (initial, renewal, retry) and every poll the
+  device's address is taken from the address cache again, so a re-bound
+  device (new I-Am, static binding changed by `reload device`) is reached at
+  its new address.
+- Notifications are matched by subscriber process identifier, device and
+  object, not by source address.
 - Polling: ReadProperty of Present_Value every `CONFIG_UC_BACNET_COV_POLL_MS`
   (2000 ms); a notification is delivered on change only.
 - The current value is delivered once right after subscribing: from the first
@@ -258,11 +276,22 @@ stateDiagram-v2
 
 ## 7. Network security
 
-BACnet/IP has no authentication. Anyone on the subnet can write outputs,
-issue DeviceCommunicationControl (default password) and ReinitializeDevice
-(no password), and delete objects. Run nodes on a dedicated building
-automation network or VLAN; see [security.md](security.md). BACnet Secure
-Connect is on the roadmap (section 9).
+BACnet/IP has no authentication. Anyone on the subnet can read and write
+every writable property, including outputs at any priority. The firmware
+limits what else a BACnet client can do:
+
+| Service | Default build | Build option |
+|---------|---------------|--------------|
+| DeviceCommunicationControl, ReinitializeDevice | only with `device.json` `bacnet.password` (1..20 characters); without a password refused with security/password-failure; a wrong password gets password-failure | `CONFIG_UC_BACNET_REQUIRE_PASSWORD=n`: accepted without a password when none is configured |
+| CreateObject, DeleteObject | not supported (Reject unrecognized-service) | `CONFIG_UC_BACNET_REMOTE_CREATE_DELETE=y`: create AI..MSV (owner `network`), delete only those |
+
+The password travels in clear text like every BACnet/IP request; it protects
+against accidents and casual misuse, not against an attacker on the subnet.
+If the password is removed while communication is disabled by a DCC without
+duration, only a reboot (or a build with `CONFIG_UC_BACNET_REQUIRE_PASSWORD=n`)
+enables it again. Run nodes on a dedicated building automation network or
+VLAN; see [security.md](security.md). BACnet Secure Connect is on the roadmap
+(section 9).
 
 ## 8. Performance figures
 
@@ -296,9 +325,9 @@ the current implementation. Items marked "TBD" are product decisions.
 | BACnet protocol revision | 28 |
 | Product description | Programmable BACnet/IP controller with digital and analog IO and WebAssembly control applications |
 | BACnet standardized device profile | B-ASC |
-| BIBBs supported | DS-RP-B, DS-RPM-B, DS-WP-B, DS-WPM-B, DS-COV-B, DM-DDB-B, DM-DOB-B, DM-DCC-B, DM-RD-B; client: DS-RP-A, DS-WP-A, DS-COV-A, DM-DDB-A |
+| BIBBs supported | DS-RP-B, DS-RPM-B, DS-WP-B, DS-WPM-B, DS-COV-B, DM-DDB-B, DM-DOB-B, DM-DCC-B, DM-RD-B (DCC and RD with a password); client: DS-RP-A, DS-WP-A, DS-COV-A, DM-DDB-A |
 | Segmentation capability | none |
-| Standard object types supported | Device; Network Port; AI, AO, AV, BI, BO, BV, MSI, MSO, MSV (dynamically creatable by the node's configuration and applications; CreateObject/DeleteObject not claimed) |
+| Standard object types supported | Device; Network Port; AI, AO, AV, BI, BO, BV, MSI, MSO, MSV (created by the node's configuration and applications; CreateObject/DeleteObject not supported in the default build, not claimed) |
 | Data link layer options | BACnet/IP (Annex J), foreign device registration |
 | Device address binding | static bindings (configuration), dynamic (Who-Is/I-Am) |
 | Networking options | none claimed (no router; BBMD not claimed) |

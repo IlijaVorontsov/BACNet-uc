@@ -162,6 +162,13 @@ static int32_t ret(int32_t rc)
 	return rc;
 }
 
+/* Lookups (uc_param_get*, uc_kv_get): a missing key is not counted as an
+ * error, like the firmware (uc_app_host_api.c). */
+static int32_t ret_lookup(int32_t rc)
+{
+	return (rc == UC_ERR_NOT_FOUND) ? rc : ret(rc);
+}
+
 static bool injected(enum uc_stub_fn fn, int32_t *err)
 {
 	if (st.fail_count[fn] == 0) {
@@ -195,11 +202,21 @@ static bool type_creatable(uint32_t type)
 	       (type == UC_OBJ_MULTI_STATE_OUTPUT) || (type == UC_OBJ_MULTI_STATE_VALUE);
 }
 
+/* Present_Value with a priority array: the output objects. The value
+ * objects (AV, BV, MSV) of the firmware's BACnet stack have none. */
 static bool type_commandable(uint32_t type)
 {
-	return (type == UC_OBJ_ANALOG_OUTPUT) || (type == UC_OBJ_ANALOG_VALUE) ||
-	       (type == UC_OBJ_BINARY_OUTPUT) || (type == UC_OBJ_BINARY_VALUE) ||
-	       (type == UC_OBJ_MULTI_STATE_OUTPUT) || (type == UC_OBJ_MULTI_STATE_VALUE);
+	return (type == UC_OBJ_ANALOG_OUTPUT) || (type == UC_OBJ_BINARY_OUTPUT) ||
+	       (type == UC_OBJ_MULTI_STATE_OUTPUT);
+}
+
+/* Present_Value that BACnet allows to be commandable (135 clause 19.2):
+ * a NULL written to it where it is not commandable changes nothing and
+ * succeeds (clause 15.9.2). */
+static bool type_optionally_commandable(uint32_t type)
+{
+	return type_commandable(type) || (type == UC_OBJ_ANALOG_VALUE) ||
+	       (type == UC_OBJ_BINARY_VALUE) || (type == UC_OBJ_MULTI_STATE_VALUE);
 }
 
 static bool type_binary(uint32_t type)
@@ -407,8 +424,10 @@ static int32_t obj_write_pv(struct stub_obj *o, const double *value, uint32_t pr
 	}
 	if (!o->commandable) {
 		if (value == NULL) {
-			return UC_ERR_INVALID;
+			/* like the firmware: no change (AV, BV, MSV), else no NULL */
+			return type_optionally_commandable(o->type) ? UC_OK : UC_ERR_TYPE;
 		}
+		/* the priority is ignored */
 		o->value = v;
 	} else if (value == NULL) {
 		o->prio_set[priority - 1u] = false;
@@ -460,7 +479,10 @@ static int32_t obj_prop_write(struct stub_obj *o, uint32_t prop, double value)
 	double old = obj_pv(o);
 
 	if (prop == UC_PROP_RELINQUISH_DEFAULT) {
-		if (!o->commandable || (pv_normalise(o->type, value, &value) < 0)) {
+		if (!o->commandable) {
+			return UC_ERR_NOT_FOUND;
+		}
+		if (pv_normalise(o->type, value, &value) < 0) {
 			return UC_ERR_INVALID;
 		}
 		o->relinquish = value;
@@ -638,7 +660,7 @@ int32_t uc_param_get(const char *key, uint32_t key_len, char *buf, uint32_t buf_
 	}
 	value = param_lookup(key, key_len, &err);
 	if (value == NULL) {
-		return ret(err);
+		return ret_lookup(err);
 	}
 	vlen = strlen(value);
 	if (vlen > buf_len) {
@@ -663,7 +685,7 @@ int32_t uc_param_get_number(const char *key, uint32_t key_len, double *out)
 	}
 	value = param_lookup(key, key_len, &err);
 	if (value == NULL) {
-		return ret(err);
+		return ret_lookup(err);
 	}
 	d = strtod(value, &end);
 	if (end == value) {
@@ -772,7 +794,8 @@ static int32_t local_write(uint32_t type, uint32_t instance, uint32_t prop, int3
 		return ret(obj_write_pv(o, value, priority));
 	}
 	if (value == NULL) {
-		return ret(UC_ERR_INVALID);
+		/* NULL is not a value of any other property */
+		return ret(UC_ERR_TYPE);
 	}
 	return ret(obj_prop_write(o, prop, *value));
 }
@@ -1075,7 +1098,7 @@ int32_t uc_kv_get(const char *key, uint32_t key_len, void *buf, uint32_t buf_len
 	}
 	e = kv_find(k);
 	if (e == NULL) {
-		return ret(UC_ERR_NOT_FOUND);
+		return ret_lookup(UC_ERR_NOT_FOUND);
 	}
 	memcpy(buf, e->val, (e->len < buf_len) ? e->len : buf_len);
 	return (int32_t)e->len;
@@ -1475,7 +1498,7 @@ static int32_t client_write(uint32_t type, uint32_t instance, uint32_t prop, con
 	} else if (value != NULL) {
 		rc = obj_prop_write(o, prop, *value);
 	} else {
-		rc = UC_ERR_INVALID;
+		rc = UC_ERR_TYPE;
 	}
 	if ((rc == UC_OK) && (value != NULL) && (o->owner == UC_STUB_OWNER_APP)) {
 		ev.kind = EV_WRITE;

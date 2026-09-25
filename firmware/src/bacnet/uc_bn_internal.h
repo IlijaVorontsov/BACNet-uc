@@ -21,6 +21,7 @@
 #include <zephyr/kernel.h>
 
 #include "bacnet/bacdef.h"
+#include "bacnet/apdu.h"
 #include "bacnet/bacapp.h"
 
 #include "uc/uc_bacnet.h"
@@ -30,12 +31,9 @@
 extern "C" {
 #endif
 
-/* uc_common.h uses -EREMOTEIO, which picolibc does not define. Same value
- * as the fallback in uc_common.c (Linux EREMOTEIO) so that uc_err_to_api()
- * and uc_err_to_mgmt() map it. */
-#ifndef EREMOTEIO
-#define EREMOTEIO 121
-#endif
+/* EREMOTEIO (BACnet Error/Reject/Abort) comes from uc_common.h (included
+ * through uc_bacnet.h): the libc value where defined (glibc on native_sim),
+ * else one value from picolibc's user range. Never define it here. */
 
 /* Encoded application data of one written value (numeric, NULL or a
  * CharacterString of MAX_CHARACTER_STRING_BYTES). */
@@ -80,13 +78,20 @@ int uc_bn_bind_locked(uint32_t device, BACNET_ADDRESS *dest,
 /* uc_bn_local.c                                                           */
 /* ---------------------------------------------------------------------- */
 
-/** Reset the owner table and install the WriteProperty store callback.
- *  Called from the stack init callback. */
+/** Reset the owner table, install the WriteProperty store callback and the
+ *  CreateObject/DeleteObject policy (CONFIG_UC_BACNET_REMOTE_CREATE_DELETE).
+ *  Called from the stack init callback, after bacnet_basic_init() has
+ *  registered the stack's service handlers. */
 void uc_bn_local_init_locked(void);
 
 /** Map a BACnet error class/code of a local operation to a negative
  *  errno (see uc_common.h). */
 int uc_bn_local_err(BACNET_ERROR_CLASS error_class, BACNET_ERROR_CODE error_code);
+
+/** Send a BACnet-Error PDU for a confirmed request (reply to src). */
+void uc_bn_reply_error(BACNET_ADDRESS *src, const BACNET_CONFIRMED_SERVICE_DATA *service_data,
+		       BACNET_CONFIRMED_SERVICE service, BACNET_ERROR_CLASS error_class,
+		       BACNET_ERROR_CODE error_code);
 
 /* ---------------------------------------------------------------------- */
 /* uc_bn_client.c                                                          */

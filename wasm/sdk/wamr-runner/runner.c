@@ -15,10 +15,13 @@
  * pointers like firmware/src/apps/uc_app_host_api.c (offset 0 or a range
  * outside the linear memory is UC_ERR_INVALID, not a trap).
  *
- * It reports the linear memory WAMR allocated (to confirm that the
- * memory was shrunk to __heap_base + app heap) and the pool consumption
- * of each stage. Pool figures are for a 64-bit host; runtime structures
- * are smaller on the 32-bit targets.
+ * It reports the linear memory size (to confirm that the memory was shrunk
+ * to __heap_base + app heap), the range WAMR bounds-checks, the pool block
+ * that holds the linear memory, and the pool consumption of each stage.
+ * Linear memories come from the pool through the firmware's allocation
+ * path (zephyr_memmap.c, modules/wasm-micro-runtime/wamr_linear_memory.c).
+ * Pool figures are for a 64-bit host; runtime structures are smaller on
+ * the 32-bit targets.
  */
 
 #include <inttypes.h>
@@ -32,6 +35,7 @@
 #include "natives.h"
 #include "scenario.h"
 #include "uc_stub.h"
+#include "zephyr_memmap_api.h"
 
 #define POOL_MAX (16u * 1024u * 1024u)
 
@@ -302,6 +306,7 @@ int main(int argc, char **argv)
 	uint32_t image_size = 0;
 	uint32_t used_init, used_image, used_load, used_inst, used_env;
 	uint64_t linear = 0;
+	uint64_t block = 0;
 	uint64_t app_start = 0, app_end = 0;
 	uint32_t pages = 0, page_bytes = 0;
 	int32_t heap_base_after;
@@ -377,6 +382,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	used_inst = pool_used();
+	block = uc_runner_linear_block_bytes();
 	rt.env = wasm_runtime_create_exec_env(rt.inst, sc.stack);
 	if (rt.env == NULL) {
 		fprintf(stderr, "%s: exec env: out of memory\n", sc.module);
@@ -439,7 +445,8 @@ int main(int argc, char **argv)
 		printf("{\"module\": \"%s\", \"format\": \"%s\", \"file_bytes\": %" PRIu32
 		       ", \"stack\": %" PRIu32 ", \"heap\": %" PRIu32 ", \"pages\": %" PRIu32
 		       ", \"bytes_per_page\": %" PRIu32 ", \"linear_memory_bytes\": %" PRIu64
-		       ", \"bounds_bytes\": %" PRIu64 ", \"heap_base_after\": %" PRId32
+		       ", \"bounds_bytes\": %" PRIu64 ", \"linear_block_bytes\": %" PRIu64
+		       ", \"heap_base_after\": %" PRId32
 		       ", \"pool_bytes\": %" PRIu32 ", \"pool_runtime\": %" PRIu32
 		       ", \"pool_image\": %" PRIu32 ", \"pool_module\": %" PRIu32
 		       ", \"pool_instance\": %" PRIu32 ", \"pool_exec_env\": %" PRIu32
@@ -447,19 +454,20 @@ int main(int argc, char **argv)
 		       ", \"trap\": \"%s\", \"ticks\": %" PRIu32 ", \"events\": %" PRIu32
 		       ", \"errors\": %" PRIu32 ", \"log_lines\": %zu, \"result\": %d}\n",
 		       sc.module, format, image_size, sc.stack, sc.heap, pages, page_bytes, linear,
-		       app_end, heap_base_after, sc.pool, used_init, used_image - used_init,
+		       app_end, block, heap_base_after, sc.pool, used_init, used_image - used_init,
 		       used_load - used_image, used_inst - used_load, used_env - used_inst,
 		       (int)start_rc, rt.trapped ? "true" : "false", rt.trapped ? rt.exception : "",
 		       uc_stub_ticks(), uc_stub_events(), uc_stub_errors(), uc_stub_log_count(),
 		       result);
 	} else if (!sc.dump) {
 		printf("%s (%s, %" PRIu32 " B): linear memory %" PRIu64 " B (%" PRIu32 " x %" PRIu32
-		       " B, heap %" PRIu32 " B, bounds %" PRIu64 " B), pool: runtime %" PRIu32
+		       " B, heap %" PRIu32 " B, bounds %" PRIu64 " B, block %" PRIu64
+		       " B), pool: runtime %" PRIu32
 		       ", image %" PRIu32 ", module %" PRIu32 ", instance %" PRIu32
 		       ", exec env %" PRIu32 " B; start %d, %" PRIu32 " ticks, %" PRIu32
 		       " events, %" PRIu32 " errors%s%s\n",
 		       sc.module, format, image_size, linear, pages, page_bytes, sc.heap, app_end,
-		       used_init, used_image - used_init, used_load - used_image,
+		       block, used_init, used_image - used_init, used_load - used_image,
 		       used_inst - used_load, used_env - used_inst, (int)start_rc, uc_stub_ticks(),
 		       uc_stub_events(), uc_stub_errors(), rt.trapped ? ", TRAP: " : "",
 		       rt.trapped ? rt.exception : "");

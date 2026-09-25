@@ -73,7 +73,8 @@ async def test_read_arrays(bacnet_client: BacnetClient, fake_node: FakeNode) -> 
         19,
         3,
     )
-    pa = await bacnet_client.read_property(addr, "analog-value", 1, "priority-array")
+    fake_node.add_object("analog-output", 2, "Valve")
+    pa = await bacnet_client.read_property(addr, "analog-output", 2, "priority-array")
     assert pa == [None] * 16
     texts = await bacnet_client.read_property(addr, "multi-state-value", 3, "state-text")
     assert texts == ["state-1", "state-2", "state-3"]
@@ -87,16 +88,32 @@ async def test_read_arrays(bacnet_client: BacnetClient, fake_node: FakeNode) -> 
 async def test_write_commandable(bacnet_client: BacnetClient, fake_node: FakeNode) -> None:
     addr = fake_node.bacnet_address
     fake_node.add_object("analog-value", 1, "Setpoint", pv=21.0)
+    fake_node.add_object("analog-output", 1, "Valve", pv=0.0)
     fake_node.add_object("binary-output", 2, "Relay")
-    await bacnet_client.write_property(addr, "analog-value", 1, "present-value", 23, priority=8)
-    assert await bacnet_client.read_property(addr, "analog-value", 1) == 23.0
-    await bacnet_client.write_property(addr, "analog-value", 1, "present-value", 24.5)
+    await bacnet_client.write_property(addr, "analog-output", 1, "present-value", 23, priority=8)
+    assert await bacnet_client.read_property(addr, "analog-output", 1) == 23.0
+    await bacnet_client.write_property(addr, "analog-output", 1, "present-value", 24.5)
     # priority 8 still wins over the default priority 16
-    assert await bacnet_client.read_property(addr, "analog-value", 1) == 23.0
-    pa = await bacnet_client.read_property(addr, "analog-value", 1, "priority-array")
+    assert await bacnet_client.read_property(addr, "analog-output", 1) == 23.0
+    pa = await bacnet_client.read_property(addr, "analog-output", 1, "priority-array")
     assert pa[7] == 23.0 and pa[15] == 24.5
+    await bacnet_client.write_property(addr, "analog-output", 1, "present-value", None, priority=8)
+    assert await bacnet_client.read_property(addr, "analog-output", 1) == 24.5
+    with pytest.raises(BacnetError) as exc:  # priority 6: minimum on/off
+        await bacnet_client.write_property(addr, "analog-output", 1, "present-value", 1, priority=6)
+    assert exc.value.error_code_name == "write-access-denied"
+    # value objects have no priority array: the last write wins, NULL does nothing
+    await bacnet_client.write_property(addr, "analog-value", 1, "present-value", 23, priority=8)
+    await bacnet_client.write_property(addr, "analog-value", 1, "present-value", 24.5)
+    assert await bacnet_client.read_property(addr, "analog-value", 1) == 24.5
     await bacnet_client.write_property(addr, "analog-value", 1, "present-value", None, priority=8)
     assert await bacnet_client.read_property(addr, "analog-value", 1) == 24.5
+    with pytest.raises(BacnetError) as exc:
+        await bacnet_client.read_property(addr, "analog-value", 1, "priority-array")
+    assert exc.value.error_code_name == "unknown-property"
+    with pytest.raises(BacnetError) as exc:
+        await bacnet_client.write_property(addr, "analog-value", 1, "present-value", 1, priority=6)
+    assert exc.value.error_code_name == "write-access-denied"
     await bacnet_client.write_property(
         addr, "binary-output", 2, "present-value", "active", priority=1
     )

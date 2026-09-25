@@ -125,16 +125,26 @@ then appends the app heap (`apps.json` `heap_kb`):
 
 WAMR 2.4.5 rounds the memory size it bounds-checks up to
 `os_getpagesize()` (4096 on Zephyr without MMU) but, without hardware bounds
-checks, allocates only the unrounded size from its pool
-(`wasm_allocate_linear_memory` in `core/iwasm/common/wasm_memory.c`: `map_size`
-vs. `memory_data_size`). A module whose memory is not a multiple of 4 KiB can
-therefore read and write up to 4095 bytes behind its allocation on the
-target. `validate.py` demonstrates the rounding on the host with a probe
-built with `--no-page-align` (12304 B allocated, writes accepted up to 16383).
-uc-cc avoids it: it links twice and enlarges the stack so that `__heap_base`
-is a multiple of 4096 (`--no-page-align` disables this). With `heap_kb` a
-multiple of 4 (the default 8, or 0) allocation and bounds then agree; the
-checker warns otherwise.
+checks, allocates only the unrounded size (`wasm_allocate_linear_memory` in
+`core/iwasm/common/wasm_memory.c`: `map_size` vs. `memory_data_size`). On
+Linux `mmap()` maps whole pages, so nothing happens there; on Zephyr
+`os_mmap()` is a pool allocation of exactly that size, so upstream a module
+whose memory is not a multiple of 4 KiB could access up to 4095 bytes behind
+its pool block. The firmware fixes this for every module:
+`modules/wasm-micro-runtime/wamr_linear_memory.c` rounds each linear memory
+allocation of `wasm_memory.c` up to the page size, so the block always covers
+the checked range (the build stops if a WAMR update changes the code this
+relies on). The runner allocates linear memories the same way, from the WAMR
+pool through that file, and `validate.py` checks in every scenario that the
+block covers the bounds; its probe (built with `--no-page-align`, 12304 B of
+memory, bounds 16384 B) accesses offsets 12304 and 16383 (inside the 16384 B
+block) and traps at 16384.
+
+The rounding costs pool memory the module cannot use. uc-cc avoids it: it
+links twice and enlarges the stack so that `__heap_base` is a multiple of
+4096 (`--no-page-align` disables this). With `heap_kb` a multiple of 4 (the
+default 8, or 0) memory size and block then agree; the checker warns
+otherwise.
 
 Measured with `uc-wamr-runner` (WAMR 2.4.5, stack 4 KiB, heap 8 KiB) and
 confirmed with iwasm `-v=5` ("Shrink memory size to 8192", "page bytes:
@@ -142,13 +152,15 @@ confirmed with iwasm `-v=5` ("Shrink memory size to 8192", "page bytes:
 
 | Module | .wasm | code | data | `__heap_base` | linear memory, heap 8 KiB | heap 0 | without shrinking |
 |--------|------:|-----:|-----:|-----:|-----:|-----:|-----:|
-| blinky | 3470 | 2421 | 532 | 8192 | 16384 | 8192 | 73728 |
-| thermostat | 7505 | 5504 | 1200 | 8192 | 16384 | 8192 | 73728 |
-| alarm | 6323 | 4577 | 1060 | 8192 | 16384 | 8192 | 73728 |
-| uc-link | 5392 | 3993 | 756 | 8192 | 16384 | 8192 | 73728 |
+| blinky | 3497 | 2448 | 532 | 8192 | 16384 | 8192 | 73728 |
+| thermostat | 7536 | 5535 | 1200 | 8192 | 16384 | 8192 | 73728 |
+| alarm | 6268 | 4553 | 1060 | 8192 | 16384 | 8192 | 73728 |
+| uc-link | 5419 | 4020 | 756 | 8192 | 16384 | 8192 | 73728 |
 
 None of the examples allocates from the app heap (libc-builtin formatting
-does not use it), so `heap_kb: 0` is sufficient for them.
+does not use it), so `heap_kb: 0` is sufficient for them. An application
+that allocates declares what it needs; keep `heap_kb` a multiple of 4
+(see above: other values cost pool memory the module cannot use).
 
 ### C library subset (`uc_libc.h`)
 
@@ -193,7 +205,15 @@ and a `%.wasm: %.c` rule. `sdk/cmake/BacnetUcWasm.cmake` provides
 
 `uc-aot --board <board> [-o out.aot] app.wasm`; `uc-aot --list [--json]`
 prints the table. The firmware only loads AOT files with `CONFIG_WAMR_AOT=y`
-(off by default; see the Kconfig help about the MPU).
+(off by default) and only when its WAMR pool is executable (`node_info`
+`wasm.aot`): on native_sim the pool pages are made executable with
+`mprotect()`; on the two boards the pool lies in an MPU region with XN
+(execute-never), and AOT files are refused unless `CONFIG_WAMR_AOT_MPU_EXEC=y`
+clears XN of that region (see the Kconfig help of both options in
+`modules/wasm-micro-runtime/Kconfig`; WAMR's own MPU code is broken and not
+built). WAMR's `os_mmap()` blocks come from the pool with 16-byte alignment
+in AOT builds: x86-64 AOT code reads 16-byte constants with `movaps`, which
+crashed native_sim with the pool allocator's 8-byte alignment.
 
 | Board | wamrc target | `CONFIG_WAMR_BUILD_TARGET` |
 |-------|--------------|----------------------------|
@@ -218,7 +238,12 @@ both Cortex-M boards. Indirect mode calls through the runtime's symbol table
 (`memset` -> `aot_memset`) and passes the check; `--direct` selects direct
 mode and is rejected by the check. Indirect mode does not load on x86-64
 ("relocation truncated to fit"), so native_sim uses direct mode with the
-medium code model.
+medium code model. The firmware does not add the missing symbols: WAMR has
+no way to extend the symbol map from outside (`get_plt_table_size()` and
+`init_plt_table()` size the PLT with the static map itself), so it would
+take a patched copy of `aot_reloc_thumb.c`; with indirect mode there is no
+need (upstream fix: add `__aeabi_memclr`, `__aeabi_memclr4/8`,
+`__aeabi_memset*`, `__aeabi_memcpy*` and `__aeabi_memmove*` to the thumb map).
 
 wamrc: the WAMR 2.4.5 release asset
 `https://github.com/bytecodealliance/wasm-micro-runtime/releases/download/WAMR-2.4.5/wamrc-2.4.5-x86_64-ubuntu-22.04.tar.gz`
@@ -227,15 +252,17 @@ wamrc: the WAMR 2.4.5 release asset
 
 | Module | nucleo_f767zi | frdm_mcxn947 | native_sim/native/64 |
 |--------|------:|------:|------:|
-| blinky | 7340 | 7968 | 11724 |
-| thermostat | 14552 | 16504 | 23304 |
-| alarm | 12788 | 13676 | 20228 |
-| uc-link | 11604 | 12304 | 19316 |
+| blinky | 7384 | 8012 | 11788 |
+| thermostat | 14576 | 16528 | 23328 |
+| alarm | 12668 | 13568 | 20040 |
+| uc-link | 11644 | 12328 | 19380 |
 
 The Cortex-M33 of the MCXN947 has a single-precision FPU only: double
 arithmetic in its AOT code calls `__aeabi_dadd` etc. (present in the thumb
-symbol map). x86-64 AOT files are executed by `validate.py`; the Cortex-M
-files are only compiled and symbol-checked here.
+symbol map). x86-64 AOT files are executed by `validate.py` and ran on the
+native_sim firmware (all four examples); the Cortex-M files are compiled and
+symbol-checked here, and the MPU handling was checked in QEMU (mps2/an385
+ARMv7-M, mps2/an521 ARMv8-M), not on the boards.
 
 ## Examples
 
@@ -253,15 +280,15 @@ Toggles a binary object, or a raw digital output channel, every `period_ms`.
 |-------|---------|---------|
 | `type`, `instance` | 5, 1 | object (binary-value:1) |
 | `name` | `blinky` | object name when the app creates it |
-| `priority` | 0 | write priority 1..16, 0 = none |
+| `priority` | 0 | write priority 1..16 for a commandable object (BO, AO, MSO), 0 = none; value objects ignore it |
 | `period_ms` | 1000 | toggle period (10..3600000), set with `uc_set_tick_period` |
 | `on`, `off` | 1, 0 | values written |
 | `channel` | - | raw IO channel (`do0`) instead of an object |
 
 A value type (AV, BV, MSV) is created if missing; other types (an IO-bound
 `binary-output`) must exist, otherwise `uc_app_init` fails. On a regular stop
-it relinquishes its priority or writes `off`. Permissions: `bacnet.local`, or
-`io` in channel mode.
+it relinquishes its priority of a commandable object, and writes `off`
+otherwise. Permissions: `bacnet.local`, or `io` in channel mode.
 
 ### thermostat
 
@@ -284,14 +311,16 @@ PI room temperature controller.
 | `status_s` | 60 | status log line period (0: off) |
 | `timeout_ms` | 2000 | remote request timeout |
 
-Every tick: poll the sensor if due, re-read the setpoint's effective
-Present_Value (a relinquish raises no `uc_app_on_write`), compute
+Every tick: poll the sensor if due, re-read the setpoint's Present_Value
+(the analog-value has no priority array: every write sets it, a relinquish
+changes nothing), compute
 `P = kp * e`, integrate `I += kp * e * dt / ti_s` only when the output is not
 saturated in the direction of `e` (conditional integration) and keep `I`
 within the output limits, `u = clamp(P + I)`. A write to the setpoint raises
 `uc_app_on_write`, which logs and applies it at once. With permission `kv`
 the setpoint is persisted (`setpoint`, 8 bytes) and restored on start. On a
-regular stop it relinquishes `out_priority`, or writes the fail-safe value.
+regular stop it relinquishes `out_priority` of a commandable output (AO, BO,
+MSO), or writes the fail-safe value.
 Permissions: `bacnet.local`, `bacnet.remote` for remote points, `kv`
 optional. The `apps.json` example in `schemas/examples/` uses this app.
 
@@ -316,8 +345,9 @@ where the specification leaves room:
 - The tick period is the smallest `period_ms` of all links (cov links
   included, since they may fall back to polling), at least 100 ms.
 - Read and write errors are logged once per error episode.
-- On a regular stop, destinations the app did not create and wrote with a
-  priority are relinquished at that priority.
+- On a regular stop, commandable destinations (AO, BO, MSO) the app did not
+  create and wrote with a priority are relinquished at that priority; value
+  objects ignore priorities and keep their last value.
 
 Local sources are read with `uc_prop_read` for `UC_DEVICE_LOCAL` and with
 `uc_remote_read` otherwise, which the firmware serves locally without
@@ -358,7 +388,7 @@ are queued. Model:
 
 | Area | Behaviour |
 |------|-----------|
-| objects | table with owner (IO or app), priority arrays for AO/BO/MSO/AV/BV/MSV, REAL precision for analog values, binary 0/1, multi-state >= 1; other numeric properties stored per object |
+| objects | table with owner (IO or app), priority arrays for AO/BO/MSO (AV/BV/MSV have none, as in the firmware: the priority is ignored, a relinquish succeeds without effect; a relinquish of an input or another property is `UC_ERR_TYPE`), REAL precision for analog values, binary 0/1, multi-state >= 1; other numeric properties stored per object |
 | writes | `uc_stub_client_write` writes like a BACnet client and queues `uc_app_on_write` for app-owned objects (not for relinquish, not for the app's own writes) |
 | COV | initial notification right after subscribing; local objects notify on every Present_Value change; remote points notify on `uc_stub_remote_set(..., notify=true)`; `uc_stub_cov_notify` for arbitrary values |
 | remote | scripted points and per-point errors; unknown device: `UC_ERR_NO_ROUTE`, unknown object: `UC_ERR_BACNET`; a timeout advances the clock by `timeout_ms` |
@@ -373,14 +403,16 @@ invalid parameters, REAL setpoint precision, setpoint object taken),
 README example, scale/offset/priority, poll-on-change, error logging, local
 sources, malformed links and numbers, blanks, invalid count, missing link,
 destinations, write errors, COV fallback, unsubscribe), `test_alarm.c` (10),
-`test_blinky.c` (5) and `sdk/tests/test_util.c` (7).
+`test_blinky.c` (6) and `sdk/tests/test_util.c` (7).
 
 ### WAMR runner (`sdk/wamr-runner`)
 
 `build.sh [--iwasm] [dir]` builds WAMR 2.4.5 for Linux with the firmware's
 configuration (fast interpreter, libc-builtin, bulk memory, reference types,
 thread manager with heap aux stack allocation, no WASI/SIMD/JIT, software
-bounds checks, one memory pool) plus the AOT loader, and from it:
+bounds checks, one memory pool; linear memories from the pool through the
+firmware's `wamr_linear_memory.c` and a model of the Zephyr platform's
+`os_mmap()`, `zephyr_memmap.c`) plus the AOT loader, and from it:
 
 - `uc-wamr-runner app.wasm|app.aot [scenario options]`: loads the module the
   way `uc_app_mgr.c` does (imports linked, instance with stack/heap, export
@@ -388,30 +420,31 @@ bounds checks, one memory pool) plus the AOT loader, and from it:
   stub with the firmware's pointer checks and signature strings, and runs a
   timeline (`--at 5000:remote:1001:0:1=21`, `write`, `relinquish`, `local`,
   `silent`, `fail`, `restart` with a new instance). It reports the linear
-  memory, WAMR's bounds and the pool used per stage; `--dump` prints the
-  final state.
+  memory, WAMR's bounds, the pool block holding the linear memory and the
+  pool used per stage; `--dump` prints the final state.
 - `libuc_bacnet_stub.so` for `iwasm --native-lib` (parameters from
   `UC_PARAMS="k=v;k=v"`), and with `--iwasm` WAMR's own
   `product-mini/platforms/linux` iwasm with the same options.
 
 `validate.py` (`make validate`) runs 10 scenarios. For each it requires that
-the application starts (or fails as expected), that WAMR allocated exactly
-the predicted linear memory and bounds-checks the same size, and that the
+the application starts (or fails as expected), that the linear memory has
+the predicted size, that WAMR bounds-checks the same size and that its pool
+block covers it, and that the
 state dumps of the WebAssembly run, the x86-64 AOT run and a native build of
 the same source (`build/host/scenario_<app>`) are identical, including every
 log line. It then loads every module and AOT file in iwasm and runs the
-bounds probe.
+bounds probe (see [Linear memory](#linear-memory)).
 
 Pool figures from the runner are for a 64-bit host (WAMR's structures are
-smaller on the 32-bit targets); on Zephyr the linear memory also comes from
-the pool.
+smaller on the 32-bit targets). As on Zephyr, the instance figure includes
+the linear memory (16384 B with heap 8 KiB).
 
-| Module | module (fast interp) | instance | exec env (4 KiB stack) | linear memory |
+| Module | module (fast interp) | instance incl. linear memory | exec env (4 KiB stack) | linear memory block |
 |--------|------:|------:|------:|------:|
-| blinky | 12144 | 2400 | 4720 | 16384 |
-| thermostat | 23504 | 3296 | 4720 | 16384 |
-| alarm | 20672 | 3088 | 4728 | 16384 |
-| uc-link | 19024 | 2920 | 4720 | 16384 |
+| blinky | 12280 | 18792 | 4720 | 16384 |
+| thermostat | 23672 | 19688 | 4720 | 16384 |
+| alarm | 20520 | 19424 | 4728 | 16384 |
+| uc-link | 19160 | 19320 | 4720 | 16384 |
 
 The runner also accepts `--stack 2048`: uc-link ran its scenario with a
 2 KiB WAMR stack and no app heap (linear memory 8192 B).

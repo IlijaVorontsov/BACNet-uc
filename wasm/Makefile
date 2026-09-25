@@ -90,8 +90,11 @@ aot: $(WASM)
 
 # --- WAMR runner and validation ----------------------------------------------
 
+# The runner compiles the firmware's linear memory allocation glue.
+FW_WAMR_GLUE := $(WASM_DIR)/../modules/wasm-micro-runtime
+
 $(RUNNER): $(wildcard $(RUNNER_DIR)/*.c $(RUNNER_DIR)/*.h $(RUNNER_DIR)/CMakeLists.txt) \
-	   $(STUB_DEPS)
+	   $(wildcard $(FW_WAMR_GLUE)/wamr_linear_memory.*) $(STUB_DEPS)
 	$(RUNNER_DIR)/build.sh --iwasm $(WAMR_BUILD)
 
 runner: $(RUNNER)

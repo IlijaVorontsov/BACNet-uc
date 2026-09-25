@@ -28,14 +28,15 @@ flowchart LR
 | `render.py` | per-node `device.json` / `io.json` / `apps.json`, static bindings, uc-link parameters |
 | `wasm_build.py` | C to WebAssembly (`wasm/sdk/uc-cc` or clang), WebAssembly binary reader, ABI check, AOT (`uc-aot`/wamrc), SDK summary |
 | `firmware.py` | `west build` / `west flash` wrappers, image inspection, MCUboot image hash |
-| `node.py` | one node: SMP + BACnet/IP operations, hash-based uploads, logs |
+| `node.py` | one node: SMP + BACnet/IP operations, hash-based uploads, staged configuration documents, logs |
 | `inventory.py` | `<home>/.bacnet-uc/inventory.yaml` |
-| `planner.py` | build artifacts, fetch live state, diff, apply in a safe order |
+| `planner.py` | build artifacts, fetch live state, diff, apply in a safe order, restart apps that use re-created IO objects |
+| `budget.py` | WAMR pool budget per node (`CONFIG_UC_APP_POOL_SIZE` of the board, `uc-wasm-info` memory predictions) |
 | `testrunner.py` | manifest acceptance tests |
 | `sim.py` | native_sim nodes: host, network namespaces, docker compose |
 | `mcp_server.py` | MCP server (tools, resources, prompts) |
 | `cli.py` | `bacnet-uc` command line |
-| `smp/`, `bacnet/`, `testing/` | SMP client, BACnet/IP client, in-process fake node (see their docstrings) |
+| `smp/`, `bacnet/`, `testing/` | SMP client, BACnet/IP client (incl. DeviceCommunicationControl, ReinitializeDevice), in-process fake node that mirrors the firmware (see their docstrings) |
 
 ## Installation
 
@@ -51,7 +52,7 @@ python3.12 -m venv /opt/zvenv                 # or reuse the Zephyr venv
 | Extra | Adds | Needed for |
 |-------|------|------------|
 | `serial` | pyserial | SMP over the console UART (`transport: serial`) |
-| `sim` | pyroute2 | network-namespace simulation when the `ip` command is not installed |
+| `sim` | pyroute2 | network-namespace simulation (and `tests/e2e/run-isolated.sh`) when the `ip` command is not installed |
 | `dev` | pytest, pytest-asyncio, ruff | the test suite |
 
 External tools:
@@ -168,21 +169,21 @@ JSON-pointer paths), `group`/`rc`/`rc_name` (SMP), `kind`/`error_class`/
 | `remove_node` | name | destr. | remove an inventory entry |
 | `discover_devices` | broadcast?, low?, high?, timeout_s?, target? | ro | Who-Is / I-Am |
 | `node_info` | node | ro | firmware, board, API, device, network, FS, apps, WASM runtime |
-| `get_config` | node, doc | ro | read `/lfs/cfg/<doc>.json` |
-| `set_config` | node, doc, content, reload?, force? | destr. | schema-validated upload + reload |
-| `reload_config` | node, doc? | idem. | `uc_node reload` |
+| `get_config` | node, doc | ro | read `/lfs/cfg/<doc>.json` (includes `bacnet.password` in clear text) |
+| `set_config` | node, doc, content, reload?, force? | destr. | schema-validated staged upload (`<doc>.json.new`) + reload; restarts IO-dependent apps after `io` |
+| `reload_config` | node, doc? | idem. | `uc_node reload` (activates a staged document); restarts IO-dependent apps after `io`/`all` |
 | `io_catalog` | node | ro | IO channels (name, kind, hw, pin, forced, bound object) |
-| `configure_io` | node, points, mode?, dry_run? | destr. | merge/replace `io.json` points, validated against schema and catalog |
+| `configure_io` | node, points, mode?, dry_run? | destr. | merge/replace `io.json` points, validated against schema and catalog; restarts IO-dependent apps |
 | `io_read` | node, channel? | ro | raw channel values |
 | `io_write` | node, channel, value | destr. | drive an output channel |
 | `io_force` | node, channel, value | destr. | force a channel (test stimulus) |
 | `io_release` | node, channel | destr. | release a forced channel |
 | `bacnet_read` | node, object, property?, index?, via? | ro | ReadProperty (BACnet/IP, SMP fallback) |
-| `bacnet_write` | node, object, value, property?, priority?, index?, via? | destr. | WriteProperty with read-back; `null` relinquishes |
+| `bacnet_write` | node, object, value, property?, priority?, index?, via? | destr. | WriteProperty with read-back; `null` relinquishes (output objects; value objects ignore it) |
 | `list_objects` | node | ro | objects with owner and present value |
 | `sdk_info` | | ro | host API from `bacnet_uc.h`, exports, error codes, flags, examples |
 | `build_app` | name, source_path?, source?, aot_board?, opt?, defines?, output_dir? | idem. | C to `.wasm` (+ `.aot`), ABI check |
-| `deploy_app` | node, name, module_path, autostart?, period_ms?, heap_kb?, stack_kb?, perms?, params?, force? | destr. | upload if changed, install, start |
+| `deploy_app` | node, name, module_path, autostart?, period_ms?, heap_kb?, stack_kb?, perms?, params?, force? | destr. | upload if changed, install, start (a manifest too large for one SMP request goes through `apps.json`) |
 | `app_control` | node, name, action, delete_file? | destr. | start / stop / restart / remove |
 | `list_apps` | node | ro | apps with state and counters |
 | `app_status` | node, name | ro | one app |
@@ -191,7 +192,7 @@ JSON-pointer paths), `group`/`rc`/`rc_name` (SMP), `kind`/`error_class`/
 | `build_firmware` | board, pristine?, sysbuild?, snippets?, extra_conf?, cmake_args?, build_dir? | idem. | `west build` |
 | `flash_firmware` | build_dir, runner?, confirm? | destr. | `west flash`, only with `confirm=true` |
 | `update_firmware` | node, build_dir, confirm?, make_permanent?, timeout_s? | destr. | SMP image upload, test boot, confirm; only with `confirm=true` |
-| `validate_system` | system, live_catalogs? | ro | manifest validation report + rendered document hashes |
+| `validate_system` | system, live_catalogs? | ro | manifest validation report, rendered document hashes, WAMR pool budget per node |
 | `plan_system` | system, prune? | ro | actions needed to reach the manifest's state |
 | `apply_system` | system, dry_run?, prune?, reboot? | destr. | execute the plan (dry run by default) |
 | `run_system_tests` | system, tests?, stop_on_failure? | destr. | manifest acceptance tests |
@@ -256,7 +257,21 @@ A manifest (`schemas/system.schema.json`, `apiVersion: bacnet-uc/v1`,
 Examples: [`examples/systems/hvac-demo.yaml`](examples/systems/hvac-demo.yaml)
 (three boards: sensor, actuator, supervisor with thermostat) and
 [`examples/systems/sim-demo.yaml`](examples/systems/sim-demo.yaml) (two
-native_sim nodes).
+native_sim nodes). Both set `bacnet.password`: the firmware refuses
+DeviceCommunicationControl and ReinitializeDevice while no password is
+configured (`CONFIG_UC_BACNET_REQUIRE_PASSWORD=y`); the rendered
+`device.json` passes it through (a placeholder such as
+`"{{ nodes.sensor.bacnet.password }}"` shares one password between nodes).
+
+Write priorities follow the firmware's bacnet-stack: analog-, binary- and
+multi-state-**output** objects are commandable (16-slot priority array,
+Relinquish_Default, priority 6 reserved for minimum on/off and rejected);
+the **value** objects (analog-, binary-, multi-state-value) have no priority
+array: a write sets Present_Value whatever the priority (analog-value
+rejects 6), the last write wins and a relinquish (`null`) changes nothing.
+Links to value objects therefore use priority 0, links to outputs a
+priority (uc-link relinquishes it when it stops), and a test restores a
+value object by writing the old value, not `null`.
 
 ### Loading and validation
 
@@ -275,13 +290,30 @@ native_sim nodes).
 |-------|----------|
 | unique node names, device instances, app names per node, test names | error |
 | apps, links, tests reference existing nodes; object references parse; test step kinds | error |
-| link destination writable (AO, AV, BO, BV, MSO, MSV); no self-link; no two links to one object at one priority | error |
+| link destination writable (AO, AV, BO, BV, MSO, MSV); no self-link; no two links to one output object at one priority; no two links to one value object (no priority array); link priority 6 on an output object | error |
+| test `write` at priority 6 on an output object or analog-value | error |
 | BACnet object collisions per node between IO points and objects the stock apps create (`thermostat` setpoint AV, `alarm` BV/AV, `blinky` value object, uc-link value destinations) | error |
 | `source`/`wasm` files exist (relative to the manifest) | error |
 | app parameters: keys 1..23 of `[A-Za-z0-9_.-]`, values <= 95 characters, <= 16 per app; <= 8 apps per node | error |
 | IO channels against an explicit catalog (`validate_system(live_catalogs=true)` uses the nodes' `io_catalog`) | error |
 | IO channels and channel kind vs. object type against the board catalog in `firmware/boards/io/<board>.dtsi` | warning |
 | more than 4 apps on a node (`CONFIG_UC_APPS_MAX` default), link destination created by an app, link destination/source that nothing on the node provides, `bacnet_address` port differing from `bacnet.udp_port` | warning |
+| link priority on a value object (ignored), test `write` with a priority or `null` on a value object | warning |
+| WAMR pool budget of a node above 90 % of its `CONFIG_UC_APP_POOL_SIZE` (only `validate_system`, see below) | warning |
+
+`validate_system` (and `bacnet-uc system validate`) also builds the apps
+(cached) and estimates the WAMR pool each node needs (`wamr_pool` in the
+report, `budget.py`): per app the linear memory predicted by
+`wasm/sdk/uc-wasm-info` (shrunk to `__heap_base`, plus `heap_kb`, rounded to
+4 KiB), `stack_kb`, the module (5.3 x code bytes for the fast interpreter;
+1.5 x file size + 17 KiB for AOT) and 6 KiB of runtime structures, against
+the board's `CONFIG_UC_APP_POOL_SIZE` from `firmware/boards/<board>.conf`
+(else `prj.conf`, else the Kconfig default): 112 KiB on the NUCLEO-F767ZI,
+96 KiB on the FRDM-MCXN947, 256 KiB on native_sim. The factors are fitted to
+the stock examples measured on native_sim (64-bit, within 3 %; interpreted:
+thermostat 54920 B, alarm 50376 B, blinky 38776 B, uc-link with heap 0
+39496 B); the Cortex-M boards need a little less. Above 90 % the report
+warns; above 100 % apps will fail with rc `NO_MEM`.
 
 All findings are reported together with JSON-pointer paths
 (`/nodes/1/io/0/channel`).
@@ -306,8 +338,9 @@ All findings are reported together with JSON-pointer paths
   for more than 8 links) with `count` and `l<i>` = `"<src_device> <src_type>
   <src_instance> <dst_type> <dst_instance> <mode> <period_ms> <priority>
   <scale> <offset>"` ([uc-link README](../wasm/examples/uc-link/README.md)),
-  permissions `bacnet.local` + `bacnet.remote` and `period_ms` = the smallest
-  link period.
+  permissions `bacnet.local` + `bacnet.remote`, `period_ms` = the smallest
+  link period, `heap_kb` 0 (uc-link does not allocate; a WAMR app heap must be
+  a multiple of 4 KiB anyway) and `stack_kb` 4.
 
 Documents are serialised as compact JSON plus a newline; the planner compares
 their SHA-256 with the node's `fs hash`.
@@ -321,12 +354,24 @@ sequenceDiagram
     H->>H: build apps (uc-cc, cached by content hash), render documents
     H->>N: node_info, fs hash device.json/io.json, apps.json, uc_app list, fs hash modules, objects
     H->>H: diff -> actions
-    H->>N: 1 device.json upload + reload (reboot_required?)
-    H->>N: 2 io.json upload + reload
+    H->>N: 1 device.json staged upload (.new) + reload (reboot_required?)
+    H->>N: 2 io.json staged upload (.new) + reload (IO objects re-created)
     H->>N: 3 apps: remove (prune), upload if hash differs, install (restart), start
-    H->>N: 4 uc-link instances
+    H->>N: 4 uc-link instances, restart apps that use re-created IO objects
     H->>N: reboot nodes that need it, wait until they answer
 ```
+
+Configuration documents are staged ([management protocol](../docs/management-protocol.md#staged-documents-jsonnew)):
+`Node.push_config` uploads `/lfs/cfg/<doc>.json.new` and sends
+`uc_node reload`; the node validates the staged file and renames it over the
+active document in one LittleFS commit, or deletes it and keeps its running
+configuration (rc `INVALID`, reported as "rejected by the node"). The
+harness then checks the active document's SHA-256 (an error means firmware
+without staged documents). An interrupted upload never replaces a working
+document. The node's parser checks more than the JSON schemas (duplicate
+objects, table limits); an `io.json` point it cannot bind (unknown channel,
+wrong kind, channel or object taken) is skipped with a logged error while
+the other points are bound.
 
 | Action | When |
 |--------|------|
@@ -335,11 +380,25 @@ sequenceDiagram
 | `deploy_app` | not installed, module hash differs (upload), or manifest fields differ (install only) |
 | `start_app` | installed and current, `autostart`, but not running |
 | `remove_app` | installed but not in the manifest, only with `prune` |
+| `restart_app` | the app reads or writes an IO object of a node whose `io.json` is pushed or reloaded (stock apps and uc-link instances, from their parameters; on any node), is running and not (re)deployed or started anyway |
 | note `reboot_required` | device instance, BACnet port or static IPv4 differs from what the node runs |
 
+Why `restart_app`: an `io.json` reload deletes and re-creates every IO object
+of the node, so outputs fall back to Relinquish_Default and subscriptions to
+the old objects end. uc-link writes a destination only when its source
+changes, so a link-driven output would sit at Relinquish_Default until then:
+verified on native_sim for a poll link (`tests/e2e`); a COV link whose source
+is an IO object of the same node recovered by itself (the re-created source
+sent a new notification); with a remote source nothing triggers a new write
+until its value changes (its object was not re-created). The MCP tools
+`configure_io`, `set_config(doc="io")` and `reload_config` restart the
+affected apps of that node the same way (`restarted_apps`).
+
 After a failed action the remaining actions of that node are skipped; other
-nodes continue. Reboots use `os reset`, or restart the process for simulated
-nodes.
+nodes continue. Reboots use `os reset`; simulated nodes are restarted by the
+simulation manager when it may (root for `netns`), else also over SMP (the
+native_sim firmware is built with `CONFIG_NATIVE_SIM_REBOOT=y` and restarts
+its process in place: same pid, namespace and flash image).
 
 ### Tests
 
@@ -349,8 +408,9 @@ tests:
     steps:
       - force: {node: sim-a, channel: di0, value: 1}
       - expect: {point: sim-b/binary-output:1, op: eq, value: 1, within_ms: 5000}
-      - write: {point: sim-b/analog-value:1, value: 23.0, priority: 8}
+      - write: {point: sim-b/binary-output:1, value: 1, priority: 8}
       - wait: 500
+      - write: {point: sim-b/binary-output:1, value: null, priority: 8}
       - release: {node: sim-a, channel: di0}
 ```
 
@@ -389,10 +449,17 @@ app_status("sensor", "hello"); read_logs("sensor", grep="hello")
 ```sh
 bacnet-uc firmware build native_sim/native/64          # .bacnet-uc/build/fw-native_sim_native_64
 sudo bacnet-uc sim up harness/examples/systems/sim-demo.yaml
-bacnet-uc system apply harness/examples/systems/sim-demo.yaml --no-dry-run
+sudo bacnet-uc system apply harness/examples/systems/sim-demo.yaml --no-dry-run
 bacnet-uc system test harness/examples/systems/sim-demo.yaml
 sudo bacnet-uc sim down harness/examples/systems/sim-demo.yaml
 ```
+
+The `netns` mode needs root for `sim up`/`sim down`; `system apply` restarts
+the nodes in their namespaces after the first `device.json` (new instance
+and address), which needs root as well; without root it reboots them over
+SMP instead. Run the commands from the same directory (the state lives in
+`./.bacnet-uc`), or everything as root. `apply` reboots by default
+(`--no-reboot` skips it); `sim up --apply` combines the first two steps.
 
 Simulation modes:
 
@@ -408,9 +475,11 @@ Each node runs `zephyr.exe --flash=<workdir>/<node>.flash.bin --seed=<n>`
 different process can stop the simulation. native_sim networking is NSOS
 (host sockets inside the namespace): broadcasts are not forwarded, so nodes
 find each other through the rendered static bindings. The first `apply`
-changes device instance and IPv4, which needs a reboot; the harness restarts
-the process (without `CONFIG_NATIVE_SIM_REBOOT=y`, `sys_reboot()` does not
-restart a native_sim process).
+changes device instance and IPv4, which needs a reboot: the harness restarts
+the process (kill and start; root in `netns` mode) or sends `os reset` (the
+firmware's native_sim build has `CONFIG_NATIVE_SIM_REBOOT=y` and restarts in
+place). The console of each node is also a pseudo terminal (`uart connected
+to pseudotty: /dev/pts/N` in `<node>.log`), usable as `transport: serial`.
 
 ### Firmware
 
@@ -452,28 +521,82 @@ asyncio.run(main())
 cd harness && pip install -e '.[dev]' && python -m pytest -q
 ```
 
+The unit tests run against `FakeNode` (`testing/fake_node.py`), an
+in-process node that follows the integration firmware: two-stage document
+validation and staged documents, IO points that cannot be bound are
+skipped, paged lists cut at the 1016-byte response limit, whole-array
+`prop_read` with rc `LIMIT`, the `prop_write` conversion checks, commandable
+output objects vs. value objects without priority array,
+`bacnet.password` for DeviceCommunicationControl/ReinitializeDevice and
+reboot detection against the boot configuration.
+
 | File | Covers |
 |------|--------|
 | `test_manifest.py` | example manifests, placeholders, YAML 1.2, schema errors, semantic checks, catalogs, collisions |
 | `test_render.py` | rendered documents against the schemas, static bindings, uc-link parameters (README format), chunking, permissions |
-| `test_planner.py` | diffs against fake live state, apply order/failure/reboot with fake nodes, plan/apply/re-plan against `FakeNode`s |
+| `test_planner.py` | diffs against fake live state, `restart_app` for apps using re-created IO objects, apply order/failure/reboot with fake nodes, plan/apply/re-plan against `FakeNode`s |
 | `test_wasm_build.py` | WebAssembly reader on hand-assembled modules, ABI check, header parsing, builds with uc-cc and the clang fallback, AOT |
 | `test_mcp_server.py` | tool catalogue and annotations, resources, prompts, tool calls end-to-end against `FakeNode` through the SDK's in-memory client |
 | `test_cli.py` | CLI commands, exit codes, output against a `FakeNode` |
-| `test_sim.py` | `ip` command generation, compose file, process lifecycle with a stand-in executable, failure roll-back |
+| `test_sim.py` | `ip` command generation, compose file, process lifecycle with a stand-in executable, failure roll-back, reboot fallback to SMP |
+| `test_node.py` | staged `push_config` (activation check, rejection, no reload, firmware without staging), `prop_read` LIMIT fallback, `restart_app`, IO-dependent app restarts, log reads with a fresh FS handle |
+| `test_budget.py` | pool sizes from the board configurations, per-app estimates against the native_sim measurements, budget warnings |
+| `test_fake_node.py`, `test_smp_*.py`, `test_bacnet_*.py` | FakeNode fidelity, SMP client and serial framing, BACnet/IP codec and client |
+| `e2e/` | marker `e2e`: the real native_sim firmware (below) |
+
+### End-to-end tests
+
+`tests/e2e` runs the harness against the real firmware. The tests are
+skipped unless `BACNET_UC_FIRMWARE` names the `zephyr.exe` of a
+`native_sim/native/64` build:
+
+```sh
+west build -b native_sim/native/64 BACNet-uc/firmware -d /tmp/build-native
+cd BACNet-uc/harness
+sudo PYTHON=$(command -v python) BACNET_UC_FIRMWARE=/tmp/build-native/zephyr/zephyr.exe \
+    tests/e2e/run-isolated.sh               # = pytest -m e2e tests/e2e, isolated
+```
+
+| Test | Needs | Covers |
+|------|-------|--------|
+| `test_single_node.py` | UDP ports 1337/47808 free (host mode) | node info; staged `device.json` (activation, rejection of an invalid staged file, reboot in place); `io.json` incl. a skipped point; IO force -> BACnet object via `BacnetClient`; outputs via WriteProperty/relinquish; `prop_read` of arrays, `prop_write` errors; `bacnet.password` with DCC/ReinitializeDevice; SMP over the console pty (1152-byte frames, no pacing); thermostat + blinky built from `wasm/examples` and deployed (control loop, logs, value-object semantics, pool estimate within 10 %); an `io.json` reload leaves a poll link's output at Relinquish_Default until the link is restarted |
+| `test_sim_demo.py` | root, `ip` or pyroute2, no bridge `bnuc0` | `examples/systems/sim-demo.yaml` through the CLI: `sim up`, `validate` (pool budget), `plan`, `apply` (with reboots), re-plan in sync, `system test` (3 tests), passwords via DCC, IO drift -> `push_config io` + `restart_app`, `status`, `sim down` |
+
+`run-isolated.sh` (root) starts pytest in new network and mount namespaces
+with a private `/run/netns`: the nodes, the bridge and the namespaces cannot
+collide with other simulations on the machine and disappear with the run.
+Without it, `pytest -m e2e tests/e2e` works too when the ports are free
+(single node) and no other simulation uses `bnuc0` (sim-demo, root).
+
 
 Tests that need clang or wamrc are skipped when those are missing.
 
 ## Limitations
 
+- `get_config` returns `device.json` as stored, including `bacnet.password`
+  (the node's shell prints only whether one is configured).
+- `SerialTransport` sends full 1152-byte frames without pacing (the firmware
+  buffers 16 console lines, `CONFIG_MCUMGR_TRANSPORT_SHELL_RX_BUF_COUNT`).
+  For firmware with Zephyr's default of 2 buffers pass `mtu=256` and
+  `line_delay=0.02`.
+- Log files are read through the FS group, which keeps a download handle
+  open between requests with the length of its first open; the harness
+  closes that handle before every download (else a growing log file came
+  back truncated).
+- `read_logs` can miss the node's most recent message: on native_sim a
+  message logged by an app sometimes reached `/lfs/log` only with the next
+  log activity (seen in `tests/e2e`, 5 s without it).
+- The WAMR pool estimate is calibrated on native_sim (64-bit); AOT factors
+  come from x86-64 files, thumb AOT is not calibrated.
 - `discover_devices` binds UDP 47808 (shared) to receive broadcast I-Ams; do
   not combine with a host-mode simulation on the same host.
 - Simulated nodes outlive the process that started them (they run in their
   own session); stop them with `sim_stop` / `bacnet-uc sim down`, which uses
   `<workdir>/sim-state.json`.
 - The `ip` command backend of the `netns` mode is covered by unit tests of the
-  generated commands; the pyroute2 backend has been run against two native_sim
-  nodes.
+  generated commands; the pyroute2 backend runs the two-node e2e test.
 - AOT modules can only be deployed to firmware built with
-  `CONFIG_WAMR_AOT=y` (off by default); their permissions cannot be derived
-  from the module and default to `bacnet.local` + `bacnet.remote`.
+  `CONFIG_WAMR_AOT=y` (off by default; on the boards also
+  `CONFIG_WAMR_AOT_MPU_EXEC=y`, else `node_info` reports `wasm.aot: false`);
+  their permissions cannot be derived from the module and default to
+  `bacnet.local` + `bacnet.remote`.

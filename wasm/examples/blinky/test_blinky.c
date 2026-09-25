@@ -44,6 +44,24 @@ static void test_output_with_priority(void)
 	UC_CHECK(uc_stub_obj_exists(BO, 1));
 }
 
+/* A value object has no priority array: the priority is ignored and a
+ * regular stop writes "off" instead of relinquishing. */
+static void test_value_object_with_priority(void)
+{
+	uc_stub_obj_add(BV, 3, "Flag", 0.0);
+	uc_stub_param_set("instance", "3");
+	uc_stub_param_set("priority", "8");
+	UC_CHECK_INT(uc_stub_start(), 0);
+	uc_stub_run(1000);
+	UC_CHECK_NEAR(uc_stub_obj_pv(BV, 3), 1.0, 0);
+	UC_CHECK(!uc_stub_obj_prio(BV, 3, 8, NULL));
+	UC_CHECK_INT(uc_stub_client_relinquish(BV, 3, 8), UC_OK);
+	UC_CHECK_NEAR(uc_stub_obj_pv(BV, 3), 1.0, 0);
+	uc_stub_stop();
+	UC_CHECK(uc_stub_obj_exists(BV, 3));
+	UC_CHECK_NEAR(uc_stub_obj_pv(BV, 3), 0.0, 0);
+}
+
 static void test_missing_output_fails(void)
 {
 	uc_stub_param_set("type", "4");
@@ -80,6 +98,7 @@ int main(void)
 {
 	UC_RUN(test_default_binary_value);
 	UC_RUN(test_output_with_priority);
+	UC_RUN(test_value_object_with_priority);
 	UC_RUN(test_missing_output_fails);
 	UC_RUN(test_raw_channel);
 	UC_RUN(test_channel_without_permission);

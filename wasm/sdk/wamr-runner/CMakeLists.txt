@@ -54,7 +54,19 @@ set(WAMR_DISABLE_HW_BOUND_CHECK 1)
 set(WAMR_ROOT_DIR ${WAMR_ROOT})
 include(${WAMR_ROOT_DIR}/build-scripts/runtime_lib.cmake)
 
-add_library(vmlib STATIC ${WAMR_RUNTIME_LIB_SOURCE})
+# Linear memories as on the target: from the WAMR pool through the Zephyr
+# platform's os_mmap() (zephyr_memmap.c), with the firmware's page rounding
+# (modules/wasm-micro-runtime/wamr_linear_memory.c) in between.
+get_filename_component(UC_FW_WAMR_GLUE ${CMAKE_CURRENT_LIST_DIR}/../../../modules/wasm-micro-runtime
+                       ABSOLUTE)
+set(UC_WAMR_MEMORY_C ${WAMR_ROOT_DIR}/core/iwasm/common/wasm_memory.c)
+set_source_files_properties(${UC_WAMR_MEMORY_C} PROPERTIES COMPILE_OPTIONS
+  "-include;${UC_FW_WAMR_GLUE}/wamr_linear_memory.h;-include;${CMAKE_CURRENT_LIST_DIR}/zephyr_memmap.h")
+set_source_files_properties(${UC_FW_WAMR_GLUE}/wamr_linear_memory.c PROPERTIES
+  COMPILE_DEFINITIONS "os_mmap=uc_runner_zephyr_os_mmap")
+
+add_library(vmlib STATIC ${WAMR_RUNTIME_LIB_SOURCE} ${UC_FW_WAMR_GLUE}/wamr_linear_memory.c
+            ${CMAKE_CURRENT_LIST_DIR}/zephyr_memmap.c)
 set_target_properties(vmlib PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(vmlib PUBLIC m dl pthread)
 # invokeNative_em64.s has no .note.GNU-stack section

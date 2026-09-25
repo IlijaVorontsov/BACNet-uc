@@ -150,7 +150,9 @@ bool uc_mgmt_dec_value(zcbor_state_t *zsd, struct uc_mgmt_value *out);
 
 /** Convert a decoded <value> into the application value a property
  *  expects: numbers and bools via uc_value_from_double(), text as UTF-8
- *  CharacterString, null as NULL. -EBADMSG if not convertible. */
+ *  CharacterString, null as NULL. -EBADMSG if not convertible, -EINVAL for
+ *  a number that the datatype cannot hold exactly (not finite, a fraction
+ *  for an integer datatype, other than 0/1 for a binary present value). */
 int uc_mgmt_value_to_bacnet(const struct uc_mgmt_value *in, uint16_t type, uint32_t prop,
 			    BACNET_APPLICATION_DATA_VALUE *out);
 
@@ -197,6 +199,12 @@ union uc_mgmt_scratch {
 	struct uc_device_cfg device_cfg;
 	struct uc_bn_obj_info objs[UC_MGMT_OBJ_CHUNK];
 	BACNET_APPLICATION_DATA_VALUE value;
+	/* uc_node prop_read of a whole array/list: encoded value (one APDU)
+	 * and the element being converted */
+	struct {
+		uint8_t data[MAX_APDU];
+		BACNET_APPLICATION_DATA_VALUE value;
+	} prop;
 };
 
 extern union uc_mgmt_scratch uc_mgmt_scratch;

@@ -32,9 +32,12 @@ LittleFS image) and a unique ``--seed``. Process ids, addresses and commands
 are kept in ``<workdir>/sim-state.json`` so another process can stop the
 simulation.
 
-Rebooting: without ``CONFIG_NATIVE_SIM_REBOOT=y`` in the firmware,
-``sys_reboot()`` does not restart the process; use :meth:`SimManager.restart`
-(the harness does this for simulated nodes).
+Rebooting: the firmware's native_sim build sets ``CONFIG_NATIVE_SIM_REBOOT=y``,
+so ``os reset`` / ``kernel reboot`` restart the process in place (same pid,
+namespace, flash image and log). The harness reboots simulated nodes with
+:meth:`SimManager.restart` (kill and start again; also works for builds
+without that option) when it may (:meth:`SimManager.can_restart`: root for
+``netns``), else over SMP.
 """
 
 from __future__ import annotations
@@ -583,6 +586,17 @@ class SimManager:
             (self.workdir / STATE_FILE).unlink(missing_ok=True)
         self.state = None
         return {"stopped": stopped, "errors": errors}
+
+    def can_restart(self) -> bool:
+        """Whether :meth:`restart` can work here: ``netns`` needs root to enter
+        the namespace, ``compose`` the docker command."""
+        if self.state is None:
+            return False
+        if self.state.mode == "netns":
+            return _has_caps(CAP_NET_ADMIN, CAP_SYS_ADMIN)
+        if self.state.mode == "compose":
+            return shutil.which("docker") is not None
+        return True
 
     def restart(self, node: str, *, wait: float = 0.3) -> SimNode:
         """Kill and restart one node (its flash image is kept): the reboot of a

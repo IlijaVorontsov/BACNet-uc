@@ -386,6 +386,11 @@ async def test_system_workflow(server: Any,
         mf = str(fake_manifest(tmp_path / "fk.yaml", fa, fb))
         val = await client.call("validate_system", system=mf)
         assert val["ok"] and val["documents"]["b"]["apps"] == ["thermostat", "link"]
+        pool = val["wamr_pool"]["b"]
+        assert pool["status"] == "ok" and pool["pool"] == 262144
+        assert [a["app"] for a in pool["apps"]] == ["thermostat", "link"]
+        assert pool["apps"][1]["linear_memory"] == 8192  # uc-link: heap_kb 0
+        assert "a" not in val["wamr_pool"]  # no apps there
         val = await client.call("validate_system", system=mf, live_catalogs=True)
         assert val["ok"] and val["catalogs_from"] == ["a", "b"]
         plan = await client.call("plan_system", system=mf)
@@ -409,6 +414,16 @@ async def test_system_workflow(server: Any,
         assert not fa.io_channels["ai0"].forced  # released after the test
         only = await client.call("run_system_tests", system=mf, tests=["sensor"])
         assert only["ok"] and only["passed"] == 1
+        # an io.json change on b restarts the link that drives b's binary-output:1
+        started = fb.apps["link"]["started_at"]
+        res = await client.call("configure_io", node="b", points=[
+            {"channel": "do0", "type": "binary-output", "instance": 1, "name": "Lamp"}])
+        assert res["restarted_apps"] == ["link"] and fb.apps["link"]["started_at"] != started
+        plan = await client.call("plan_system", system=mf)
+        assert [(a["node"], a["kind"], a["target"]) for a in plan["actions"]] == [
+            ("b", "push_config", "io"), ("b", "restart_app", "link")]
+        res = await client.call("reload_config", node="b", doc="io")
+        assert res["restarted_apps"] == ["link"]
 
 
 async def test_validate_system_errors(server: Any, tmp_path: Path) -> None:

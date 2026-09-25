@@ -39,6 +39,13 @@ include = ["bacnet_uc_harness*"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+markers = [
+    "e2e: end-to-end tests against the native_sim firmware (skipped unless BACNET_UC_FIRMWARE names its zephyr.exe)",
+]
+filterwarnings = [
+    # pyroute2 forks to create network namespaces (netns simulation)
+    "ignore:This process .* is multi-threaded, use of fork:DeprecationWarning",
+]
 
 [tool.ruff]
 line-length = 100

@@ -23,11 +23,13 @@ Fields of a link, separated by single spaces:
 | `dst_type`, `dst_instance` | destination object on this node, numeric type |
 | `mode` | `cov` (SubscribeCOV, host falls back to polling if unsupported) or `poll` |
 | `period_ms` | poll period (poll mode) |
-| `priority` | write priority 1..16 for commandable destinations, 0 = none |
+| `priority` | write priority 1..16 for a commandable destination (analog-output, binary-output, multi-state-output), 0 = none. Value objects (analog-value, binary-value, multi-state-value) of BACnet-uc nodes have no priority array and ignore it: use 0 for them |
 | `scale`, `offset` | destination = source * scale + offset |
 
 Example: `l0 = "1001 0 1 2 10 cov 1000 0 1 0"` copies analog-input:1 of
-device 1001 into analog-value:10 of this node on every COV notification.
+device 1001 into analog-value:10 of this node on every COV notification
+(priority 0: a value object). `"1001 0 1 1 1 poll 1000 8 1 0"` polls it and
+commands analog-output:1 at priority 8.
 
 ## Behaviour
 
@@ -41,4 +43,10 @@ device 1001 into analog-value:10 of this node on every COV notification.
 - `uc_app_tick` (period = smallest poll period, min 100 ms): polls due
   `poll` links with `uc_remote_read` (or `uc_prop_read` for a local source)
   and writes the destination when the value changed.
+- On a regular stop, commandable destinations the app did not create and
+  wrote with a priority are relinquished at that priority; destinations it
+  created are deleted by the host.
 - Required permissions: `bacnet.local`, `bacnet.remote`.
+- Resources: uc-link does not allocate from the app heap; deploy it with
+  `heap_kb` 0 (or 4 where a non-zero value is wanted; keep `heap_kb` a
+  multiple of 4) and the default `stack_kb` 4.

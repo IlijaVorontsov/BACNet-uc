@@ -14,7 +14,6 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/logging/log_ctrl.h>
 
 /*
  * The guest ABI header provides UC_API_VERSION. Its guest-side prototypes
@@ -44,40 +43,6 @@
 
 LOG_MODULE_REGISTER(uc_main, CONFIG_UC_LOG_LEVEL);
 
-static const char *log_level_name(uint8_t level)
-{
-	switch (level) {
-	case LOG_LEVEL_ERR:
-		return "err";
-	case LOG_LEVEL_WRN:
-		return "wrn";
-	case LOG_LEVEL_INF:
-		return "inf";
-	case LOG_LEVEL_DBG:
-		return "dbg";
-	default:
-		return "?";
-	}
-}
-
-/* Runtime filter of every log source for every backend. Sources compiled
- * with a lower level keep their compiled level.
- */
-static void apply_log_level(uint8_t level)
-{
-#if defined(CONFIG_LOG_RUNTIME_FILTERING)
-	uint32_t count = log_src_cnt_get(Z_LOG_LOCAL_DOMAIN_ID);
-
-	for (uint32_t i = 0; i < count; i++) {
-		(void)log_filter_set(NULL, Z_LOG_LOCAL_DOMAIN_ID, (int16_t)i, level);
-	}
-	LOG_INF("log level %s (%u sources)", log_level_name(level), count);
-#else
-	LOG_WRN("CONFIG_LOG_RUNTIME_FILTERING disabled, log level %s not applied",
-		log_level_name(level));
-#endif
-}
-
 static void step_result(const char *step, int rc)
 {
 	if (rc < 0) {
@@ -99,7 +64,9 @@ int main(void)
 	rc = uc_storage_init();
 	step_result("storage", rc);
 
-	/* defaults are used for missing or rejected documents */
+	/* defaults are used for missing or rejected documents; applies the
+	 * device.json log level (also on every device.json reload)
+	 */
 	rc = uc_config_init();
 	if (rc < 0) {
 		LOG_WRN("configuration: %d (%s), defaults in use for rejected documents", rc,
@@ -109,7 +76,6 @@ int main(void)
 	}
 
 	uc_config_get_device(&dev);
-	apply_log_level(dev.log_level);
 	LOG_INF("device %u \"%s\", %s, BACnet/IP UDP %u", dev.instance, dev.name,
 		dev.dhcp ? "DHCPv4" : dev.ipv4, dev.udp_port);
 

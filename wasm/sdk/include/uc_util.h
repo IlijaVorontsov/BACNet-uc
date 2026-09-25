@@ -456,6 +456,15 @@ static inline bool uc_obj_is_binary(uint32_t type)
 	       (type == UC_OBJ_BINARY_VALUE);
 }
 
+/** Present_Value with a priority array on BACnet-uc nodes: AO, BO, MSO.
+ *  The value objects AV, BV, MSV ignore the write priority, and a
+ *  relinquish (NULL write) leaves them unchanged (bacnet_uc.h). */
+static inline bool uc_obj_is_commandable(uint32_t type)
+{
+	return (type == UC_OBJ_ANALOG_OUTPUT) || (type == UC_OBJ_BINARY_OUTPUT) ||
+	       (type == UC_OBJ_MULTI_STATE_OUTPUT);
+}
+
 /** Types uc_obj_create() accepts: AI AO AV BI BO BV MSI MSO MSV. */
 static inline bool uc_obj_is_creatable(uint32_t type)
 {

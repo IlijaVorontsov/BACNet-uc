@@ -23,7 +23,7 @@ untrusted parties can reach.
 | Control logic (WebAssembly apps, links, parameters) | wrong logic = wrong plant behaviour |
 | Node configuration (`/lfs/cfg/*.json`) | identity, addressing, IO mapping |
 | Firmware image | full control of the node |
-| Credentials (planned: DTLS PSKs/keys, app signing keys) | authority over nodes |
+| Credentials: the BACnet DCC/ReinitializeDevice password (`device.json` `bacnet.password`); planned: DTLS PSKs/keys, app signing keys | authority over nodes |
 | Availability of the node and of the BACnet network | supervision, alarms |
 | Logs | diagnosis; may reveal topology |
 
@@ -72,13 +72,13 @@ between agent and harness, (5) the build inputs.
 | Threat | Attack | Result today |
 |--------|--------|--------------|
 | T1 | WriteProperty to an output at priority 1 | accepted: BACnet/IP has no authentication |
-| T1 | ReinitializeDevice (cold/warm start) | accepted without password: the bacnet-stack device object has no ReinitializeDevice password unless one is set, and the firmware sets none; the node reboots after `CONFIG_BACNET_REINIT_REBOOT_DELAY` (3 s). Verified on `native_sim` (SimpleACK, then `sys_reboot()`) |
-| T1 | DeviceCommunicationControl | protected only by the bacnet-stack **default** DCC password `filister` (`h_dcc.c`, public source); the firmware does not change it. Verified on `native_sim`: DISABLE_INITIATION with this password returns SimpleACK, a wrong password returns security/password-failure; DISABLE is rejected as deprecated (protocol revision ≥ 20) |
-| T1 | CreateObject / DeleteObject | accepted: the bacnet-stack basic server registers both handlers and the firmware does not remove them. Verified on `native_sim`: DeleteObject of an IO-bound `analog-input:1` returns SimpleACK, the object disappears and the IO scan logs `Present_Value update failed: -2` until the next `reload io`; CreateObject of `analog-value:77` succeeds and the object is listed with owner `system` (open issue, [section 10](#10-open-issues)) |
+| T1 | ReinitializeDevice (cold/warm start) | refused with Error security/password-failure unless the request carries `device.json` `bacnet.password`; without a configured password every request is refused (`CONFIG_UC_BACNET_REQUIRE_PASSWORD=y`, default). With the right password the node reboots after `CONFIG_BACNET_REINIT_REBOOT_DELAY` (3 s). The password is sent in clear text (BACnet/IP), so an attacker who can sniff the subnet can learn it. Verified on `native_sim`: no password, a wrong one and `filister` get password-failure; the configured one gets SimpleACK |
+| T1 | DeviceCommunicationControl | same password and the same refusal without one; the bacnet-stack default DCC password `filister` no longer works. A build with `CONFIG_UC_BACNET_REQUIRE_PASSWORD=n` accepts DCC and ReinitializeDevice without a password as long as none is configured. DISABLE is rejected as deprecated (protocol revision ≥ 20) |
+| T1 | CreateObject / DeleteObject | not supported in the default build: both services are unregistered, clients get Reject unrecognized-service. With `CONFIG_UC_BACNET_REMOTE_CREATE_DELETE=y` a client may create AI..MSV objects (owner `network`, counted against the 64-entry owner table: resources/no-space-for-object when full) and delete only those; system, IO and application objects answer object/object-deletion-not-permitted. Verified on `native_sim` with both builds |
 | T1 | Register-Foreign-Device, broadcast flooding | the stack's BVLC layer is built with BBMD support and accepts up to 5 foreign-device registrations ([bacnet.md](bacnet.md#6-bacnetip-datalink)) |
-| T2 | any SMP command over UDP 1337 | accepted: no authentication, no encryption. This includes file upload/download on `/lfs`, app install, IO force, `os reset`, and the **shell group** (remote shell commands, `CONFIG_MCUMGR_GRP_SHELL=y`) |
+| T2 | any SMP command over UDP 1337 | accepted: no authentication, no encryption. This includes file upload/download on `/lfs` (also reading `device.json` with the BACnet password in clear text), app install, IO force, `os reset`, and the **shell group** (remote shell commands, `CONFIG_MCUMGR_GRP_SHELL=y`) |
 | T2 | firmware upload (sysbuild builds) | MCUboot verifies an ECDSA P-256 signature, but the default key is MCUboot's public development key (`root-ec-p256.pem`): anyone can sign an image that boots |
-| T3 | out-of-bounds access, bad pointers | contained (section 5) |
+| T3 | out-of-bounds access, bad pointers | contained (section 5); WAMR 2.4.5's linear-memory allocation gap (bounds checks up to 4095 bytes beyond the allocated pool block) is closed by the firmware's WAMR glue |
 | T3 | writing any local object | allowed with `bacnet.local` (no per-object ACL) |
 | T5 | `apply_system(dry_run=false)`, `bacnet_write`, `io_force` | executed if the MCP client allows the call; `flash_firmware`/`update_firmware` need `confirm=true`; `node_shell` is disabled unless enabled at server start |
 | T6 | console UART | shell (`uc` commands, `kernel`, `fs`, `net`) and SMP over the shell transport, no login |
@@ -134,18 +134,20 @@ Planned DTLS design:
 | MCP over stdio (no network listener) by default; HTTP binds `127.0.0.1` by default | **Implemented** |
 | The HTTP endpoint has no authentication; do not bind it to other addresses | recommendation |
 | Run the harness as an unprivileged user; root only for `sim_start(mode="netns")` (or use `mode="compose"`) | recommendation |
-| Inventory and manifests contain no secrets | **Implemented** (nothing to store yet); must stay true when DTLS arrives |
+| Inventory contains no secrets | **Implemented**; must stay true when DTLS arrives |
+| Manifests contain the BACnet password (`nodes[].bacnet.password`, rendered into `device.json`) in clear text; `get_config` returns it to the agent | fact; use a site-specific password, keep manifests with passwords out of public repositories (the examples use placeholders shared through `{{ nodes.<n>.bacnet.password }}`) |
 
 ## 5. Applications (WebAssembly)
 
 | Control | Status | Detail |
 |---------|--------|--------|
-| Sandbox: linear memory with bounds checks, no access to firmware memory or peripherals except through host functions | **Implemented** | WAMR fast interpreter; AOT is disabled (`CONFIG_WAMR_AOT=n`), so no native code from modules runs |
+| Sandbox: linear memory with bounds checks, no access to firmware memory or peripherals except through host functions | **Implemented** | WAMR fast interpreter. Every linear memory is allocated with the size WAMR bounds-checks (rounded up to 4 KiB, `modules/wasm-micro-runtime/wamr_linear_memory.c`; WAMR 2.4.5 itself allocates the unrounded size). AOT is off by default (`CONFIG_WAMR_AOT=n`), so no native code from modules runs; see the AOT row below |
+| AOT and the MPU | **Available** (build option) | with `CONFIG_WAMR_AOT=y` the firmware refuses AOT files unless the WAMR pool is executable, which it checks in the MPU registers; WAMR's own MPU code (which corrupts the MPU setup) is not built. On the boards the pool becomes executable only with `CONFIG_WAMR_AOT_MPU_EXEC=y`, which clears XN of the whole MPU region: on the F767 all SRAM including DTCM (like an `XIP=n` image), on the MCXN947 only SRAMX. Executable, writable RAM means a WAMR loader bug or a malicious AOT file can run native code with full privileges: enable it only with trusted modules ([wasm-runtime.md](wasm-runtime.md#21-aot-and-the-mpu)) |
 | Import whitelist | **Implemented** | only `bacnet_uc` host functions and the libc-builtin subset link; unknown imports fail the load |
 | Pointer validation in every host function | **Implemented** | the full range `[ptr, ptr+len)` must lie in linear memory, offset 0 rejected; failures return `UC_ERR_INVALID` instead of trapping |
 | Permissions per app (`bacnet.local`, `bacnet.remote`, `io`, `kv`) checked per host call | **Implemented** | `UC_ERR_PERM` otherwise |
 | Object ownership | **Implemented** | an app deletes only its own objects; its objects disappear when it stops |
-| Watchdog per callback | **Implemented** | `CONFIG_UC_APP_WATCHDOG_MS` (2 s) of execution time; `wasm_runtime_terminate()` |
+| Watchdog per callback | **Implemented** | `CONFIG_UC_APP_WATCHDOG_MS` (2 s) of execution time; `wasm_runtime_terminate()`. On `native_sim` (simulated time does not advance in a busy loop) an instruction budget per callback, `CONFIG_WAMR_INSTRUCTION_LIMIT`, instead; it does not cover AOT code |
 | Resource quotas | **Implemented** | WAMR pool per board, `heap_kb`, `stack_kb`, module ≤ 256 KiB, 16 queued events, 20 log lines/s, 16 COV subscriptions and 8 client slots shared per node, kv values ≤ 256 bytes |
 | kv store confinement | **Implemented** | keys `[A-Za-z0-9_.-]{1,31}` except `.` and `..`, stored under `/lfs/data/<app>/` |
 | API version check | **Implemented** | the host refuses a module whose `UC_API_VERSION` major differs |
@@ -195,9 +197,8 @@ writable property of every device.
 |---------|--------|--------|
 | Network segmentation (BACnet VLAN, ACLs on UDP 47808) | recommendation | section 3 |
 | BBMD hygiene: Broadcast Distribution Tables only with known BBMDs, foreign-device registrations only from known hosts, no BACnet/IP port forwarding from other networks | recommendation | the node's own BBMD support (5 FDT entries) should be firewalled from outside the BACnet VLAN |
-| Set a DCC password | **Planned** | `handler_dcc_password_set()` exists in bacnet-stack; needs a `device.json` field (schema change) |
-| Set a ReinitializeDevice password | **Planned** | `Device_Reinitialize_Password_Set()` exists; same |
-| Remove or restrict CreateObject/DeleteObject | **Planned** | open issue (section 10) |
+| DCC and ReinitializeDevice password | **Implemented** | `device.json` `bacnet.password` (1..20 printable ASCII), applied at start and on `reload device`; refused without a password unless `CONFIG_UC_BACNET_REQUIRE_PASSWORD=n` |
+| CreateObject/DeleteObject | **Implemented** | off by default (`CONFIG_UC_BACNET_REMOTE_CREATE_DELETE=n`); with the option only `network` objects can be deleted |
 | Priority discipline: operator at 8, applications at 10..14 | convention | [bacnet.md](bacnet.md#34-priority-array-use-convention) |
 | BACnet Secure Connect (TLS 1.3 over WebSockets, device certificates) | **Planned** | bacnet-stack contains the BACnet/SC datalink; see [roadmap.md](roadmap.md) |
 
@@ -205,7 +206,7 @@ writable property of every device.
 
 | Rule | Status |
 |------|--------|
-| No secrets in logs: no credentials exist today; the planned DTLS and signing code must not log key material, PSK identities are logged at most as a fingerprint | **Implemented** by absence; rule for new code |
+| No secrets in logs: the BACnet password is never logged or printed (`uc cfg show device` prints `password: configured` / `none`); the planned DTLS and signing code must not log key material, PSK identities are logged at most as a fingerprint | **Implemented**; rule for new code |
 | Logs are readable by every SMP client (`/lfs/log/log.NNNN` through the FS group) and sent in clear text with the syslog option (`overlay-syslog.conf`, UDP 514) | fact; keep syslog on the management VLAN |
 | Application log lines are application-controlled text (max 120 characters, 20 lines/s per app) | **Implemented** limits; treat content as untrusted |
 | Log level is configurable at run time (`device.json` `log.level`); `dbg` reveals request details | **Implemented**; use `inf` in production |
@@ -232,8 +233,8 @@ actions on the plant.
 
 | Issue | Where | Proposed fix |
 |-------|-------|--------------|
-| CreateObject and DeleteObject handlers of the bacnet-stack basic server are active: any BACnet client can delete IO- and app-owned objects and create objects that the firmware reports with owner `system` | `firmware/src/bacnet/uc_bn_node.c` after `bacnet_basic_init()` | unregister both services (the PICS in [bacnet.md](bacnet.md#10-pics-skeleton) does not claim them) or check the owner table in a wrapper handler |
-| ReinitializeDevice has no password; DCC uses the bacnet-stack default password | `uc_bn_node.c` | set both from new `device.json` fields; refuse ReinitializeDevice when no password is configured (build option) |
+| The BACnet password is stored in clear text in `/lfs/cfg/device.json`, which every SMP client can download | firmware | restrict the FS group with an access hook (section 4.1) and add SMP authentication (DTLS); or store only a hash (bacnet-stack compares clear text, so this needs a wrapper) |
+| `CONFIG_WAMR_AOT_MPU_EXEC` makes the whole SRAM region executable on the F767 | `modules/wasm-micro-runtime` | a dedicated executable region for the pool (W^X), see [roadmap.md](roadmap.md#33-aot-by-default-on-the-nucleo-f767zi) |
 | SMP shell group enabled in the default configuration | `firmware/prj.conf` | production overlay (`overlay-production.conf`, **Planned**) with `CONFIG_MCUMGR_GRP_SHELL=n` |
 | MCUboot development key | `firmware/sysbuild.conf` | document and enforce a site key (CI fails when the default key is used for a release build) |
 | No DTLS | firmware + harness | section 4.1 |
@@ -264,8 +265,8 @@ files, MIT and others for examples) is summarised in the top-level
 | 2 | Build with sysbuild and a site signing key; enable downgrade prevention with versioned images | T2, T4 |
 | 3 | Disable the SMP shell group; consider the FS access hook | T2 |
 | 4 | Lock the debug port | T6 |
-| 5 | Set DCC and ReinitializeDevice passwords (once supported) or block these services at the firewall | T1 |
+| 5 | Set a site-specific `bacnet.password` on every node (without one DCC and ReinitializeDevice are refused); keep `CONFIG_UC_BACNET_REMOTE_CREATE_DELETE=n` | T1 |
 | 6 | Run the MCP server without `--allow-shell`; allow only read-only tools without prompting | T5 |
 | 7 | Log level `inf`; syslog only on the management network | information exposure |
 | 8 | Keep manifests and app sources in git with review; build modules in CI | T4, T5 |
-| 9 | Once available: DTLS for SMP, signed applications, BACnet/SC | T1, T2, T3 |
+| 9 | Once available: DTLS for SMP, signed applications, BACnet/SC; leave AOT off (or `CONFIG_WAMR_AOT_MPU_EXEC=n`) unless all modules are trusted | T1, T2, T3 |

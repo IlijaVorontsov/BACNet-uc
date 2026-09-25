@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# Unit tests (ztest, native_sim/native/64) for uc_common.c and uc_config.c.
+# Unit tests (ztest, native_sim/native/64) for uc_common.c and uc_config.c,
+# one suite per module (uc_common, uc_config):
+#
+#   west build -b native_sim/native/64 BACNet-uc/firmware/tests/unit -d <dir> -t run
+#   west twister -T BACNet-uc/firmware/tests -p native_sim/native/64
+#
 # The firmware sources are compiled unchanged; uc_storage is replaced by an
 # in-memory stub (src/storage_stub.c). The JSON examples of schemas/examples
 # are embedded at build time so the tests follow the documented examples.

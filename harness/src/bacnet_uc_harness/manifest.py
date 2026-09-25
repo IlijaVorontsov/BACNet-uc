@@ -57,6 +57,11 @@ SUPPORTED_TYPES = frozenset({OBJ_AI, OBJ_AO, OBJ_AV, OBJ_BI, OBJ_BO, OBJ_BV, OBJ
 VALUE_TYPES = frozenset({OBJ_AV, OBJ_BV, OBJ_MSV})
 #: object types whose Present_Value can be written
 WRITABLE_TYPES = frozenset({OBJ_AO, OBJ_AV, OBJ_BO, OBJ_BV, OBJ_MSO, OBJ_MSV})
+#: commandable (priority array) in the firmware's bacnet-stack; value objects
+#: ignore the write priority (the last write wins) and a relinquish does nothing
+COMMANDABLE_TYPES = frozenset({OBJ_AO, OBJ_BO, OBJ_MSO})
+#: priority 6 is reserved for minimum on/off (write-access-denied)
+RESERVED_PRIORITY = 6
 
 #: io.schema.json: channel kind -> allowed object types
 CHANNEL_KIND_TYPES: dict[str, frozenset[str]] = {
@@ -430,6 +435,33 @@ class ObjectClaim:
 
 
 @dataclass(frozen=True)
+class PointRef:
+    """A BACnet point an application reads (``input``) or writes (``output``).
+    ``device`` is ``None`` for the app's own node."""
+
+    device: int | None
+    obj_type: int
+    instance: int
+    role: Literal["input", "output"]
+
+    @property
+    def key(self) -> tuple[int, int]:
+        return self.obj_type, self.instance
+
+
+def _param_device(p: Mapping[str, Any], key: str) -> int | None:
+    """A ``*_device`` parameter: ``None`` for the local device."""
+    v = _param(p, key)
+    if v is None or v.strip().lower() in ("", "local"):
+        return None
+    try:
+        dev = int(float(v))
+    except ValueError:
+        return None
+    return None if dev == 0xFFFFFFFF else dev
+
+
+@dataclass(frozen=True)
 class AppKind:
     """Knowledge about a stock application from ``wasm/examples``."""
 
@@ -437,6 +469,7 @@ class AppKind:
     source: str  # relative to wasm/examples
     objects: Callable[[Mapping[str, Any]], list[ObjectClaim]]
     perms: Callable[[Mapping[str, Any], int | None], list[str]]
+    points: Callable[[Mapping[str, Any]], list[PointRef]] = lambda p: []
 
 
 def _thermostat_objects(p: Mapping[str, Any]) -> list[ObjectClaim]:
@@ -509,14 +542,82 @@ def _link_objects(p: Mapping[str, Any]) -> list[ObjectClaim]:
     return out
 
 
+def _thermostat_points(p: Mapping[str, Any]) -> list[PointRef]:
+    return [
+        PointRef(_param_device(p, "sensor_device"), _param_int(p, "sensor_type", OBJ_AI) or 0,
+                 _param_int(p, "sensor_instance", 1) or 0, "input"),
+        PointRef(_param_device(p, "out_device"), _param_int(p, "out_type", OBJ_AO) or 0,
+                 _param_int(p, "out_instance", 1) or 0, "output"),
+    ]
+
+
+def _alarm_points(p: Mapping[str, Any]) -> list[PointRef]:
+    return [PointRef(_param_device(p, "src_device"), _param_int(p, "src_type", OBJ_AI) or 0,
+                     _param_int(p, "src_instance", 1) or 0, "input")]
+
+
+def _blinky_points(p: Mapping[str, Any]) -> list[PointRef]:
+    if _param(p, "channel"):
+        return []
+    return [PointRef(None, _param_int(p, "type", OBJ_BV) or 0, _param_int(p, "instance", 1) or 0,
+                     "output")]
+
+
+def _link_points(p: Mapping[str, Any]) -> list[PointRef]:
+    out = []
+    for i in range(min(_param_int(p, "count", 0) or 0, LINKS_PER_APP)):
+        line = _param(p, f"l{i}")
+        if not line:
+            continue
+        try:
+            lk = parse_link_line(line)
+        except ValueError:
+            continue
+        out.append(PointRef(lk["src_device"], lk["src_type"], lk["src_instance"], "input"))
+        out.append(PointRef(None, lk["dst_type"], lk["dst_instance"], "output"))
+    return out
+
+
 APP_KINDS: dict[str, AppKind] = {
     "thermostat": AppKind("thermostat", "thermostat/thermostat.c", _thermostat_objects,
-                          _thermostat_perms),
-    "alarm": AppKind("alarm", "alarm/alarm.c", _alarm_objects, _alarm_perms),
-    "blinky": AppKind("blinky", "blinky/blinky.c", _blinky_objects, _blinky_perms),
+                          _thermostat_perms, _thermostat_points),
+    "alarm": AppKind("alarm", "alarm/alarm.c", _alarm_objects, _alarm_perms, _alarm_points),
+    "blinky": AppKind("blinky", "blinky/blinky.c", _blinky_objects, _blinky_perms,
+                      _blinky_points),
     "uc-link": AppKind("uc-link", "uc-link/uc_link.c", _link_objects,
-                       lambda p, dev: ["bacnet.local", "bacnet.remote"]),
+                       lambda p, dev: ["bacnet.local", "bacnet.remote"], _link_points),
 }
+
+
+def app_points(kind: str | None, params: Mapping[str, Any]) -> list[PointRef]:
+    """Points a stock application reads or writes (empty for unknown apps)."""
+    k = APP_KINDS.get(kind or "")
+    return k.points(params) if k else []
+
+
+def apps_using_objects(entries: Iterable[Mapping[str, Any]], objects: Iterable[tuple[int, int]],
+                       own_instance: int | None) -> list[str]:
+    """Names of the apps in apps.json ``entries`` (stock kinds recognised by
+    name or file) that read or write one of the node's own ``objects``, e.g.
+    IO objects an ``io.json`` reload re-creates."""
+    keys = set(objects)
+    out = []
+    for e in entries:
+        name = str(e.get("name", ""))
+        params = e.get("params", {})
+        if isinstance(params, list):
+            params = {str(x.get("key")): x.get("value") for x in params if isinstance(x, Mapping)}
+        if not isinstance(params, Mapping):
+            params = {}
+        kind = detect_app_kind(name, None, e.get("file"))
+        if kind is None and re.fullmatch(r"link(-\d+)?", name) and "count" in params:
+            kind = "uc-link"  # the instances the harness generates from links
+        for ref in app_points(kind, params):
+            local = ref.device is None or (own_instance is not None and ref.device == own_instance)
+            if local and ref.key in keys:
+                out.append(name)
+                break
+    return out
 
 
 def detect_app_kind(name: str, source: str | Path | None, wasm: str | Path | None) -> str | None:
@@ -610,6 +711,10 @@ class AppSpec:
     def object_claims(self) -> list[ObjectClaim]:
         k = APP_KINDS.get(self.kind or "")
         return k.objects(self.params) if k else []
+
+    def point_refs(self) -> list[PointRef]:
+        """Points the app reads/writes (stock kinds only)."""
+        return app_points(self.kind, self.params)
 
 
 @dataclass
@@ -946,9 +1051,21 @@ class _Checker:
                 where = _ptr("links", lk.index, "to")
                 if lk.dst_type < 0:
                     continue
-                if key in dests and dests[key].priority == lk.priority:
+                if key in dests and lk.dst_type not in COMMANDABLE_TYPES:
+                    self.err(where, f"{lk.to_ref} is also written by link /links/"
+                             f"{dests[key].index}: a value object has no priority array, the "
+                             "last write wins (use an output object with distinct priorities)")
+                elif key in dests and dests[key].priority == lk.priority:
                     self.err(where, f"{lk.to_ref} is also written by link "
                              f"/links/{dests[key].index} at the same priority")
+                if lk.priority == RESERVED_PRIORITY and lk.dst_type in COMMANDABLE_TYPES:
+                    self.err(_ptr("links", lk.index, "priority"),
+                             "priority 6 is reserved for minimum on/off; the node rejects "
+                             "writes at it (write-access-denied)")
+                elif lk.priority and lk.dst_type in VALUE_TYPES:
+                    self.warn(_ptr("links", lk.index, "priority"),
+                              f"{enums.object_type_name(lk.dst_type)} has no priority array on "
+                              f"BACnet-uc nodes: priority {lk.priority} is ignored (use 0)")
                 dests.setdefault(key, lk)
                 if key in app_objs:
                     self.warn(where, f"{lk.to_ref} is created by {app_objs[key]}; the uc-link "
@@ -987,14 +1104,36 @@ class _Checker:
                         if not self.s.has_node(node):
                             self.err(where + "/point", f"unknown node {node!r}")
                         try:
-                            enums.parse_object_ref(obj)
+                            obj_type, _ = enums.parse_object_ref(obj)
                         except ValueError as exc:
                             self.err(where + "/point", str(exc))
+                            obj_type = -1
                         prop = body.get("property", "present-value")
                         try:
-                            enums.property_number(prop)
+                            prop_num = enums.property_number(prop)
                         except ValueError as exc:
                             self.err(where + "/property", str(exc))
+                            prop_num = -1
+                        if kind == "write" and prop_num == enums.PROP_PRESENT_VALUE:
+                            self._test_write(where, obj_type, body)
+
+    def _test_write(self, where: str, obj_type: int, body: Mapping[str, Any]) -> None:
+        prio = body.get("priority")
+        if obj_type in VALUE_TYPES:
+            name = enums.object_type_name(obj_type)
+            if body.get("value") is None:
+                self.warn(where + "/value", f"{name} has no priority array on BACnet-uc "
+                          "nodes: writing null (relinquish) does not change it; write the "
+                          "value to restore instead")
+            elif prio == RESERVED_PRIORITY and obj_type == OBJ_AV:
+                self.err(where + "/priority", "analog-value rejects priority 6 "
+                         "(write-access-denied)")
+            elif prio:
+                self.warn(where + "/priority", f"{name} has no priority array on BACnet-uc "
+                          f"nodes: priority {prio} is ignored")
+        elif obj_type in COMMANDABLE_TYPES and prio == RESERVED_PRIORITY:
+            self.err(where + "/priority", "priority 6 is reserved for minimum on/off "
+                     "(write-access-denied)")
 
     def _test_channel(self, where: str, node: str, channel: str) -> None:
         if not self.s.has_node(node):

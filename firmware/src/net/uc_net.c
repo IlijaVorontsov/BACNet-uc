@@ -26,6 +26,11 @@
 #include "uc/uc_common.h"
 #include "uc/uc_net.h"
 
+#if defined(CONFIG_NATIVE_SIM_REBOOT) && defined(CONFIG_NET_NATIVE_OFFLOADED_SOCKETS)
+#include <posix_native_task.h>
+#include "nsi_host_trampolines.h"
+#endif
+
 LOG_MODULE_REGISTER(uc_net, CONFIG_UC_LOG_LEVEL);
 
 #define UC_NET_POLL_MS 100
@@ -165,3 +170,26 @@ void uc_net_ipv4_str(char *buf, size_t len)
 		(void)uc_strlcpy(buf, "0.0.0.0", len);
 	}
 }
+
+#if defined(CONFIG_NATIVE_SIM_REBOOT) && defined(CONFIG_NET_NATIVE_OFFLOADED_SOCKETS)
+/*
+ * native_sim reboot (sys_reboot() -> CONFIG_NATIVE_SIM_REBOOT) restarts the
+ * executable with execv(). NSOS opens its host sockets with SOCK_CLOEXEC, but
+ * a thread blocked in a socket call waits on a dup() of the descriptor
+ * without FD_CLOEXEC (nsos_adapt_dup(), Zephyr 4.4). That copy survives
+ * execv() and keeps the port bound: after the reboot SMP UDP fails with
+ * "Could not bind to receive socket (IPv4), err: 98". Close every host
+ * descriptor above stderr as the last exit task (after the flash and UART
+ * cleanup); the new image opens what it needs.
+ */
+#define UC_NET_HOST_FD_MAX 4096
+
+static void uc_net_close_host_fds(void)
+{
+	for (int fd = 3; fd < UC_NET_HOST_FD_MAX; fd++) {
+		(void)nsi_host_close(fd);
+	}
+}
+
+NATIVE_TASK(uc_net_close_host_fds, ON_EXIT, 999);
+#endif

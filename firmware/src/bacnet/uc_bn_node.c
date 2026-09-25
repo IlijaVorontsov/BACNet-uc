@@ -8,6 +8,12 @@
  * as a foreign device and installs static bindings. Provides the executor
  * that other threads use to run code in the BACnet thread and a status
  * snapshot readable from any thread.
+ *
+ * ReinitializeDevice and DeviceCommunicationControl use device.json
+ * bacnet.password (bacnet-stack: Device_Reinitialize_Password_Set(),
+ * handler_dcc_password_set(), which replaces the stack's default DCC
+ * password). Without a password both are refused with
+ * security/password-failure unless CONFIG_UC_BACNET_REQUIRE_PASSWORD=n.
  */
 #include <errno.h>
 #include <stdio.h>
@@ -25,6 +31,7 @@
 
 #include "bacnet/bacdef.h"
 #include "bacnet/bacaddr.h"
+#include "bacnet/bacerror.h"
 #include "bacnet/datalink/bip.h"
 #include "bacnet/datalink/bvlc.h"
 #include "bacnet/datalink/datalink.h"
@@ -57,6 +64,8 @@ LOG_MODULE_REGISTER(uc_bn_node, CONFIG_UC_LOG_LEVEL);
 #define BN_BIP_PORT_DEFAULT 0xBAC0
 /* Foreign device registration: minimum re-registration interval (s). */
 #define BN_FD_MIN_INTERVAL_S 5
+/* uc_bn_obj_count(): longest wait for the BACnet thread (ms). */
+#define BN_COUNT_TIMEOUT_MS 500
 
 /* ---------------------------------------------------------------------- */
 /* Thread and lifecycle state                                              */
@@ -441,6 +450,87 @@ static void bn_static_bindings_apply(const struct uc_device_cfg *old_cfg,
 	}
 }
 
+/* ---------------------------------------------------------------------- */
+/* ReinitializeDevice / DeviceCommunicationControl password                */
+/* ---------------------------------------------------------------------- */
+
+enum bn_pw_mode {
+	BN_PW_UNSET = 0, /* before the first bn_password_apply() */
+	BN_PW_SET,       /* bacnet.password checked by the stack */
+	BN_PW_REFUSE,    /* no password, CONFIG_UC_BACNET_REQUIRE_PASSWORD */
+	BN_PW_OPEN,      /* no password, requests accepted */
+};
+
+/* BACnet thread only. */
+static enum bn_pw_mode bn_pw_mode;
+
+static void bn_password_apply(const struct uc_device_cfg *cfg)
+{
+	const char *pw = cfg->bacnet_password;
+	bool have = (pw[0] != '\0');
+	enum bn_pw_mode mode = have ? BN_PW_SET
+				    : (IS_ENABLED(CONFIG_UC_BACNET_REQUIRE_PASSWORD) ? BN_PW_REFUSE
+										   : BN_PW_OPEN);
+
+	/* Both checks are skipped by the stack when no password is set (the
+	 * empty DCC password also replaces the stack default "filister");
+	 * BN_PW_REFUSE is enforced by the handlers below. */
+	if (!Device_Reinitialize_Password_Set(have ? pw : NULL)) {
+		LOG_ERR("ReinitializeDevice password not set");
+		mode = BN_PW_REFUSE;
+	}
+	handler_dcc_password_set(have ? pw : "");
+
+	if (mode != bn_pw_mode) {
+		switch (mode) {
+		case BN_PW_SET:
+			LOG_INF("ReinitializeDevice/DCC: password from device.json");
+			break;
+		case BN_PW_REFUSE:
+			LOG_INF("ReinitializeDevice/DCC refused: no bacnet.password");
+			break;
+		default:
+			LOG_WRN("ReinitializeDevice/DCC accepted without password");
+			break;
+		}
+	}
+	bn_pw_mode = mode;
+}
+
+/* Without a password (BN_PW_REFUSE) every request that the stack would
+ * process is answered with security/password-failure; empty and segmented
+ * requests still get the stack's Reject/Abort. */
+static bool bn_pw_refused(uint16_t service_len, const BACNET_CONFIRMED_SERVICE_DATA *service_data)
+{
+	return (bn_pw_mode != BN_PW_SET) && (bn_pw_mode != BN_PW_OPEN) && (service_len > 0) &&
+	       !service_data->segmented_message;
+}
+
+static void bn_rd_handler(uint8_t *service_request, uint16_t service_len, BACNET_ADDRESS *src,
+			  BACNET_CONFIRMED_SERVICE_DATA *service_data)
+{
+	if (bn_pw_refused(service_len, service_data)) {
+		LOG_WRN("ReinitializeDevice refused: no password configured");
+		uc_bn_reply_error(src, service_data, SERVICE_CONFIRMED_REINITIALIZE_DEVICE,
+				  ERROR_CLASS_SECURITY, ERROR_CODE_PASSWORD_FAILURE);
+		return;
+	}
+	handler_reinitialize_device(service_request, service_len, src, service_data);
+}
+
+static void bn_dcc_handler(uint8_t *service_request, uint16_t service_len, BACNET_ADDRESS *src,
+			   BACNET_CONFIRMED_SERVICE_DATA *service_data)
+{
+	if (bn_pw_refused(service_len, service_data)) {
+		LOG_WRN("DeviceCommunicationControl refused: no password configured");
+		uc_bn_reply_error(src, service_data,
+				  SERVICE_CONFIRMED_DEVICE_COMMUNICATION_CONTROL,
+				  ERROR_CLASS_SECURITY, ERROR_CODE_PASSWORD_FAILURE);
+		return;
+	}
+	handler_device_communication_control(service_request, service_len, src, service_data);
+}
+
 static void bn_fd_register(int64_t now)
 {
 	BACNET_IP_ADDRESS bbmd = { 0 };
@@ -504,6 +594,12 @@ static void bn_init_callback(void *context)
 	uc_bn_local_init_locked();
 	uc_bn_client_init_locked();
 	uc_bn_cov_init_locked();
+
+	/* replace the handlers of bacnet_basic_init() */
+	bn_password_apply(&bn_run_cfg);
+	apdu_set_confirmed_handler(SERVICE_CONFIRMED_REINITIALIZE_DEVICE, bn_rd_handler);
+	apdu_set_confirmed_handler(SERVICE_CONFIRMED_DEVICE_COMMUNICATION_CONTROL,
+				   bn_dcc_handler);
 
 	bacnet_reinitialize_device_init(CONFIG_BACNET_REINIT_REBOOT_DELAY);
 }
@@ -623,6 +719,31 @@ static void bn_status_update(void)
 	k_spin_unlock(&bn_status_lock, key);
 }
 
+static atomic_t bn_obj_count_val;
+
+static void bn_obj_count_fn(void *arg)
+{
+	ARG_UNUSED(arg);
+	atomic_set(&bn_obj_count_val, (atomic_val_t)Device_Object_List_Count());
+}
+
+uint32_t uc_bn_obj_count(void)
+{
+	struct uc_bn_status st;
+
+	if (uc_bn_in_thread()) {
+		return Device_Object_List_Count();
+	}
+	/* bn_obj_count_fn() only touches statics: a timeout is harmless */
+	if (uc_bn_started() &&
+	    (uc_bn_exec(bn_obj_count_fn, NULL, K_MSEC(BN_COUNT_TIMEOUT_MS)) == 0)) {
+		return (uint32_t)atomic_get(&bn_obj_count_val);
+	}
+	uc_bn_status_get(&st);
+
+	return st.objects;
+}
+
 void uc_bn_status_get(struct uc_bn_status *st)
 {
 	k_spinlock_key_t key;
@@ -671,6 +792,7 @@ static void bn_apply_cfg_locked(void *arg)
 		LOG_INF("device name/description/location updated ('%s')", bn_dev_name);
 	}
 	bn_apdu_options_apply(&bn_new_cfg);
+	bn_password_apply(&bn_new_cfg);
 	/* the stack keeps the device instance from boot */
 	bn_new_cfg.instance = bn_run_cfg.instance;
 	bn_static_bindings_apply(&bn_run_cfg, &bn_new_cfg);
@@ -695,6 +817,8 @@ static void bn_apply_cfg_locked(void *arg)
 	memcpy(bn_run_cfg.location, bn_new_cfg.location, sizeof(bn_run_cfg.location));
 	bn_run_cfg.apdu_timeout_ms = bn_new_cfg.apdu_timeout_ms;
 	bn_run_cfg.apdu_retries = bn_new_cfg.apdu_retries;
+	memcpy(bn_run_cfg.bacnet_password, bn_new_cfg.bacnet_password,
+	       sizeof(bn_run_cfg.bacnet_password));
 	bn_run_cfg.binding_count = bn_new_cfg.binding_count;
 	memcpy(bn_run_cfg.bindings, bn_new_cfg.bindings, sizeof(bn_run_cfg.bindings));
 }

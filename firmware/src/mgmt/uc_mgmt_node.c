@@ -29,12 +29,14 @@
 #include <zcbor_decode.h>
 #include <zcbor_encode.h>
 
+#include "bacnet/proplist.h"
+
 #include "uc/uc_storage.h"
 #include "uc/uc_net.h"
 #include "uc/uc_io.h"
 #if defined(CONFIG_UC_APPS)
-/* uc_apps_owner_name(): owner id -> app name, proposed for uc_apps.h */
-#include "apps/uc_app_internal.h"
+/* uc_apps_owner_name(): owner id -> app name */
+#include "uc/uc_apps.h"
 #endif
 
 #include "uc_mgmt_util.h"
@@ -72,9 +74,12 @@ static int node_info(struct smp_streamer *ctxt)
 	bool fs_ready = uc_storage_ready();
 	uint32_t installed = 0;
 	uint32_t running = 0;
+	uint32_t objects;
 	bool ok;
 
 	uc_bn_status_get(&st);
+	/* counted now: the snapshot lags creations/deletions */
+	objects = uc_bn_obj_count();
 	if ((st.device_name[0] == '\0') || (st.udp_port == 0U)) {
 		/* the BACnet thread has not published its status yet */
 		struct uc_device_cfg *dev = &uc_mgmt_scratch.device_cfg;
@@ -130,7 +135,7 @@ static int node_info(struct smp_streamer *ctxt)
 
 	     zcbor_tstr_put_lit(zse, "bacnet") && zcbor_map_start_encode(zse, 2) &&
 	     zcbor_tstr_put_lit(zse, "packets") && zcbor_uint32_put(zse, st.packets) &&
-	     zcbor_tstr_put_lit(zse, "objects") && zcbor_uint32_put(zse, st.objects) &&
+	     zcbor_tstr_put_lit(zse, "objects") && zcbor_uint32_put(zse, objects) &&
 	     zcbor_map_end_encode(zse, 2) &&
 
 	     zcbor_tstr_put_lit(zse, "apps") && zcbor_map_start_encode(zse, 2) &&
@@ -285,6 +290,9 @@ static void owner_str(uint8_t owner, char *buf, size_t size)
 {
 	if (owner == UC_OWNER_IO) {
 		(void)uc_strlcpy(buf, "io", size);
+	} else if (owner == UC_OWNER_NETWORK) {
+		/* CreateObject by a BACnet client */
+		(void)uc_strlcpy(buf, "network", size);
 	} else if (UC_OWNER_IS_APP(owner)) {
 		char name[UC_APP_NAME_MAX] = "";
 
@@ -385,13 +393,60 @@ static int node_objects(struct smp_streamer *ctxt)
 /* prop_read / prop_write                                                  */
 /* ---------------------------------------------------------------------- */
 
+/* "value": [<value>...] from the encoded elements of an array or list.
+ * Returns 0, -EBADMSG when an element has no application-tagged encoding
+ * (constructed data) or -ENOSPC when the list does not fit the response;
+ * on error nothing is encoded.
+ */
+static int put_value_list(struct smp_streamer *ctxt, uint16_t type, uint32_t instance,
+			  uint32_t prop, const uint8_t *data, int len)
+{
+	zcbor_state_t *zse = ctxt->writer->zs;
+	BACNET_APPLICATION_DATA_VALUE *v = &uc_mgmt_scratch.prop.value;
+	struct uc_mgmt_mark start;
+	int pos = 0;
+	int rc = 0;
+	bool ok;
+
+	uc_mgmt_mark_set(zse, &start);
+	ok = zcbor_tstr_put_lit(zse, "value") && zcbor_list_start_encode(zse, (size_t)len);
+	while (ok && (pos < len)) {
+		int n;
+
+		memset(v, 0, sizeof(*v));
+		n = bacapp_decode_application_data(&data[pos], (uint32_t)(len - pos), v);
+		if (n <= 0) {
+			rc = -EBADMSG;
+			break;
+		}
+		pos += n;
+		ok = uc_mgmt_put_value(zse, type, instance, prop, v) &&
+		     (uc_mgmt_room(ctxt) >= UC_MGMT_RSP_RESERVE);
+	}
+	ok = ok && (rc == 0) && zcbor_list_end_encode(zse, (size_t)len);
+	if (!ok) {
+		uc_mgmt_rewind(zse, &start);
+		return (rc != 0) ? rc : -ENOSPC;
+	}
+
+	return 0;
+}
+
 /* prop_read: {"type": tstr|uint, "instance": uint, "prop": tstr|uint,
  *             "index"?: int} -> {"value": <value>}
+ * Without "index" a BACnetARRAY or BACnetLIST property is returned whole
+ * as a CBOR array (rc LIMIT when it does not fit one response: read the
+ * size with "index": 0 and the elements with "index": 1..size). "index"
+ * on any other property is INVALID.
  */
 static int node_prop_read(struct smp_streamer *ctxt)
 {
 	zcbor_state_t *zse = ctxt->writer->zs;
 	BACNET_APPLICATION_DATA_VALUE *value = &uc_mgmt_scratch.value;
+	uint8_t *data = uc_mgmt_scratch.prop.data;
+	bool is_array;
+	bool is_list;
+	int len;
 	uint16_t type = 0;
 	uint32_t instance = 0;
 	uint32_t prop = 0;
@@ -410,6 +465,22 @@ static int node_prop_read(struct smp_streamer *ctxt)
 			  !uc_mgmt_found(req, ARRAY_SIZE(req), "prop") ||
 			  (instance > BACNET_MAX_INSTANCE))) {
 		rc = -EINVAL;
+	}
+	is_array = property_list_bacnet_array_member((BACNET_OBJECT_TYPE)type,
+						     (BACNET_PROPERTY_ID)prop);
+	is_list = property_list_bacnet_list_member((BACNET_OBJECT_TYPE)type,
+						   (BACNET_PROPERTY_ID)prop);
+	if ((rc == 0) && (index >= 0) && !is_array) {
+		rc = -EINVAL;
+	}
+	if ((rc == 0) && (index < 0) && (is_array || is_list)) {
+		len = uc_bn_prop_read_encoded(type, instance, prop, -1, data,
+					      sizeof(uc_mgmt_scratch.prop.data));
+		rc = (len < 0) ? len : put_value_list(ctxt, type, instance, prop, data, len);
+		if (rc < 0) {
+			LOG_DBG("prop_read %u:%u prop %u (all): %d", type, instance, prop, rc);
+		}
+		return node_errno(ctxt, rc);
 	}
 	if (rc == 0) {
 		rc = uc_bn_prop_read(type, instance, prop, index, value);

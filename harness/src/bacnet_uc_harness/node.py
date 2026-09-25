@@ -7,6 +7,13 @@ for the management interface and uses a
 one) for BACnet/IP. Configuration documents and application modules are
 compared by SHA-256 before uploading, so repeated deployments only transfer
 what changed.
+
+Configuration documents are *staged* (docs/management-protocol.md, "Staged
+documents"): :meth:`Node.push_config` uploads ``/lfs/cfg/<doc>.json.new`` and
+sends ``uc_node reload``; the firmware validates the staged file and renames
+it over the active document in one LittleFS commit, or deletes it and keeps
+the running configuration (rc ``INVALID``). An interrupted upload therefore
+never leaves a half-written active document behind.
 """
 
 from __future__ import annotations
@@ -23,9 +30,23 @@ from bacnet_uc_harness.bacnet import codec as bn_codec
 from bacnet_uc_harness.bacnet import enums
 from bacnet_uc_harness.bacnet.client import BacnetClient, parse_address
 from bacnet_uc_harness.errors import BacnetError, HarnessError, HarnessTimeout, SmpError
-from bacnet_uc_harness.manifest import ManifestError, validate_document
-from bacnet_uc_harness.render import APPS_DIR, DOC_NAMES, LOG_DIR, doc_bytes, doc_path
-from bacnet_uc_harness.smp.client import SmpClient, connect_serial, connect_udp
+from bacnet_uc_harness.manifest import ManifestError, apps_using_objects, validate_document
+from bacnet_uc_harness.render import (
+    APPS_DIR,
+    DOC_NAMES,
+    LOG_DIR,
+    STAGED_SUFFIX,
+    doc_bytes,
+    doc_path,
+)
+from bacnet_uc_harness.smp import groups as g
+from bacnet_uc_harness.smp.client import (
+    SmpClient,
+    connect_serial,
+    connect_udp,
+    normalize_manifest,
+)
+from bacnet_uc_harness.smp.codec import encode_frame
 
 NOT_FOUND_RC = frozenset({"NOT_FOUND", "FILE_NOT_FOUND", "ENOENT"})
 _LOG_NAME = re.compile(r"^log\.(\d{4})$")
@@ -239,24 +260,60 @@ class Node:
 
     async def push_config(self, doc_name: str, doc: Mapping[str, Any], *, reload: bool = True,
                           force: bool = False) -> dict[str, Any]:
-        """Validate, upload (if changed) and reload a configuration document.
+        """Validate, stage and activate a configuration document.
 
-        Returns ``{"doc", "path", "uploaded", "sha256", "reloaded",
-        "reboot_required"}``.
+        Unless ``force`` is set nothing is sent when the node's active
+        document already has the same SHA-256. Otherwise the document is
+        uploaded to ``/lfs/cfg/<doc>.json.new`` and, with ``reload``, activated
+        with ``uc_node reload``; the active document's hash is then checked.
+        Without ``reload`` the staged file waits for the next reload or boot.
+
+        Returns ``{"doc", "path", "staged_path", "uploaded", "sha256", "size",
+        "reloaded", "activated", "reboot_required"}``.
 
         Raises:
             ManifestError: ``doc`` violates ``schemas/<doc_name>.schema.json``.
+            HarnessError: the node rejected the staged document (it deleted
+                it and kept its configuration; :class:`SmpError` with rc
+                ``INVALID``), applying it failed (other rc; the document is
+                active), or the node did not activate it (firmware without
+                staged documents).
         """
         issues = validate_document(doc_name, dict(doc))
         if issues:
             raise ManifestError(issues, f"({doc_name}.json for node {self.name!r})")
         data = doc_bytes(doc)
-        res = await self.upload(doc_path(doc_name), data, force=force)
-        out: dict[str, Any] = {"doc": doc_name, **res, "reloaded": False,
-                               "reboot_required": False}
-        if reload and (res["uploaded"] or force):
+        sha = hashlib.sha256(data).hexdigest()
+        path = doc_path(doc_name)
+        staged = path + STAGED_SUFFIX
+        out: dict[str, Any] = {"doc": doc_name, "path": path, "staged_path": staged,
+                               "uploaded": False, "sha256": sha, "size": len(data),
+                               "reloaded": False, "activated": False, "reboot_required": False}
+        if not force and await self.file_sha256(path) == sha:
+            out["activated"] = True
+            return out
+        async with self._lock:
+            await (await self.smp()).fs_upload(staged, data)
+        out["uploaded"] = True
+        if not reload:
+            return out
+        try:
             out["reboot_required"] = await self.reload(doc_name)
-            out["reloaded"] = True
+        except SmpError as exc:
+            if exc.rc_name == "INVALID":
+                raise SmpError(exc.group, exc.rc, response=exc.response,
+                               message=f"{self.name}: {doc_name}.json rejected by the node "
+                               f"(rc {exc.rc_name}: staged document deleted, configuration "
+                               "unchanged; see read_logs)") from exc
+            raise
+        out["reloaded"] = True
+        active = await self.file_sha256(path)
+        if active != sha:
+            raise HarnessError(
+                f"{self.name}: {doc_name}.json was not activated (active document "
+                f"{active or 'missing'}, expected {sha}); does the firmware support staged "
+                f"documents ({staged})?")
+        out["activated"] = True
         return out
 
     # --- applications -------------------------------------------------------------------------
@@ -274,6 +331,18 @@ class Node:
 
     async def start_app(self, name: str) -> dict[str, Any]:
         await (await self.smp()).app_start(name)
+        return await self.app_status(name) or {"name": name}
+
+    async def restart_app(self, name: str) -> dict[str, Any]:
+        """Stop (when running) and start an app: it re-initialises, e.g.
+        re-subscribes and rewrites its outputs."""
+        smp = await self.smp()
+        status = await self.app_status(name)
+        if status is None:
+            raise HarnessError(f"{self.name}: app {name!r} is not installed")
+        if status.get("state") in ("running", "starting"):
+            await smp.app_stop(name)
+        await smp.app_start(name)
         return await self.app_status(name) or {"name": name}
 
     async def stop_app(self, name: str) -> dict[str, Any]:
@@ -301,6 +370,12 @@ class Node:
         """Upload a module to ``/lfs/apps/<name>.wasm`` (``.aot``) unless the node
         already has it (SHA-256), then install it with its manifest (``restart``
         replaces a running instance).
+
+        A manifest whose ``uc_app install`` request would not fit one SMP
+        request (many or long ``params``) is written into ``apps.json``
+        instead (staged, ``uc_node reload apps``), as
+        docs/management-protocol.md recommends; ``"installed_via"`` tells
+        which way was used.
         """
         data = bytes(data)
         if aot is None:
@@ -327,10 +402,65 @@ class Node:
             manifest["perms"] = list(perms)
         if params:
             manifest["params"] = params
-        await (await self.smp()).app_install(manifest)
+        smp = await self.smp()
+        request = encode_frame(g.OP_WRITE, g.GROUP_UC_APP, g.UC_APP_INSTALL, 0,
+                               normalize_manifest(manifest))
+        if len(request) > await smp.max_frame():
+            await self._install_via_apps_json(manifest)
+            via = "apps.json"
+        else:
+            await smp.app_install(manifest)
+            via = "install"
         return {"name": name, "file": path, "sha256": sha, "size": len(data),
                 "uploaded": not same_file or force, "stopped_for_upload": stopped,
-                "status": await self.app_status(name)}
+                "installed_via": via, "status": await self.app_status(name)}
+
+    async def _install_via_apps_json(self, manifest: Mapping[str, Any]) -> None:
+        """Add or replace the entry in apps.json and reload it; then make sure
+        the app runs (autostart) with the new module."""
+        name = str(manifest["name"])
+        entry = {k: v for k, v in manifest.items() if k != "restart"}
+        params = entry.get("params")
+        if isinstance(params, Mapping):
+            entry["params"] = [{"key": str(k), "value": str(v)} for k, v in params.items()]
+        doc = await self.get_config("apps") or {"schema": 1, "apps": []}
+        apps = [dict(e) for e in doc.get("apps", []) if isinstance(e, Mapping)]
+        names = [e.get("name") for e in apps]
+        if name in names:
+            apps[names.index(name)] = entry
+        else:
+            apps.append(entry)
+        status = await self.app_status(name)
+        if status is not None and status.get("state") in ("running", "starting"):
+            await (await self.smp()).app_stop(name)  # the reload starts it again
+        await self.push_config("apps", {"schema": 1, "apps": apps}, force=True)
+        status = await self.app_status(name)
+        if entry.get("autostart", True) and status is not None and \
+                status.get("state") not in ("running", "starting"):
+            await (await self.smp()).app_start(name)
+
+    async def restart_io_dependents(self) -> list[str]:
+        """Restart the running apps that read or write one of the node's IO
+        objects (stock apps and uc-link instances recognised from apps.json):
+        call after an ``io.json`` reload re-created those objects. Returns the
+        restarted app names."""
+        try:
+            apps_doc = await self.get_config("apps") or {}
+            io_keys = set()
+            for o in await self.objects():
+                if o.get("owner") == "io":
+                    io_keys.add(parse_object((str(o["type"]), int(o["instance"]))))
+            own = (await self.info()).get("device", {}).get("instance")
+        except (HarnessError, KeyError, TypeError, ValueError):
+            return []
+        names = apps_using_objects(apps_doc.get("apps", []), io_keys, own)
+        running = {a.get("name"): a.get("state") for a in await self.list_apps()}
+        out = []
+        for name in names:
+            if running.get(name) in ("running", "starting"):
+                await self.restart_app(name)
+                out.append(name)
+        return out
 
     async def install_app(self, entry: Mapping[str, Any]) -> dict[str, Any]:
         """Install an apps.json-style entry whose file is already on the node."""
@@ -412,9 +542,21 @@ class Node:
 
     async def prop_read(self, obj: str | tuple[str | int, int], prop: str | int = "present-value",
                         index: int | None = None) -> Any:
-        """Read a local property through SMP (``uc_node prop_read``)."""
+        """Read a local property through SMP (``uc_node prop_read``).
+
+        Arrays and lists without ``index`` come back whole; one that does not
+        fit a response (rc ``LIMIT``) is read element by element."""
         t, i = parse_object(obj)
-        return jsonable(await (await self.smp()).prop_read(t, i, prop, index))
+        smp = await self.smp()
+        try:
+            return jsonable(await smp.prop_read(t, i, prop, index))
+        except SmpError as exc:
+            if exc.rc_name != "LIMIT" or index is not None:
+                raise
+        count = await smp.prop_read(t, i, prop, 0)
+        if not isinstance(count, int):
+            raise HarnessError(f"{self.name}: array size of {prop} is not a number: {count!r}")
+        return [jsonable(await smp.prop_read(t, i, prop, k)) for k in range(1, count + 1)]
 
     async def prop_write(self, obj: str | tuple[str | int, int], prop: str | int, value: Any,
                          priority: int | None = None, index: int | None = None) -> None:

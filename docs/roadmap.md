@@ -22,23 +22,25 @@ flowchart LR
 
 | Area | Content | Reference |
 |------|---------|-----------|
-| Firmware | Zephyr v4.4.2 application for `nucleo_f767zi`, `frdm_mcxn947/mcxn947/cpu0`, `native_sim/native/64`; BACnet/IP device (B-ASC profile) with AI/AO/AV/BI/BO/BV/MSI/MSO/MSV objects; COV server and client; static bindings; foreign device registration | [architecture.md](architecture.md), [bacnet.md](bacnet.md) |
+| Firmware | Zephyr v4.4.2 application for `nucleo_f767zi`, `frdm_mcxn947/mcxn947/cpu0`, `native_sim/native/64` with a fixed RAM budget per board; BACnet/IP device (B-ASC profile) with AI/AO/AV/BI/BO/BV/MSI/MSO/MSV objects; COV server and client; static bindings; foreign device registration; DCC/ReinitializeDevice password, CreateObject/DeleteObject off by default | [architecture.md](architecture.md), [bacnet.md](bacnet.md) |
 | IO | devicetree IO catalog (`uc,io-channels`), `io.json` binding to BACnet objects, scaling, debouncing, forcing | [io.md](io.md) |
-| Storage and logs | LittleFS at `/lfs`, JSON configuration documents, rotating file log, optional syslog | [storage-and-logging.md](storage-and-logging.md) |
+| Storage and logs | LittleFS at `/lfs`, JSON configuration documents with staged (atomic) activation, rotating file log, optional syslog | [storage-and-logging.md](storage-and-logging.md) |
 | Management | MCUmgr/SMP over UDP and the console UART; custom groups `uc_app`, `uc_io`, `uc_node`; MCUboot image updates with sysbuild | [management-protocol.md](management-protocol.md) |
-| Applications | WAMR 2.4.5 fast interpreter, host ABI 1.0, permissions, watchdog, kv store; SDK (`uc-cc`, `uc-aot`, host stub, WAMR runner); examples `blinky`, `thermostat`, `alarm`, `uc-link` | [wasm-runtime.md](wasm-runtime.md), [`wasm/README.md`](../wasm/README.md) |
-| Harness | MCP server (36 tools, resources, prompts) and CLI; system manifests with validate/plan/apply/test; `native_sim` simulation in network namespaces, on the host or with docker compose | [harness-mcp.md](harness-mcp.md), [distributed-apps.md](distributed-apps.md), [simulation.md](simulation.md) |
+| Applications | WAMR 2.4.5 fast interpreter (AOT as a build option), host ABI 1.0, permissions, watchdog (instruction budget on `native_sim`), kv store; SDK (`uc-cc`, `uc-aot`, host stub, WAMR runner); examples `blinky`, `thermostat`, `alarm`, `uc-link` | [wasm-runtime.md](wasm-runtime.md), [`wasm/README.md`](../wasm/README.md) |
+| Harness | MCP server (36 tools, resources, prompts) and CLI; system manifests with validate (incl. WAMR pool budget)/plan/apply/test; `native_sim` simulation in network namespaces, on the host or with docker compose; end-to-end tests | [harness-mcp.md](harness-mcp.md), [distributed-apps.md](distributed-apps.md), [simulation.md](simulation.md) |
+| CI | GitHub Actions workflow: harness tests, SDK checks, firmware builds of the three boards (warnings as errors), unit tests, end-to-end tests (not run on GitHub yet) | [harness-mcp.md](harness-mcp.md#8-ci-usage) |
 
-State at the time of writing: the `native_sim/native/64` firmware builds and
-runs, the harness test suite passes (544 tests) and the end-to-end system
-tests of `harness/examples/systems/sim-demo.yaml` pass on `native_sim` (two
-nodes, three tests). The `nucleo_f767zi` and `frdm_mcxn947/mcxn947/cpu0`
-builds compile but **fail to link in the default configuration** (RAM
-overflow of 29 564 and 60 648 bytes; workaround and details in
-[getting-started.md](getting-started.md#verification-notes)). **Not yet
-done**: running the system on the two boards (performance figures in
-[bacnet.md](bacnet.md#8-performance-figures) and measured memory usage in
-[architecture.md](architecture.md#6-memory-budgets) are open).
+Current state: the `native_sim/native/64` firmware builds and runs, the
+harness test suite passes (596 tests, plus 10 end-to-end tests against the
+`native_sim` firmware) and the system tests of
+`harness/examples/systems/sim-demo.yaml` pass on `native_sim` (two nodes,
+three tests). The `nucleo_f767zi` and `frdm_mcxn947/mcxn947/cpu0` firmware
+builds and links without warnings in the default, `uc-ramfs` and MCUboot
+configurations (static memory usage in
+[architecture.md](architecture.md#62-measured-usage)). **Not yet done**:
+running the system on the two boards (performance figures in
+[bacnet.md](bacnet.md#8-performance-figures) and run-time memory use are
+open).
 
 ## Phase 1: hardware validation and security hardening
 
@@ -47,15 +49,13 @@ real boards and that can be deployed outside a lab network.
 
 | Item | Content | Rationale |
 |------|---------|-----------|
-| Board RAM budget | make both board targets link in the default configuration (WAMR pool placement in DTCM/SRAMX via the `uc,app-pool` chosen node, or smaller defaults) | prerequisite for everything else on hardware |
 | Hardware bring-up | run `sim-demo`-equivalent manifests on NUCLEO-F767ZI and FRDM-MCXN947 (SPI NOR on the F767, FlexSPI NOR on the MCXN947); record RAM/flash usage, loop timing, COV latency, app tick budgets | the simulation does not cover timing, drivers, flash or broadcasts ([simulation.md](simulation.md#7-limitations-compared-with-hardware)) |
-| Hardware CI | self-hosted runner with both boards on a bench network; nightly `firmware update` + `system apply` + `system test` | regressions in drivers and timing |
+| Hardware CI | self-hosted runner with both boards on a bench network; nightly `firmware update` + `system apply` + `system test`; first run of the existing GitHub workflow | regressions in drivers and timing |
 | SMP over DTLS | credentials provisioned over the console, `smp_udp_open()` with `CONFIG_MCUMGR_TRANSPORT_UDP_DTLS`, DTLS client in the harness | SMP is unauthenticated today ([security.md](security.md#41-smp-over-udp)) |
-| Production configuration | `overlay-production.conf`: SMP shell group off, log level `inf`, FS access hook restricting paths; site MCUboot key; downgrade prevention with versioned images | remove development defaults |
-| BACnet service policy | DCC and ReinitializeDevice passwords from `device.json` (schema change); CreateObject/DeleteObject removed or restricted to non-owned objects | verified exposure on `native_sim` ([security.md](security.md#21-current-exposure-default-build)) |
-| Robustness | hardware watchdog (IWDG on the F767, WWDT0 on the MCXN947) fed by the BACnet thread; configurable Relinquish_Default per `io.json` point; persistence of output priority arrays; `uc-link` rewrite after `reload io` | degraded-mode behaviour ([distributed-apps.md](distributed-apps.md#9-failure-modes-and-degraded-operation)) |
+| Production configuration | `overlay-production.conf`: SMP shell group off, log level `inf`, FS access hook restricting paths (also protects the BACnet password in `device.json`); site MCUboot key; downgrade prevention with versioned images | remove development defaults |
+| Robustness | hardware watchdog (IWDG on the F767, WWDT0 on the MCXN947) fed by the BACnet thread; configurable Relinquish_Default per `io.json` point; persistence of output priority arrays | degraded-mode behaviour ([distributed-apps.md](distributed-apps.md#9-failure-modes-and-degraded-operation)) |
 | Application ACL | per-object write permission (`bacnet.local` currently allows writing any local object) | least privilege for apps |
-| Harness | audit log of tool calls, rate limits for write tools, per-node protection flag, `nodes` filter for plan/apply, WAMR pool budgeting in `validate_system`, test step kinds `app` and `node` for failure tests | [harness-mcp.md](harness-mcp.md#7-safety-model) |
+| Harness | audit log of tool calls, rate limits for write tools, per-node protection flag, `nodes` filter for plan/apply, test step kinds `app` and `node` for failure tests, pool budget calibrated for the 32-bit targets | [harness-mcp.md](harness-mcp.md#7-safety-model) |
 
 Open questions:
 
@@ -169,9 +169,11 @@ flowchart LR
 | Build | sysbuild with two images (cpu0 firmware, cpu1 MS/TP image) and MCUboot for both |
 | Benefit | MS/TP timing isolated from BACnet/IP traffic, WebAssembly execution and flash operations on cpu0 |
 
-Open questions: RAM split between the cores (cpu0 has 320 KiB by default),
-updating two images consistently, debugging, and whether measurements from
-3.1 show that a single core is sufficient (then 3.2 is dropped).
+Open questions: RAM split between the cores (the firmware now gives cpu0
+SRAM A-G, 384 KiB, including the part Zephyr's default split reserves for
+cpu1; an MS/TP image on cpu1 needs that split back or SRAM H), updating two
+images consistently, debugging, and whether measurements from 3.1 show that
+a single core is sufficient (then 3.2 is dropped).
 
 ### 3.3 AOT by default on the NUCLEO-F767ZI
 
@@ -180,17 +182,21 @@ F767's Cortex-M7 has a double-precision FPU, and the application ABI passes
 every value as `double`, so AOT code on the F767 uses hardware double
 arithmetic directly; the MCXN947's FPU is single precision only.
 
-Prerequisites ([wasm-runtime.md](wasm-runtime.md#21-aot-and-the-mpu)):
+Done ([wasm-runtime.md](wasm-runtime.md#21-aot-and-the-mpu)): `CONFIG_WAMR_AOT`
+builds on both boards; WAMR 2.4.5's `disable_mpu_rasr_xn()`, which corrupts
+MPU regions on ARMv7-M, is not built; the firmware checks the MPU and loads
+AOT files only from an executable pool (`CONFIG_WAMR_AOT_MPU_EXEC` clears XN
+of the pool's region); `uc-aot` compiles with `--enable-multi-thread` for the
+watchdog and in indirect mode; the harness builds `.aot` per board for
+`aot: true`. Remaining:
 
-1. an executable RAM region with an MPU entry (ideally W^X: writable while
-   loading, executable afterwards),
-2. an allocator for that region registered with `set_exec_mem_alloc_func()`,
-3. removal of WAMR 2.4.5's `disable_mpu_rasr_xn()` call, which corrupts MPU
-   regions on ARMv7-M (upstream fix or local patch),
-4. watchdog-compatible AOT code (`uc-aot` compiles with
-   `--enable-multi-thread` for terminate checks),
-5. the harness builds `.aot` per board automatically (`aot: true` already
-   exists in manifests) and falls back to `.wasm` for firmware without AOT.
+1. run and measure AOT modules on the boards (so far QEMU for the MPU logic,
+   x86-64 AOT on `native_sim` only),
+2. a dedicated executable region instead of clearing XN of all SRAM on the
+   F767 (ideally W^X: writable while loading, executable afterwards), with an
+   allocator registered through `set_exec_mem_alloc_func()`,
+3. a fallback to `.wasm` in the harness for firmware without AOT,
+4. calibrate the harness's pool budget for Thumb AOT files.
 
 Open questions: executable, writable RAM weakens the sandbox argument (a bug
 in the AOT loader becomes code execution) — acceptable only together with
@@ -211,9 +217,9 @@ interpreter's translated module on the F767.
 
 Rationale: the only standard way to authenticate and encrypt BACnet traffic.
 
-Open questions: RAM for TCP, TLS 1.3 and certificate handling next to the
-WAMR pool on the MCXN947 (320 KiB for cpu0); certificate lifecycle
-(enrolment, renewal) without a management server.
+Open questions: RAM for TCP, TLS 1.3 and certificate handling on the
+MCXN947 (384 KiB for cpu0, about 34 KiB free in the current build);
+certificate lifecycle (enrolment, renewal) without a management server.
 
 ### 4.2 Web UI
 

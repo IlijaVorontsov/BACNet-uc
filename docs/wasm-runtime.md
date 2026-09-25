@@ -25,7 +25,7 @@ Implementation: [`firmware/src/apps/uc_app_mgr.c`](../firmware/src/apps/uc_app_m
 | Capability-based host API | the module sees only the functions of import module `bacnet_uc`, gated by per-application permissions |
 | Update without reflashing | a module is a file in `/lfs/apps`; installing, replacing or removing it takes seconds over SMP and needs no reboot |
 | Language choice | C (SDK), Rust, AssemblyScript, TinyGo, anything that targets `wasm32` |
-| Small artefacts | the example applications are 3.5..7.5 KiB |
+| Small artefacts | the example applications are 3.4..7.4 KiB (`.wasm`) |
 
 Costs and limits: interpretation is slower than native code (acceptable for
 control loops with periods of 10 ms and more); the fast interpreter keeps a
@@ -50,65 +50,89 @@ WAMR's `zephyr/module.yml` refers to external glue.
 | Feature | Setting | Kconfig / CMake |
 |---------|---------|-----------------|
 | Interpreter | fast interpreter (pre-translated internal bytecode) | `CONFIG_WAMR_FAST_INTERP=y` |
-| AOT loader | off by default (section 2.1) | `CONFIG_WAMR_AOT` |
+| AOT loader | off by default (section 2.1) | `CONFIG_WAMR_AOT`, `CONFIG_WAMR_AOT_MPU_EXEC` |
 | JIT, Fast JIT | off | |
 | C library for modules | libc-builtin (subset, `wasm/sdk/include/uc_libc.h`); no WASI | `WAMR_BUILD_LIBC_BUILTIN=1`, `WAMR_BUILD_LIBC_WASI=0` |
 | Bulk memory, reference types | on | `CONFIG_WAMR_BULK_MEMORY=y`, `CONFIG_WAMR_REF_TYPES=y` |
 | Thread manager | on, only for interruptible execution (the watchdog); WebAssembly threads are not available | `CONFIG_WAMR_THREAD_MGR=y`, `WASM_ENABLE_HEAP_AUX_STACK_ALLOCATION=1` |
+| Instruction metering | `native_sim` only: 100 000 000 interpreted instructions per call into a module (section 6) | `CONFIG_WAMR_INSTRUCTION_LIMIT` (0 = off, the default on the boards) |
 | SIMD, shared memory, multi-module, GC, exception handling, memory64, tail calls | off | |
 | Memory allocation | one static pool, `Alloc_With_Pool` | `CONFIG_UC_APP_POOL_SIZE` |
+| Linear memory allocation | rounded up to the 4 KiB page that WAMR bounds-checks (fix of a WAMR 2.4.5 gap, section 5) | `wamr_linear_memory.c` |
 | Build target | `THUMBV7EM_VFP` (F767), `THUMBV8M.MAIN_VFP` (MCXN947), `X86_64` (`native_sim`) | `CONFIG_WAMR_BUILD_TARGET` (derived from CPU and `CONFIG_FP_HARDABI`) |
 | Runtime log | on | `CONFIG_WAMR_LOG` |
 
-The pool is a static array in `.noinit` of the main RAM. A devicetree chosen
-node `uc,app-pool` pointing at a `zephyr,memory-region` places it elsewhere
-(for example the MCXN947's 96 KiB SRAMX); none of the board overlays sets it
-at the time of writing.
+The pool is a static array. The devicetree chosen node `uc,app-pool`
+(pointing at a `zephyr,memory-region`) selects its RAM region; without it the
+pool is in `.noinit` of the main RAM. The board overlays place it outside the
+main RAM:
+
+| Board | `uc,app-pool` | Pool |
+|-------|---------------|------|
+| `nucleo_f767zi` | `&dtcm` | 112 KiB of the 128 KiB DTCM (the Ethernet DMA buffers use 12.3 KiB of the rest) |
+| `frdm_mcxn947/mcxn947/cpu0` | `&sramx` | 96 KiB, all of SRAMX |
+| `native_sim/native/64` | - | 256 KiB in `.noinit` |
 
 ### 2.1 AOT and the MPU
 
 An AOT module (`.aot`, produced by `wamrc`) contains native machine code that
-WAMR copies into RAM and executes. On a Cortex-M this requires an MPU region
-that allows instruction fetches from that RAM. WAMR 2.4.5's Zephyr platform
-layer (`core/shared/platform/zephyr/zephyr_platform.c`) handles this as
-follows:
+WAMR copies into its pool and executes there. On a Cortex-M this requires
+that the MPU allows instruction fetches from the pool. Zephyr's default MPU
+configuration marks SRAM execute-never whenever the image executes in place
+from flash (`CONFIG_XIP=y`, the case on both boards: `REGION_RAM_ATTR` in
+`arm_mpu_v7m.h` and `arm_mpu_v8.h`): the F767's DTCM is covered by the SRAM
+region with XN, the MCXN947's SRAMX by its own RAM region with XN.
 
-| Step | WAMR 2.4.5 behaviour | Consequence |
-|------|----------------------|-------------|
-| `bh_platform_init()` with AOT and `CONFIG_ARM_MPU` | calls `disable_mpu_rasr_xn()`: for MPU regions 0..7, if `RASR.XN` is set, executes `MPU->RASR \|= ~MPU_RASR_XN_Msk` | on ARMv7-M (Cortex-M7) this sets every RASR bit **except** XN (size, TEX/C/B, AP, subregion disables, enable) of each XN region instead of clearing XN: the regions are corrupted and XN stays set. Upstream bug; the intended statement is `MPU->RASR &= ~MPU_RASR_XN_Msk` |
-| same, on ARMv8-M (Cortex-M33) | `MPU_RASR_XN_Msk` does not exist in the ARMv8-M CMSIS headers (XN is in `RBAR`), so the loop body compiles to nothing | SRAM stays execute-never |
-| `os_mmap()` for code sections | `BH_MALLOC()` from the pool unless the embedder registered `set_exec_mem_alloc_func()` | code lands in the ordinary pool |
-| `os_mprotect()` | returns 0 without doing anything | no W^X handling |
-| cache maintenance | `os_dcache_flush()` cleans the D-cache on the Cortex-M7; `os_icache_flush()` calls `sys_cache_instr_flush_range()` | correct for code copied into RAM |
+WAMR 2.4.5's Zephyr platform layer
+(`core/shared/platform/zephyr/zephyr_platform.c`) tries to handle this and
+gets it wrong; the firmware does not build that part:
 
-Zephyr's default MPU configuration marks SRAM execute-never whenever the
-image executes in place from flash (`CONFIG_XIP=y`, the case on both boards:
-`REGION_RAM_ATTR` in `arm_mpu_v7m.h` and `arm_mpu_v8.h`). AOT code in the pool
-therefore faults on instruction fetch on both boards. The firmware ships with
-`CONFIG_WAMR_AOT=n`; `uc_node info` reports `"aot": false` and `uc_app
-install` rejects AOT files with rc `UNSUPPORTED`.
+| WAMR 2.4.5 | Behaviour | BACnet-uc glue |
+|------------|-----------|----------------|
+| `bh_platform_init()` with AOT and `CONFIG_ARM_MPU` calls `disable_mpu_rasr_xn()` | ARMv7-M: for MPU regions 0..7 with `RASR.XN` set it executes `MPU->RASR \|= ~MPU_RASR_XN_Msk`, which sets every other RASR bit and leaves XN set, i.e. switches those regions off instead of making them executable (upstream bug; intended: `&= ~`). ARMv8-M: `MPU_RASR_XN_Msk` does not exist (XN is in `RBAR`), the loop compiles to nothing | `zephyr_platform.c` is compiled with `WASM_ENABLE_AOT=0`, so the function is not built (a CMake check stops the build if a WAMR update changes this) |
+| `os_mmap()` for code sections | `BH_MALLOC()` from the pool, 8-byte aligned | in AOT builds the glue makes every `os_mmap()` block 16-byte aligned (x86-64 AOT code reads 16-byte constants with `movaps`) |
+| `os_mprotect()` | returns 0 without doing anything | - |
+| cache maintenance | `os_dcache_flush()` cleans the D-cache on the Cortex-M7; `os_icache_flush()` calls `sys_cache_instr_flush_range()` | used as is |
 
-**Planned** steps to enable AOT on a board:
+Instead, the application manager calls `wamr_zephyr_exec_enable()`
+(`modules/wasm-micro-runtime/wamr_zephyr_exec.c`) at start:
 
-1. Reserve an execution region: e.g. part of the MCXN947's SRAMX (code-bus
-   RAM) or a 32..64 KiB block of the F767's SRAM, as a `zephyr,memory-region`.
-2. Give it an MPU region with execute permission: a board-specific fixed
-   region (`CONFIG_CPU_HAS_CUSTOM_FIXED_SOC_MPU_REGIONS` style `mpu_regions`
-   table) or a run-time region; ideally writable while a module is loaded and
-   read-only/executable afterwards (W^X).
-3. Register an allocator for that region with `set_exec_mem_alloc_func()`
-   before `wasm_runtime_full_init()`.
-4. Remove the `disable_mpu_rasr_xn()` call (patch or upstream fix) so that the
-   other MPU regions stay intact.
-5. Compile modules with `wasm/sdk/uc-aot` (`--bounds-checks=1`,
-   `--enable-multi-thread` for watchdog checks, indirect mode on Cortex-M; see
-   [`wasm/README.md`](../wasm/README.md#uc-aot)). The AOT target must match
-   `CONFIG_WAMR_BUILD_TARGET` without the `_VFP` suffix (reported as
-   `wasm.aot_target` by `uc_node info`).
+| Target | What happens | Result |
+|--------|--------------|--------|
+| `nucleo_f767zi`, `frdm_mcxn947` (ARMv7-M and ARMv8-M MPU) | the MPU registers are read to check that every 32-byte granule of the pool is executable. Only with `CONFIG_WAMR_AOT_MPU_EXEC=y` is the XN attribute of the enabled regions that decide the access to the pool cleared first | without the option: AOT files are refused; with it: the whole region becomes executable, on the F767 all of SRAM including DTCM (like a `CONFIG_XIP=n` image), on the MCXN947 only SRAMX |
+| `native_sim` | the pool (page-aligned in AOT builds) is made executable with `mprotect()` | AOT files load |
+
+`uc_node info` reports `"aot": true` (with `aot_target`) only when AOT files
+can actually run; otherwise `uc_app install` and a start of an AOT file fail
+with rc `UNSUPPORTED` ("AOT: WAMR pool not executable" or "AOT modules not
+supported"). Without `CONFIG_WAMR_AOT` the firmware reports `"aot": false`.
+
+Status: `CONFIG_WAMR_AOT=y` builds without warnings for all three boards,
+on the boards with and without `CONFIG_WAMR_AOT_MPU_EXEC`. The four examples run as x86-64 AOT
+files on the `native_sim` firmware. On the boards the Thumb AOT files are
+compiled and symbol-checked, and the MPU check and XN clearing were
+exercised in QEMU (mps2/an385 ARMv7-M, mps2/an521 ARMv8-M); nothing has run
+on the real boards yet.
+
+Rules for AOT modules (`wasm/sdk/uc-aot`, [`wasm/README.md`](../wasm/README.md#uc-aot)):
+
+1. The AOT target must match `CONFIG_WAMR_BUILD_TARGET` without the `_VFP`
+   suffix (reported as `wasm.aot_target` by `uc_node info`).
+2. `--bounds-checks=1` (no hardware bounds checks on Zephyr).
+3. Cortex-M: indirect mode (uc-aot's default). In direct mode LLVM emits
+   calls to `__aeabi_memclr`, which WAMR 2.4.5's `aot_reloc_thumb.c` symbol
+   map lacks, and WAMR offers no way to extend that map from outside.
+4. `--enable-multi-thread` (uc-aot's default): only then does AOT code check
+   the terminate flag, so that the watchdog can stop it on the boards. The
+   instruction budget of `native_sim` does not apply to AOT code: an AOT busy
+   loop still hangs a `native_sim` node.
 
 Executable, writable RAM weakens the isolation argument of section 7: a bug
-in WAMR's AOT loader could turn into code execution. The interpreter needs no
-executable RAM.
+in WAMR's AOT loader or a crafted AOT file can run native code with full
+privileges. Enable AOT (and on the boards `CONFIG_WAMR_AOT_MPU_EXEC`) only
+with trusted modules; a dedicated W^X execution region is **Planned**
+([roadmap.md](roadmap.md#33-aot-by-default-on-the-nucleo-f767zi)). The
+interpreter needs no executable RAM.
 
 ## 3. Application model
 
@@ -140,7 +164,7 @@ Start sequence in the application's thread:
 2. If the entry has `sha256`, hash the file and compare (`VERIFY` on
    mismatch).
 3. Read the module into a pool buffer (WAMR references it until unload); check
-   the magic (`\0asm`, or `\0aot` with AOT support).
+   the magic (`\0asm`, or `\0aot` when AOT files can run, section 2.1).
 4. `wasm_runtime_load()`; every function import must be resolved (`bacnet_uc`
    host functions or libc-builtin in `env`), otherwise "unresolved import
    module.name".
@@ -189,14 +213,22 @@ Import module `"bacnet_uc"`. Pointers are offsets into the application's
 linear memory; the WAMR signature strings use `i` for i32 (also pointers),
 `I` for i64 and `F` for f64. All functions returning `int32_t` return ≥ 0 on
 success or a negative `UC_ERR_*` code. Every error return is counted in the
-application's `errors` statistic.
+application's `errors` statistic, except `UC_ERR_NOT_FOUND` of
+`uc_param_get`, `uc_param_get_number` and `uc_kv_get` (a missing parameter or
+key selects a default and is not an error).
+
+Pointer arguments: the host checks the whole range `[ptr, ptr + len)` (all 8
+bytes of a `double *`) against the linear memory. A NULL pointer (offset 0), a
+range outside the memory or a zero length where data is needed returns
+`UC_ERR_INVALID`; the host never traps on a bad pointer. (The libc-builtin
+functions of section 4.3 trap on invalid pointers instead.)
 
 ### 4.1 Error codes
 
 | Code | Value | Typical cause |
 |------|------:|---------------|
 | `UC_OK` | 0 | |
-| `UC_ERR_INVALID` | -1 | bad pointer or length, value out of range, malformed key, unsupported object type, buffer too small |
+| `UC_ERR_INVALID` | -1 | bad pointer or length; value the property's datatype cannot hold (NaN/infinity, a fraction for an integer datatype, out of range, not 0/1 for a binary value); array index on a non-array property; malformed key; unsupported object type; buffer too small |
 | `UC_ERR_NOT_FOUND` | -2 | unknown object/property, parameter, channel, key or subscription |
 | `UC_ERR_PERM` | -3 | permission missing in `perms`; write access denied by the object; write to an input channel |
 | `UC_ERR_TIMEOUT` | -4 | no confirmation within `timeout_ms` |
@@ -205,7 +237,7 @@ application's `errors` statistic.
 | `UC_ERR_BACNET` | -7 | the remote device answered with Error, Reject or Abort |
 | `UC_ERR_UNSUPPORTED` | -8 | feature not built into this firmware |
 | `UC_ERR_IO` | -9 | file system or hardware error |
-| `UC_ERR_TYPE` | -10 | property datatype not numeric, parameter not a number |
+| `UC_ERR_TYPE` | -10 | property datatype not numeric, parameter not a number, relinquish of an input's Present_Value or of a property without priorities |
 | `UC_ERR_EXISTS` | -11 | object exists and is owned by someone else |
 | `UC_ERR_NO_ROUTE` | -12 | remote device could not be bound |
 
@@ -218,15 +250,15 @@ application's `errors` statistic.
 | `int32_t uc_set_tick_period(uint32_t period_ms)` | `(i)i` | - | `UC_OK` | 0 disables ticks; otherwise 10..3 600 000 ms, else `INVALID`. Takes effect for the next tick (the period restarts) |
 | `int32_t uc_param_get(const char *key, uint32_t key_len, char *buf, uint32_t buf_len)` | `(iiii)i` | - | value length without NUL | `NOT_FOUND`; `INVALID` for a bad key (1..23 chars of `[A-Za-z0-9_.-]`), a bad buffer or `buf_len` < length. NUL-terminated only if it fits |
 | `int32_t uc_param_get_number(const char *key, uint32_t key_len, double *out)` | `(iii)i` | - | `UC_OK` | `strtod` of the value: `TYPE` if not a number; `NOT_FOUND`, `INVALID` |
-| `int32_t uc_obj_create(uint32_t type, uint32_t instance, const char *name, uint32_t name_len)` | `(iiii)i` | `bacnet.local` | `UC_OK` (also if already owned by this app) | types AI, AO, AV, BI, BO, BV, MSI, MSO, MSV else `INVALID`; name ≤ 63 bytes (empty: stack default name); `EXISTS` if owned by IO or another app; `NO_MEM` owner table full; `BUSY` |
+| `int32_t uc_obj_create(uint32_t type, uint32_t instance, const char *name, uint32_t name_len)` | `(iiii)i` | `bacnet.local` | `UC_OK` (also if already owned by this app) | types AI, AO, AV, BI, BO, BV, MSI, MSO, MSV else `INVALID`; name ≤ 63 bytes (empty: stack default name); `EXISTS` if owned by IO, another app or created over the network; `NO_MEM` owner table full; `BUSY` |
 | `int32_t uc_obj_delete(uint32_t type, uint32_t instance)` | `(ii)i` | `bacnet.local` | `UC_OK` | only objects owned by this app (`NOT_FOUND` / `PERM` otherwise) |
-| `int32_t uc_prop_read(uint32_t type, uint32_t instance, uint32_t prop, int32_t array_index, double *out)` | `(iiiii)i` | `bacnet.local` | `UC_OK` | any local object incl. Device; `array_index` -1 = whole property; `NOT_FOUND`, `TYPE` for non-numeric datatypes |
-| `int32_t uc_prop_write(uint32_t type, uint32_t instance, uint32_t prop, int32_t array_index, double value, uint32_t priority)` | `(iiiiFi)i` | `bacnet.local` | `UC_OK` | WriteProperty semantics: priority 0 = none (16 for commandable properties), 1..16; value converted to the property's datatype (`TYPE` if not numeric); `PERM` write access denied (e.g. input not Out_Of_Service); `INVALID` value out of range |
-| `int32_t uc_prop_write_null(uint32_t type, uint32_t instance, uint32_t prop, uint32_t priority)` | `(iiii)i` | `bacnet.local` | `UC_OK` | relinquish the priority slot of a commandable property (AO, BO, BV, MSO); `TYPE` on AV/MSV, which have no priority array |
+| `int32_t uc_prop_read(uint32_t type, uint32_t instance, uint32_t prop, int32_t array_index, double *out)` | `(iiiii)i` | `bacnet.local` | `UC_OK` | any local object incl. Device; `array_index` -1 (`UC_ARRAY_ALL`) = the property (of an array: its first element), 0 = array size, 1..n = element; an index on a property that is not an array is `INVALID`; `NOT_FOUND`, `TYPE` for non-numeric datatypes |
+| `int32_t uc_prop_write(uint32_t type, uint32_t instance, uint32_t prop, int32_t array_index, double value, uint32_t priority)` | `(iiiiFi)i` | `bacnet.local` | `UC_OK` | WriteProperty semantics: priority 0 = none (16 for the Present_Value of AO, BO, MSO), 1..16; AV, BV, MSV and other properties ignore the priority; value converted to the property's datatype (`TYPE` if not numeric, `INVALID` if the datatype cannot hold it); `PERM` write access denied (e.g. input not Out_Of_Service, priority 6 on AO/BO/MSO/AV) |
+| `int32_t uc_prop_write_null(uint32_t type, uint32_t instance, uint32_t prop, uint32_t priority)` | `(iiii)i` | `bacnet.local` | `UC_OK` | AO, BO, MSO Present_Value: clears that priority slot (0 = 16). AV, BV, MSV Present_Value (no priority array): `UC_OK`, nothing changes. Present_Value of inputs and other properties: `TYPE` |
 | `int32_t uc_prop_write_string(uint32_t type, uint32_t instance, uint32_t prop, const char *str, uint32_t len)` | `(iiiii)i` | `bacnet.local` | `UC_OK` | CharacterString properties (Object_Name, Description); length ≤ 63 |
 | `int32_t uc_remote_read(uint32_t device, uint32_t type, uint32_t instance, uint32_t prop, int32_t array_index, double *out, uint32_t timeout_ms)` | `(iiiiiii)i` | `bacnet.remote` (`bacnet.local` for the own device) | `UC_OK` | blocks up to `timeout_ms` (0 = 5000, max 600 000); `NO_ROUTE`, `TIMEOUT`, `BACNET`, `BUSY`, `TYPE`. The own device instance or `UC_DEVICE_LOCAL` is served locally |
-| `int32_t uc_remote_write(uint32_t device, uint32_t type, uint32_t instance, uint32_t prop, int32_t array_index, double value, uint32_t priority, uint32_t timeout_ms)` | `(iiiiiFii)i` | `bacnet.remote` (`bacnet.local` for the own device) | `UC_OK` | as above; the value is encoded as REAL for analog, ENUMERATED for binary PV, UNSIGNED for multi-state PV (known property datatypes of the stack) |
-| `int32_t uc_remote_write_null(uint32_t device, uint32_t type, uint32_t instance, uint32_t prop, uint32_t priority, uint32_t timeout_ms)` | `(iiiiii)i` | `bacnet.remote` | `UC_OK` | WriteProperty NULL at `priority` |
+| `int32_t uc_remote_write(uint32_t device, uint32_t type, uint32_t instance, uint32_t prop, int32_t array_index, double value, uint32_t priority, uint32_t timeout_ms)` | `(iiiiiFii)i` | `bacnet.remote` (`bacnet.local` for the own device) | `UC_OK` | as above; the value is converted like `uc_prop_write` (datatype from the stack's known property datatypes: REAL for analog, ENUMERATED for binary PV, UNSIGNED for multi-state PV) and rejected with `INVALID` before sending if it does not fit. A BACnet-uc peer's AV, BV, MSV ignore the priority |
+| `int32_t uc_remote_write_null(uint32_t device, uint32_t type, uint32_t instance, uint32_t prop, uint32_t priority, uint32_t timeout_ms)` | `(iiiiii)i` | `bacnet.remote` (`bacnet.local` for the own device) | `UC_OK` | WriteProperty NULL at `priority`; effect on a BACnet-uc node as for `uc_prop_write_null` |
 | `int32_t uc_cov_subscribe(uint32_t device, uint32_t type, uint32_t instance, uint32_t lifetime_s)` | `(iiii)i` | `bacnet.local` for local, `bacnet.remote` for remote | subscription id ≥ 0 | Present_Value only; current value delivered once, then changes ([bacnet.md](bacnet.md#52-client-for-applications)); `NO_MEM` when the application's or the node's table (16) is full |
 | `int32_t uc_cov_unsubscribe(int32_t sub_id)` | `(i)i` | - | `UC_OK` | only this instance's subscriptions (`NOT_FOUND` otherwise); no event of that subscription is delivered afterwards |
 | `int32_t uc_io_find(const char *name, uint32_t len)` | `(ii)i` | `io` | channel id ≥ 0 | `NOT_FOUND` |
@@ -235,10 +267,24 @@ application's `errors` statistic.
 | `int32_t uc_kv_get(const char *key, uint32_t key_len, void *buf, uint32_t buf_len)` | `(iiii)i` | `kv` | stored length (may exceed `buf_len`; `min(len, buf_len)` bytes copied) | key 1..31 chars of `[A-Za-z0-9_.-]`; `NOT_FOUND`, `IO` (storage not ready or read error). `buf_len` 0 queries the length |
 | `int32_t uc_kv_set(const char *key, uint32_t key_len, const void *val, uint32_t val_len)` | `(iiii)i` | `kv` | `UC_OK` | ≤ `CONFIG_UC_APP_KV_VALUE_MAX` (256) bytes else `INVALID`; written atomically (`<key>~` then rename) to `/lfs/data/<app>/<key>`; `IO` |
 
-Value conversions (`bacnet_uc.h`): REAL/DOUBLE ↔ value; UNSIGNED, SIGNED,
-ENUMERATED ↔ value (truncated toward zero on write); BOOLEAN ↔ 0.0/1.0;
-binary Present_Value ↔ 0.0 inactive / 1.0 active. Other datatypes give
-`UC_ERR_TYPE`.
+Value conversions: REAL/DOUBLE ↔ value (REAL: finite, within the float
+range); UNSIGNED, SIGNED, ENUMERATED ↔ value (integral and within the
+datatype's range on write); BOOLEAN ↔ 0.0/1.0; binary Present_Value,
+Relinquish_Default and priority-array entries ↔ 0.0 inactive / 1.0 active.
+A write of NaN, an infinity, a fraction for an integer datatype or a value
+out of range returns `UC_ERR_INVALID` (the same rules as SMP `prop_write`,
+[management-protocol.md](management-protocol.md#values)). Other datatypes
+give `UC_ERR_TYPE`. Note: the `Values` comment of `bacnet_uc.h` (API 1.0)
+still says "truncated toward zero on write", and the host stub
+(`wasm/sdk/host-stub`) still truncates multi-state values and turns any
+non-zero binary value into 1; the firmware rejects both with
+`UC_ERR_INVALID` (open issue for the SDK). Write integral values and 0/1.
+
+Priorities: only AO, BO and MSO have a priority array on BACnet-uc nodes;
+the value objects AV, BV and MSV take every write whatever its priority, and a
+relinquish of them succeeds without effect ([bacnet.md](bacnet.md#31-object-types)).
+`uc_app_on_write` reports the writer's priority (16 for a write without
+priority) also for value objects.
 
 Blocking: remote requests and kv file access block the calling application
 thread only. The watchdog is paused while they block. Local object access
@@ -272,27 +318,43 @@ linear memory (per instance, from the WAMR pool)
 Linear memory shrinking: a module declares one 64 KiB page, exports
 `__heap_base` and `__data_end` and does not use `memory.grow`; WAMR then
 truncates the memory at `__heap_base` and appends the app heap, so a small
-application needs 8..16 KiB of linear memory instead of 64 KiB. WAMR 2.4.5
-bounds-checks up to the next multiple of 4 KiB but allocates only the exact
-size; uc-cc therefore page-aligns `__heap_base` and `heap_kb` should be a
-multiple of 4 ([`wasm/README.md`](../wasm/README.md#linear-memory)).
+application needs 8..16 KiB of linear memory instead of 64 KiB.
 
-Pool consumption per application (figures measured with the host WAMR runner
-on x86-64, stack 4 KiB, heap 8 KiB; WAMR's structures are somewhat smaller on
-the 32-bit targets):
+Linear memory allocation: WAMR 2.4.5 bounds-checks a linear memory up to its
+size rounded up to the page size (4 KiB without an MMU), but its Zephyr
+platform allocates only the unrounded size from the pool, so a module whose
+memory size is not a multiple of 4 KiB could read and write up to 4095 bytes
+behind its pool block. The firmware closes this gap:
+`modules/wasm-micro-runtime/wamr_linear_memory.c` redirects every allocation
+of WAMR's `wasm_memory.c` to one that rounds up to the page size, so the block
+always covers the checked range (the build stops if a WAMR update changes the
+code this relies on). An access inside the rounding tail reaches the module's
+own zeroed memory; the first byte past the rounded bound traps. The rounding
+costs pool memory the module cannot use, so uc-cc page-aligns `__heap_base`
+and `heap_kb` should be a multiple of 4
+([`wasm/README.md`](../wasm/README.md#linear-memory)).
 
-| Module | image | translated module | instance | exec env | linear memory | total |
-|--------|------:|------:|------:|------:|------:|------:|
-| blinky | 3 470 | 12 144 | 2 400 | 4 720 | 16 384 | ~39 KiB |
-| thermostat | 7 505 | 23 504 | 3 296 | 4 720 | 16 384 | ~54 KiB |
-| alarm | 6 323 | 20 672 | 3 088 | 4 728 | 16 384 | ~50 KiB |
-| uc-link | 5 392 | 19 024 | 2 920 | 4 720 | 16 384 | ~47 KiB |
+Pool consumption per application, measured on the `native_sim` firmware
+(x86-64; `wasm.pool_free` of `uc_node info` before and after starting the
+module built by `make -C wasm`, `stack_kb` 4). WAMR's structures are somewhat
+smaller on the 32-bit targets, so these figures are conservative for the
+boards:
 
-With `heap_kb: 0` (none of the examples allocates) the linear memory shrinks
-to 8 KiB per application. Measured on `native_sim`: blinky and thermostat, both
-with `heap_kb: 0`, use 76 504 bytes of the pool together. The 128 KiB pool of the F767 then holds three of
-the examples, the 96 KiB pool of the MCXN947 two. `uc_node info` reports
-`wasm.pool_total` and `wasm.pool_free` of the running node.
+| Module | `.wasm` | `heap_kb: 8` | `heap_kb: 0` |
+|--------|--------:|-------------:|-------------:|
+| blinky | 3 497 B | 38 768 B | 28 464 B |
+| thermostat | 7 536 B | 54 856 B | 44 552 B |
+| alarm | 6 268 B | 49 576 B | 39 272 B |
+| uc-link (one link) | 5 419 B | 46 832 B | 36 528 B |
+
+None of the examples allocates from the app heap, so `heap_kb: 0` is
+sufficient for them (the harness deploys `uc-link` with 0). All four together
+with `heap_kb: 0` use 154 392 B of the 256 KiB `native_sim` pool. By these
+figures the F767's 112 KiB pool holds three of the examples with
+`heap_kb: 0`, the MCXN947's 96 KiB pool two. `uc_node info` reports
+`wasm.pool_total` and `wasm.pool_free` of the running node, and the harness's
+`validate_system` estimates the pool use of every node of a manifest and warns
+above 90 % ([distributed-apps.md](distributed-apps.md#4-placement-rules)).
 
 ## 6. Scheduling and timing
 
@@ -302,18 +364,20 @@ the examples, the 96 KiB pool of the MCXN947 two. `uc_node info` reports
 | Relation to BACnet | the BACnet thread (5), network threads and SMP (3) preempt applications; an application cannot delay BACnet responses or the IO scan |
 | Tick jitter | a tick runs when its thread is scheduled after the timer expired; with idle higher-priority threads this is within a scheduler tick |
 | Event latency | a COV notification or write is delivered after the running callback returns |
-| Watchdog | each callback may execute for `CONFIG_UC_APP_WATCHDOG_MS` (2000 ms); time blocked in remote requests or kv access does not count |
+| Watchdog | each callback may execute for `CONFIG_UC_APP_WATCHDOG_MS` (2000 ms); time blocked in remote requests or kv access does not count (the watchdog pauses). Expiry: `wasm_runtime_terminate()`, the instance stops at its next branch or call, the application enters `failed` with `last_error` "`<export>: watchdog, callback exceeded 2000 ms`" |
+| Watchdog on `native_sim` | simulated time only advances while the simulated CPU idles, so the watchdog timer cannot expire during a callback that never blocks. Instead every call into a module gets a budget of interpreted instructions (`CONFIG_WAMR_INSTRUCTION_LIMIT`, 100 000 000 by default on `native_sim`, roughly 0.1 to 0.5 s on a PC); a callback that exceeds it traps (`last_error` "`uc_app_tick: instruction limit exceeded`") and the node keeps running. The budget does not cover AOT code: an AOT busy loop still hangs a `native_sim` node. On the boards the metering is not built (0) and the watchdog works in real time |
 
 ## 7. Sandboxing
 
 | Mechanism | Protects against |
 |-----------|------------------|
-| Linear memory with software bounds checks | reading or writing firmware memory, other applications, peripherals |
-| Pointer validation in every host function: the whole range `[ptr, ptr+len)` (all 8 bytes of a `double *`) must lie in the linear memory; offset 0 is rejected; data is copied with `memcpy` (no alignment assumptions) | host memory corruption through crafted pointers; bad pointers return `UC_ERR_INVALID` instead of trapping |
+| Linear memory with software bounds checks; every linear memory allocated with the full size WAMR checks against (section 5) | reading or writing firmware memory, other applications, peripherals |
+| Pointer validation in every host function: the whole range `[ptr, ptr+len)` (all 8 bytes of a `double *`) must lie in the linear memory; NULL (offset 0) and zero lengths where data is needed are rejected; data is copied with `memcpy` (no alignment assumptions) | host memory corruption through crafted pointers; bad pointers return `UC_ERR_INVALID` instead of trapping |
 | Import whitelist | only `bacnet_uc` and libc-builtin functions link; unknown imports fail the load |
 | Permissions (`perms`) | `bacnet.local`: local objects (create, delete own, read, write, local COV); `bacnet.remote`: requests to other devices; `io`: raw channel access; `kv`: persistent storage. Without any permission an application can only log, read the uptime, change its tick period and read its parameters |
 | Object ownership | an application deletes only its own objects; its objects disappear when it stops |
-| Watchdog | endless loops: `wasm_runtime_terminate()` stops the instance at the next branch or call (interpreter; AOT only with `--enable-multi-thread`) |
+| Watchdog | endless loops: `wasm_runtime_terminate()` stops the instance at the next branch or call (interpreter; AOT only with `--enable-multi-thread`); on `native_sim` the instruction budget (interpreter only) |
+| No native code by default | the interpreter executes modules; AOT (native code in executable RAM) is a build option with its own risk (section 2.1) |
 | Resource limits | pool sized per board, `heap_kb`, `stack_kb`, 16 queued events, 20 log lines/s, 16 COV subscriptions, 8 client slots (shared), kv values ≤ 256 bytes, module ≤ `CONFIG_UC_APP_MAX_FILE_SIZE` (256 KiB) |
 | Thread per application | a trap or a blocking call affects one application only |
 | Integrity | optional `sha256` in the manifest, checked at install and at every start |
@@ -340,9 +404,18 @@ flags and the post-link ABI check described in
 [`wasm/README.md`](../wasm/README.md#uc-cc):
 
 ```sh
-wasm/sdk/uc-cc -o hello.wasm hello.c
-wasm/sdk/uc-wasm-info hello.wasm        # imports, permissions, memory
+wasm/sdk/uc-cc -o hello.wasm hello.c                    # 289 B, "linear memory 8192 B + heap 8192 B"
+wasm/sdk/uc-wasm-info hello.wasm                        # imports, permissions (bacnet.local), memory
+wasm/sdk/uc-aot --board nucleo_f767zi -o hello.aot hello.wasm   # optional, needs wamrc
 ```
+
+| Tool | Usage | Notes |
+|------|-------|-------|
+| `uc-cc` | `uc-cc [-O z\|s\|0..3] [-I dir] [-D name[=val]] [-g] [--stack-size B] [--heap-kb N] [--no-page-align] [--allow-grow] -o app.wasm app.c [more.c ...]` | clang `--target=wasm32` with the ABI's flags (`-mcpu=mvp -msign-ext -mnontrapping-fptoint -mbulk-memory`, `-Oz` by default), links twice so that `__heap_base` is page-aligned, then checks the module against the host ABI (imports, signatures, features, no `memory.grow`); `--print-flags` prints the flags for other build systems (`wasm/sdk/Makefile.inc`, `wasm/sdk/cmake`) |
+| `uc-wasm-info` | `uc-wasm-info app.wasm` | imports, exports, required permissions, memory layout and the linear memory the firmware will allocate |
+| `uc-aot` | `uc-aot --board <board> [-o app.aot] [-O 0..3] app.wasm`; `uc-aot --list` | wamrc (`--wamrc`, `$WAMRC`, `/opt/wamrc/wamrc` or `PATH`, WAMR 2.4.5) with the board's target, `--bounds-checks=1`, `--enable-multi-thread`, indirect mode on Cortex-M; then checks the runtime symbols the file needs against WAMR's symbol map. Only useful with AOT firmware (section 2.1) |
+
+The `hello.c` of the commands above:
 
 ```c
 #include <bacnet_uc.h>
@@ -473,7 +546,8 @@ sequenceDiagram
 | change parameters | `uc_app install` with the new `params` and `"restart": true` (no upload) |
 | stop / start | `uc_app stop`, `uc_app start` |
 | remove | `uc_app remove {"name": ..., "delete_file": true}` (also deletes `/lfs/data/<name>`) |
-| bulk / declarative | upload `/lfs/cfg/apps.json` and the modules, then `uc_node reload apps` (stops removed or changed apps, starts autostart apps) |
+| bulk / declarative | upload the modules and `/lfs/cfg/apps.json.new` (staged), then `uc_node reload apps` (activates the document, stops removed or changed apps, starts autostart apps) |
+| large manifest | an `install` request must fit one SMP request (1024 bytes over UDP); an entry with many or long `params` goes through `apps.json` as above (the harness does this automatically) |
 
 The harness performs these steps with change detection by SHA-256, see
 [harness-mcp.md](harness-mcp.md). Over the shell: `uc app list|start|stop|remove`.

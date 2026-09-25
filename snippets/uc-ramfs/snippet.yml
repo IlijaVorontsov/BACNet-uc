@@ -6,9 +6,21 @@
 #
 #   west build -b <board> BACNet-uc/firmware -S uc-ramfs
 #
-# The fstab entry replaces the board's /fstab/lfs (label uc_lfs) if the
-# board overlay defines one.
+# uc-ramfs.overlay redefines the board's /fstab/lfs node (label uc_lfs), so
+# /lfs moves to the RAM disk. Board specifics (boards/):
+#   nucleo_f767zi              the SPI NOR flash node is disabled (no driver,
+#                              no probe of a missing chip)
+#   nucleo_f767zi, frdm_mcxn947  ram.conf: the 64 KiB RAM disk is taken
+#                              from the kernel heap and the malloc arena
 name: uc-ramfs
 append:
   EXTRA_DTC_OVERLAY_FILE: uc-ramfs.overlay
   EXTRA_CONF_FILE: uc-ramfs.conf
+boards:
+  /nucleo_f767zi(/.*)?/:
+    append:
+      EXTRA_DTC_OVERLAY_FILE: boards/nucleo_f767zi.overlay
+      EXTRA_CONF_FILE: boards/ram.conf
+  /frdm_mcxn947(/.*)?/:
+    append:
+      EXTRA_CONF_FILE: boards/ram.conf

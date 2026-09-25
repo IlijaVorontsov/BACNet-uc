@@ -35,16 +35,24 @@ bool uc_storage_ready(void);
 int uc_storage_read_file(const char *path, char **buf, size_t *len,
 			 size_t max_len);
 
-/** Write a file atomically: write <path>.tmp, then rename over <path>. */
+/** Write a file atomically: write <path>.tmp, then rename over <path>.
+ *  path must be shorter than UC_PATH_MAX (-ENAMETOOLONG). */
 int uc_storage_write_file(const char *path, const void *data, size_t len);
+
+/** Rename the file from over to (an existing to is replaced; with LittleFS
+ *  in one atomic metadata commit). -ENOENT if from is missing, -EISDIR if
+ *  it is a directory. */
+int uc_storage_rename(const char *from, const char *to);
 
 /** Size of a file, -ENOENT if missing. */
 int uc_storage_file_size(const char *path, size_t *size);
 
-/** Delete a file or an empty directory; missing is not an error. */
+/** Delete a file or an empty directory; missing is not an error (and not
+ *  logged). */
 int uc_storage_remove(const char *path);
 
-/** Create a directory (and missing parents under /lfs). */
+/** Create a directory (and missing parents under /lfs); existing
+ *  directories are not an error (and not logged). */
 int uc_storage_mkdir(const char *path);
 
 /** Total and free bytes of the /lfs volume. */

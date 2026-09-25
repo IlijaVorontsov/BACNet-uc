@@ -17,25 +17,27 @@ system manifest, first in simulation and then on hardware.
 - **BACnet/IP device** (bacnet-stack): Device, Network Port, AI/AO/AV,
   BI/BO/BV, MSI/MSO/MSV objects; ReadProperty(Multiple), WriteProperty(Multiple),
   COV server and client, Who-Is/I-Am, static bindings, foreign device
-  registration.
+  registration; DeviceCommunicationControl and ReinitializeDevice only with the
+  configured password, CreateObject/DeleteObject off by default.
 - **IO catalog in devicetree** (`uc,io-channels`): GPIO, ADC and PWM channels
   per board, bound to BACnet objects by `io.json` with scaling, debouncing,
   COV increments and forcing for tests.
 - **File system and logs**: LittleFS at `/lfs` (external SPI NOR on the F767,
   on-board QSPI NOR on the MCXN947, a file on `native_sim`) holding JSON
-  configuration documents, application modules, per-app key/value data and
+  configuration documents (uploaded as staged `*.json.new` files and activated
+  atomically on reload), application modules, per-app key/value data and
   rotating log files; optional syslog.
 - **Management interface**: MCUmgr/SMP over UDP port 1337 and the console
   UART; standard groups (OS, file system, statistics, shell; image with
   MCUboot builds) plus custom groups for applications (64), IO (65) and node
   configuration and BACnet properties (66). Firmware updates with MCUboot
   (sysbuild).
-- **WebAssembly applications**: WAMR 2.4.5 fast interpreter, a versioned host
-  ABI (`bacnet_uc.h`) for local and remote BACnet objects, COV subscriptions,
-  raw IO and persistent storage, a permission model, pointer validation, a
-  per-callback watchdog; SDK with `uc-cc` (clang), `uc-aot` (wamrc), a host
-  stub for unit tests and four example applications (`blinky`, `thermostat`,
-  `alarm`, `uc-link`).
+- **WebAssembly applications**: WAMR 2.4.5 fast interpreter (AOT as a build
+  option), a versioned host ABI (`bacnet_uc.h`) for local and remote BACnet
+  objects, COV subscriptions, raw IO and persistent storage, a permission
+  model, pointer validation, a per-callback watchdog; SDK with `uc-cc`
+  (clang), `uc-aot` (wamrc), a host stub for unit tests and four example
+  applications (`blinky`, `thermostat`, `alarm`, `uc-link`).
 - **MCP development harness**: 36 tools, resources and prompts for AI agents
   (Claude Code or any MCP client), plus the `bacnet-uc` CLI with the same
   functions: inventory, configuration, IO, BACnet reads/writes, app build and
@@ -90,6 +92,8 @@ Details: [docs/architecture.md](docs/architecture.md) (node) and
 | [`modules/`](modules/), [`zephyr/module.yml`](zephyr/module.yml) | this repository as a Zephyr module; Zephyr glue for WAMR |
 | [`snippets/uc-ramfs/`](snippets/uc-ramfs/) | snippet for a RAM-backed `/lfs` (boards without external flash) |
 | [`west.yml`](west.yml) | west manifest (T2 topology): Zephyr v4.4.2, bacnet-stack-zephyr, bacnet-stack, WAMR 2.4.5 |
+| [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | CI: harness tests (Python 3.11/3.12), WebAssembly SDK checks, firmware builds for the three boards with warnings as errors, unit tests, harness end-to-end tests against `native_sim` |
+| [`LICENSE`](LICENSE) | Apache License 2.0 |
 
 ## Quick start
 
@@ -135,7 +139,7 @@ cat > points.yaml <<'EOF'
 - {channel: ai0, type: analog-input, instance: 1, name: Room Temperature, units: degrees-celsius, scale: 0.01}
 - {channel: do0, type: binary-output, instance: 1, name: Lamp}
 EOF
-bacnet-uc io configure sim1 points.yaml        # validates, uploads io.json, reloads
+bacnet-uc io configure sim1 points.yaml        # validates, uploads io.json.new, reloads
 bacnet-uc io force sim1 ai0 2150               # 2150 mV
 bacnet-uc prop read sim1 analog-input:1        # 21.5
 bacnet-uc prop write sim1 binary-output:1 1 --priority 8
@@ -187,8 +191,9 @@ west flash -d build-f767                # or build-mcxn
 west build --sysbuild -b nucleo_f767zi BACNet-uc/firmware -d build-f767-mcuboot   # MCUboot + OTA
 ```
 
-At the time of writing the default configuration of both boards does not
-link (RAM overflow, see [Status](#status)). Wiring, storage and flashing:
+Both boards build and link in the default configuration (RAM about 91 %,
+the WAMR pool in DTCM / SRAMX); the images have not run on the boards yet
+(see [Status](#status)). Wiring, storage and flashing:
 [docs/hardware.md](docs/hardware.md),
 [docs/getting-started.md](docs/getting-started.md).
 
@@ -196,8 +201,8 @@ link (RAM overflow, see [Status](#status)). Wiring, storage and flashing:
 
 | Board | Zephyr target | CPU | `/lfs` | Network | WAMR pool | Status |
 |-------|---------------|-----|--------|---------|-----------|--------|
-| ST NUCLEO-F767ZI | `nucleo_f767zi` | Cortex-M7, 216 MHz, DP FPU | external SPI NOR (W25Q128JV on SPI1) or RAM (`-S uc-ramfs`) | on-board Ethernet (LAN8742A) | 128 KiB | compiles; default configuration does not link yet (RAM), see [Status](#status); not yet run on hardware |
-| NXP FRDM-MCXN947 | `frdm_mcxn947/mcxn947/cpu0` | Cortex-M33 core 0, 150 MHz, SP FPU | on-board 8 MiB QSPI NOR (FlexSPI) | on-board Ethernet (ENET QoS) | 96 KiB | compiles; default configuration does not link yet (RAM), see [Status](#status); not yet run on hardware |
+| ST NUCLEO-F767ZI | `nucleo_f767zi` | Cortex-M7, 216 MHz, DP FPU | external SPI NOR (W25Q128JV on SPI1) or RAM (`-S uc-ramfs`) | on-board Ethernet (LAN8742A) | 112 KiB (DTCM) | builds and links (RAM 91.5 %, DTCM 97.1 %); not yet run on hardware |
+| NXP FRDM-MCXN947 | `frdm_mcxn947/mcxn947/cpu0` | Cortex-M33 core 0, 150 MHz, SP FPU | on-board 8 MiB QSPI NOR (FlexSPI) or RAM (`-S uc-ramfs`) | on-board Ethernet (ENET QoS) | 96 KiB (SRAMX) | builds and links (RAM 91.1 %, SRAMX 100 %); not yet run on hardware |
 | native_sim (Linux x86-64) | `native_sim/native/64` | host | file (`--flash=<file>`) | host sockets (NSOS) | 256 KiB | builds and runs; used for the simulated system tests |
 
 ## Documentation
@@ -225,9 +230,9 @@ link (RAM overflow, see [Status](#status)). Wiring, storage and flashing:
 ## License
 
 The code in this repository is licensed under the **Apache License 2.0**
-(`SPDX-License-Identifier: Apache-2.0` in the source files; the JSON schemas
-and examples cannot carry a header), the license of Zephyr and of the
-bacnet-stack Zephyr glue.
+([`LICENSE`](LICENSE); `SPDX-License-Identifier: Apache-2.0` in the source
+files; the JSON schemas and examples cannot carry a header), the license of
+Zephyr and of the bacnet-stack Zephyr glue.
 
 Third-party components fetched by west keep their own licenses:
 
@@ -255,7 +260,9 @@ Version 0.1.0 (`CONFIG_UC_FW_VERSION`), host ABI 1.0, work in progress.
 | Area | State |
 |------|-------|
 | `native_sim/native/64` firmware | builds and runs; end-to-end system tests of `harness/examples/systems/sim-demo.yaml` pass (two nodes, three tests) |
-| NUCLEO-F767ZI, FRDM-MCXN947 firmware | at the time of writing the default configuration compiles but fails to link: RAM overflow by 29 564 bytes (F767) and 60 648 bytes (MCXN947); moving the WAMR pool to DTCM/SRAMX is the documented workaround ([docs/getting-started.md](docs/getting-started.md#verification-notes)). Not yet run on hardware |
-| Harness | 544 unit and integration tests pass (against an in-process fake node and simulated nodes) |
-| Security | development configuration: SMP without authentication, MCUboot development key; see [docs/security.md](docs/security.md) before connecting a node to a shared network |
-| Planned | MS/TP, BACnet/SC, signed applications, AOT on the F767, fleet OTA, schedules and trend logs: [docs/roadmap.md](docs/roadmap.md) |
+| NUCLEO-F767ZI, FRDM-MCXN947 firmware | the default configuration, the `uc-ramfs` variant and the MCUboot (sysbuild) builds of both boards link without warnings; default: FLASH about 24 %, RAM about 91 % (`uc-ramfs`: RAM about 96 %; numbers in [docs/architecture.md](docs/architecture.md#62-measured-usage)). Not yet run on hardware |
+| Firmware unit tests | 32 ztest cases pass on `native_sim` |
+| Harness | 596 unit and integration tests pass (in-process fake node); 10 end-to-end tests against `native_sim` firmware pass |
+| CI | [`.github/workflows/ci.yml`](.github/workflows/ci.yml); has not run on GitHub yet |
+| Security | development configuration: SMP without authentication (DTLS not wired up), MCUboot development key; BACnet DCC/ReinitializeDevice need `bacnet.password`, CreateObject/DeleteObject off by default; see [docs/security.md](docs/security.md) before connecting a node to a shared network |
+| Planned | MS/TP, BACnet/SC, signed applications, AOT validated on the boards (a build option today), fleet OTA, schedules and trend logs: [docs/roadmap.md](docs/roadmap.md) |

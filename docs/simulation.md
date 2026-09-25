@@ -24,17 +24,17 @@ manifests: [distributed-apps.md](distributed-apps.md).
 | Broadcasts | NSOS does not forward `SO_BROADCAST`: the node's broadcast address is its own address. Who-Is/I-Am between simulated nodes does not work; nodes bind each other through **static bindings** | `uc_bn_node.c`, [bacnet.md](bacnet.md#6-bacnetip-datalink) |
 | Storage | LittleFS on the flash simulator: 2 MiB flash, 4 KiB erase blocks, `/lfs` in a 1580 KiB partition, backed by a file (`flash.bin` in the working directory by default) | [`firmware/boards/native_sim_native_64.overlay`](../firmware/boards/native_sim_native_64.overlay) |
 | IO | eight simulated channels (below); no GPIO/ADC/PWM hardware | [`firmware/boards/io/native_sim_native_64.dtsi`](../firmware/boards/io/native_sim_native_64.dtsi) |
-| Console | shell UART on a pseudo-terminal (`uart connected to pseudotty: /dev/pts/N` at start); log output on stdout | `CONFIG_UART_NATIVE_PTY` |
-| WAMR | build target `X86_64`, pool 256 KiB (`CONFIG_UC_APP_POOL_SIZE=262144`), kernel heap 128 KiB | `native_sim_native_64.conf` |
+| Console | shell UART on a pseudo-terminal (`uart connected to pseudotty: /dev/pts/N` at start), interrupt-driven so that SMP frames over the pty (harness `serial` transport, smpmgr/mcumgr serial) arrive complete; log output on stdout | `CONFIG_UART_NATIVE_PTY`, `CONFIG_UART_INTERRUPT_DRIVEN`, `CONFIG_SHELL_BACKEND_SERIAL_API_INTERRUPT_DRIVEN` |
+| WAMR | build target `X86_64`, pool 256 KiB (`CONFIG_UC_APP_POOL_SIZE=262144`), kernel heap 128 KiB; instruction budget per callback instead of the watchdog (`CONFIG_WAMR_INSTRUCTION_LIMIT`, see section 7) | `native_sim_native_64.conf`, `modules/wasm-micro-runtime/Kconfig` |
 | Entropy | test entropy source (`CONFIG_TEST_RANDOM_GENERATOR`); not suitable for key generation | `native_sim_native_64.conf` |
-| Reboot | `CONFIG_NATIVE_SIM_REBOOT` is not set: `sys_reboot()` (SMP `os reset`, shell `kernel reboot`, BACnet ReinitializeDevice) **ends the process** (the POSIX architecture's weak `sys_arch_reboot()` prints `sys_arch_reboot called with type N. Exiting` and exits with status 1). The harness reboots simulated nodes by killing and re-spawning the process; a node that reboots itself (e.g. on a BACnet ReinitializeDevice) stays down until `sim_stop` + `sim_start` | `sim.py` `SimManager.restart()` |
+| Reboot | `CONFIG_NATIVE_SIM_REBOOT=y`: `sys_reboot()` (SMP `os reset`, shell `kernel reboot`, BACnet ReinitializeDevice) **restarts the process in place** with the same command line (`native_sim_reboot: Restarting process.`), same PID, flash file kept. An exit hook of `uc_net` closes the inherited host sockets first (a Zephyr 4.4 NSOS `dup()` without close-on-exec would otherwise keep UDP 1337 bound: `bind err 98`). With `--flash_erase` on the command line the restart erases the flash again. The harness reboots simulated nodes with the simulation manager (kill and re-spawn) when it may (root for `netns`), otherwise over SMP | `native_sim_native_64.conf`, `uc_net.c`, `sim.py` |
 
 Useful command line options of `zephyr.exe`:
 
 | Option | Effect |
 |--------|--------|
 | `--flash=<file>` | flash image file (one per node) |
-| `--flash_erase` | start with an erased flash (the firmware formats `/lfs`) |
+| `--flash_erase` | start with an erased flash (the firmware formats `/lfs`); applies again at every in-place reboot |
 | `--flash_rm` | delete the flash file on exit |
 | `--flash_in_ram` | keep the flash content in RAM only (nothing persists) |
 | `--seed=<n>` | seed of the test entropy source (the harness gives every node a distinct seed) |
@@ -141,7 +141,7 @@ sequenceDiagram
     H->>H: inventory entries (transport: sim)
     U->>H: apply_system(system, dry_run=false)
     H->>N: device.json, io.json, apps, links
-    H->>N: kill + re-spawn nodes that need a reboot
+    H->>N: reboot nodes that need it (root: kill + re-spawn,<br/>else SMP os reset: in-place restart)
     U->>H: run_system_tests(system)
     U->>H: sim_stop(system)
     H->>N: SIGTERM (SIGKILL after 3 s) to each process group
@@ -222,8 +222,9 @@ MCP equivalent: `build_firmware(board="native_sim/native/64")`,
 `apply_system(dry_run=false)`, `run_system_tests`, `sim_stop`.
 `sim_start(apply_config=true)` combines start and apply.
 
-Observed with a copy of `sim-demo.yaml` (node names changed) on the
-`native_sim/native/64` build of this repository:
+Observed with `sim-demo.yaml` on the `native_sim/native/64` build of the
+current repository state (the README quick start, run as root inside private
+network and mount namespaces):
 
 | Step | Result |
 |------|--------|
@@ -231,7 +232,7 @@ Observed with a copy of `sim-demo.yaml` (node names changed) on the
 | `system plan` | 6 actions: `push_config device` ×2, `push_config io` ×2, `deploy_app thermostat`, `deploy_app link`; 2 reboot notes (device 260001 → 2001/2002, IPv4 127.0.0.1 → 10.47.0.x) |
 | `system apply --no-dry-run` | 6 × ok, both nodes restarted |
 | `system status` | `in_sync: true`, `thermostat` and `link` running |
-| `system test` | `switch-drives-lamp` 493 ms, `temperature-is-mirrored` 252 ms, `thermostat-heats-when-cold` 1137 ms: 3 passed |
+| `system test` | `switch-drives-lamp` 488 ms, `temperature-is-mirrored` 483 ms, `thermostat-heats-when-cold` 917 ms: 3 passed |
 | `sim down` | both stopped, no errors |
 
 Inspecting a simulated node: all node tools work as on hardware
@@ -255,32 +256,37 @@ static addresses).
 
 | Area | Simulation | Hardware | Consequence |
 |------|------------|----------|-------------|
-| Timing | host threads, one Zephyr thread at a time, real-time slowdown; scheduling jitter depends on host load | deterministic RTOS scheduling | latency figures from simulation are not representative; watchdog (2 s) and timeouts are rarely hit because the host CPU is much faster |
+| Timing | host threads, one Zephyr thread at a time, real-time slowdown; simulated time advances only while the simulated CPU idles; scheduling jitter depends on host load | deterministic RTOS scheduling | latency figures from simulation are not representative; timeouts are rarely hit because the host CPU is much faster. The application watchdog cannot fire during a busy loop: an instruction budget (`CONFIG_WAMR_INSTRUCTION_LIMIT`, 100 000 000 per callback) stops interpreted code instead (`last_error` "instruction limit exceeded"); an AOT busy loop hangs the node |
 | WebAssembly execution | x86-64 host, fast interpreter | Cortex-M7 216 MHz / Cortex-M33 150 MHz | an app that fits its tick budget in simulation may not on the MCU; measure on hardware |
-| Memory | WAMR pool 256 KiB, heap 128 KiB | 128 KiB / 96 KiB pool, 64 KiB heap | an app mix that starts in simulation can fail with pool exhaustion on the MCXN947 |
+| Memory | WAMR pool 256 KiB, heap 128 KiB, host `malloc` | 112 KiB (F767) / 96 KiB (MCXN947) pool, 64 KiB heap, 64 KiB `malloc` arena | an app mix that starts in simulation can fail with pool exhaustion on the boards; `validate_system` warns from the board's pool size |
 | IO | simulated values, no noise, no ADC conversion time, no PWM frequency, no contact bounce | real signals | scaling and logic are tested, electrical behaviour is not |
 | Network stack | host sockets (NSOS): Zephyr's IP stack, Ethernet driver and DHCP client are not exercised | Zephyr native IP stack, Ethernet MAC/PHY | network buffer exhaustion, link loss and DHCP behaviour need hardware tests |
 | Broadcasts | not delivered (NSOS) | directed subnet broadcast | Who-Is discovery, I-Am, broadcast-based BBMD behaviour are untested in simulation; static bindings are mandatory |
 | Flash | file-backed simulator, no erase/program time, no power loss | SPI NOR (F767), FlexSPI NOR (MCXN947) | wear, write timing and power-loss recovery need hardware |
-| Boot and update | no MCUboot, no image slots | MCUboot with swap | `update_firmware` is not applicable; reboot = process restart |
-| AOT | x86-64 target | Thumb targets | AOT modules are board-specific (and AOT is off in the firmware) |
+| Boot and update | no MCUboot, no image slots | MCUboot with swap | `update_firmware` is not applicable; reboot = in-place process restart |
+| AOT | x86-64 AOT files run with a `CONFIG_WAMR_AOT=y` build (pool made executable with `mprotect()`) | Thumb targets; the pool must be made executable (`CONFIG_WAMR_AOT_MPU_EXEC`) | AOT modules are board-specific, AOT is off in the default firmware; Thumb AOT has not run on a board |
 | Entropy | test generator | hardware RNG | do not use simulated nodes for key material |
 
 ## 8. CI recipe
 
-The complete command sequence of section 5 runs headless. A GitHub Actions
-job needs Python 3.12, west, the Zephyr SDK host tools, clang with `wasm-ld`
+The complete command sequence of section 5 runs headless. The repository's
+workflow ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml), job
+`e2e`) runs the harness end-to-end tests, which include the whole
+`sim-demo` flow of section 5, against the `native_sim` firmware built by the
+`firmware` job, as root inside private network and mount namespaces
+(`harness/tests/e2e/run-isolated.sh`); see
+[harness-mcp.md](harness-mcp.md#8-ci-usage). A job of your own needs Python
+3.12, west, the Zephyr SDK host tools, clang with `wasm-ld`
 (`apt-get install clang lld`), the harness (`pip install -e
 'BACNet-uc/harness[dev,sim]'`) and `sudo` for the `netns` mode (GitHub-hosted
-Ubuntu runners provide passwordless sudo and iproute2). A full example
-workflow is in [harness-mcp.md](harness-mcp.md#8-ci-usage).
+Ubuntu runners provide passwordless sudo and iproute2).
 
 Practical points:
 
 | Point | Recommendation |
 |-------|----------------|
 | Artifacts | upload `<home>/.bacnet-uc/sim/<system>/*.log` (console output of every node) on failure |
-| Isolation | one system name per job; the bridge name `bnuc0` and the subnet `10.47.0.0/24` are fixed, so two `netns` simulations cannot run in the same network namespace. Parallel jobs on one machine: run each in its own network namespace (`unshare -n`) or use separate runners |
-| Cleanup | run `sim down` in an `always()` step; namespaces and the bridge otherwise stay until the runner is recycled |
+| Isolation | one system name per job; the bridge name `bnuc0` and the subnet `10.47.0.0/24` are fixed, so two `netns` simulations cannot run in the same network namespace. Parallel jobs on one machine: run each in its own network (and mount) namespace, as `run-isolated.sh` does (`unshare --net --mount` with a private `/run/netns`), or use separate runners |
+| Cleanup | run `sim down` in an `always()` step; namespaces and the bridge otherwise stay until the runner is recycled (not needed inside `run-isolated.sh`: the namespaces vanish with it) |
 | Flaky timing | derive `within_ms` from [distributed-apps.md](distributed-apps.md#8-timing-and-latency-budget) with margin; shared runners add jitter |
 | Speed | cache the `native_sim` build directory keyed by the west manifest revisions and the `firmware/` content; a pristine build compiles the whole Zephyr, bacnet-stack and WAMR tree |
