@@ -117,3 +117,21 @@ the harness session reads this file on your branch.
 | M3 | **done** | `identify [seconds]` (plain) or `{"cmd":"identify","arg":"30"}`: blinks `led0` at 2 Hz, default 30 s, max 3600, `0` stops. Any `led` command also ends identify and restores the commanded LED state. |
 
 The client ID also changed since the hub design was written: it is now `z` + base32(UID), 20 characters for a 96-bit UID, where it used to be `zephyr-<hex>`. `hwid` in `info` is the UID in hex, derived the same way as B3 asks for the BACnet firmware.
+
+### MQTT session status for M4-M7 (planned; FW-06 announcement)
+
+The user approved **M4, M5 and M6 now, M7 later**. Per HIL FW-06, these are the interface and layout changes *before* the code lands:
+
+| Item | Plan |
+|---|---|
+| M4 build variants | The plain `west build` stays the release artifact (unchanged behaviour, no bootloader). The MCUboot variant is `west build --sysbuild -b <board> apps/mqtt_tls -- -DFILE_SUFFIX=mcuboot`. It reuses the BACnet sysbuild settings: F767 swap-using-scratch, MCXN947 swap-using-offset, ECDSA-P256, dev key only. `sysbuild.conf`, `Kconfig.sysbuild`, `sysbuild/mcuboot.conf`, `sysbuild/mqtt_tls.conf`. |
+| M4 partitions | Board MCUboot partitions are used unchanged (F767: boot 0-64K, slot0 @0x40000 768K, slot1 @0x100000 768K, scratch @0x1C0000 256K; MCXN947: boot 0-80K, slot0/1 984K each). |
+| **New UDP listener** | **SMP (MCUmgr) on UDP 1337** in *all* builds. OS group (echo, reset, info) and settings group (M5) everywhere; the image group only in the MCUboot variant. Unauthenticated, same as the BACnet firmware, so keep it on the management VLAN. Kconfig `APP_SMP` (default y) turns it off. |
+| M4 confirm | A test image confirms itself once it reaches retained `online`. If it doesn't within `APP_MCUBOOT_CONFIRM_TIMEOUT_SEC` (default 600 s), it reboots and MCUboot reverts it. |
+| **M5 settings storage** (partition change) | ZMS backend, chosen `zephyr,settings-partition`. **nucleo_f767zi plain:** new `settings_partition` @0x180000 512K (sectors 10-11), and the plain overlay deletes slot1/scratch (unused without MCUboot). The plain image at 0x0 overlaps the board's `storage_partition`, so that one can't be used. **nucleo_f767zi MCUboot:** `storage_partition` @0x10000 64K. **frdm_mcxn947:** `settings_partition` = first 64K of the external W25Q64 (replaces the board's 8 MB `storage_partition` node, which the MQTT app doesn't otherwise use), in both variants. native_sim: the board's `storage_partition`. |
+| M5 `APP_MQTT_*` symbols | **No existing symbol is renamed or changes meaning.** Kconfig values are the defaults. A stored setting overrides one only after it was written explicitly (MQTT `config_set` or SMP settings write+save). `config_reset` (MQTT) or writing `mqtt/factory_reset` over SMP deletes everything and returns to the Kconfig values. New symbols: `APP_SMP`, `APP_CONFIG_FALLBACK_ATTEMPTS`, `APP_MCUBOOT_CONFIRM_TIMEOUT_SEC`, `APP_LOG_MQTT*`. |
+| M5 keys | settings subtree `mqtt/`: `broker_host`, `broker_port`, `tls_hostname`, `username`, `password` (write-only, read as `***`), `topic_root`, `publish_interval`, `keepalive`, `log_level`. All values are stored as text so SMP clients can write them directly. Client cert/key stay compile-time. |
+| M6 | New topic `<root>/<id>/log` (non-retained, QoS 0, rate-limited) and `logs` command. |
+| FW-03 | The banner `MQTT over Ethernet + TLS on <board>` stays. |
+
+Answers to the HIL contract for MQTT: **FW-01 accepted** (the app uses none of those pins; SPI1 is disabled on F767). **FW-02 accepted.** **FW-03 accepted.** **FW-05 accepted** (IWDG/WWDT task watchdog). **FW-06 accepted** (this table). **FW-12 deferred with M7.** **FW-10 for MQTT:** SMP stays plain UDP for now; DTLS is a follow-up.
