@@ -182,10 +182,29 @@ static inline uint64_t now_ns(void)
 
 /* command deadline watchdog (checked by main) */
 static atomic_t deadline_ms;
+/* stim_cmd_overrun() compares 32-bit uptimes as a signed difference: keep budgets far below 2^31 */
+#define BUDGET_MAX_MS 0x40000000ULL
 
-static void cmd_begin(uint32_t budget_ms)
+/* budget_ms: the command's own worst-case duration; main starves the IWDG 5 s after it */
+static void cmd_begin(uint64_t budget_ms)
 {
-	atomic_set(&deadline_ms, (atomic_val_t)(k_uptime_get_32() + budget_ms + 5000U));
+	uint32_t budget = (uint32_t)MIN(budget_ms, BUDGET_MAX_MS);
+
+	atomic_set(&deadline_ms, (atomic_val_t)(k_uptime_get_32() + budget + 5000U));
+}
+
+/* worst-case time on the wire for n octets at the RS-485 UART's current rate (12 bit times each:
+ * start, 8 data, parity, 2 stop), so long frames at low rates stay within the command budget
+ */
+static uint64_t rs485_octets_ms(const struct device *uart, size_t n)
+{
+	struct uart_config cfg;
+	uint32_t baud = 1200U; /* the lowest rate "rs485 baud" accepts */
+
+	if (uart_config_get(uart, &cfg) == 0 && cfg.baudrate >= 1U) {
+		baud = cfg.baudrate;
+	}
+	return ((uint64_t)n * 12U * 1000U + baud - 1U) / baud;
 }
 
 static void cmd_end(void)
@@ -411,8 +430,10 @@ static int set_power(bool on)
 
 static int cmd_info(const struct shell *sh, size_t argc, char **argv)
 {
-	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
+	if (argc != 1) { /* protocol 3: a wrong argument count is ERR -22, as for every command */
+		return err(sh, E_INVAL, "usage: stim info");
+	}
 	vdda_update();
 	shell_fprintf(sh, SHELL_NORMAL,
 		      "OK proto=%d fw=%s board=%s profile=%s uptime_ms=%llu vdda_mv=%d pwr=%d "
@@ -523,6 +544,12 @@ static int cmd_din(const struct shell *sh, size_t argc, char **argv)
 
 /* stim pulse <chan> <width_us> [count=1] [period_us=2*width] [active=0|1] */
 #define PULSE_BUSY_MAX_US 50000U /* IRQ-locked limit, < SysTick wrap (77.6 ms @ 216 MHz) */
+/* sleep mode: each k_usleep phase ends on a kernel tick and may run up to 2 ticks long
+ * (rounded up, plus the partial current tick), so a train of count pulses can overrun its
+ * nominal length by count x 4 ticks (40 s for 100000 pulses at 10 kHz): the command budget
+ * must include it, or main starves the IWDG in the middle of a long train
+ */
+#define PULSE_SLACK_US (4U * (1000000U / CONFIG_SYS_CLOCK_TICKS_PER_SEC))
 static int cmd_pulse(const struct shell *sh, size_t argc, char **argv)
 {
 	const struct chan *c;
@@ -569,7 +596,7 @@ static int cmd_pulse(const struct shell *sh, size_t argc, char **argv)
 		return err(sh, E_RANGE, "train longer than 600 s");
 	}
 	busy = total <= PULSE_BUSY_MAX_US;
-	cmd_begin((uint32_t)(total / 1000U));
+	cmd_begin((total + (busy ? 0U : (uint64_t)count * PULSE_SLACK_US)) / 1000U + 1U);
 
 	if (busy) {
 		unsigned int key = irq_lock();
@@ -836,6 +863,9 @@ static int cmd_power(const struct shell *sh, size_t argc, char **argv)
 static int cmd_rstmon(const struct shell *sh, size_t argc, char **argv)
 {
 	bool clear = argc == 2 && strcmp(argv[1], "clear") == 0;
+	unsigned int key;
+	atomic_val_t n;
+	uint64_t last;
 
 	if (argc > 2 || (argc == 2 && !clear)) {
 		return err(sh, E_INVAL, "usage: stim rstmon [clear]");
@@ -843,11 +873,16 @@ static int cmd_rstmon(const struct shell *sh, size_t argc, char **argv)
 	if (rst_chan == NULL) {
 		return err(sh, E_NODEV, "no nrst_sense channel");
 	}
-	shell_print(sh, "OK n=%d last_ns=%llu in_reset=%d", (int)atomic_get(&rst_count),
-		    (unsigned long long)cyc_ns(rst_last_cyc), gpio_pin_get_dt(&rst_chan->gpio));
-	if (clear) {
-		atomic_set(&rst_count, 0);
-	}
+	/* One snapshot with rst_isr held off: the 64-bit time is two loads on the M7, and a reset
+	 * between reading and clearing the count would otherwise be lost (atomic_set returns the
+	 * count it replaces).
+	 */
+	key = irq_lock();
+	n = clear ? atomic_set(&rst_count, 0) : atomic_get(&rst_count);
+	last = rst_last_cyc;
+	irq_unlock(key);
+	shell_print(sh, "OK n=%d last_ns=%llu in_reset=%d", (int)n, (unsigned long long)cyc_ns(last),
+		    gpio_pin_get_dt(&rst_chan->gpio));
 	return 0;
 }
 
@@ -997,7 +1032,7 @@ static int cmd_rs485_tx(const struct shell *sh, size_t argc, char **argv)
 	const uint8_t *buf;
 	size_t len;
 	uint32_t gap_idx[4], gap_us[4], ngap = 0, rep = 1, per_ms = 0;
-	uint64_t t0 = 0, t1 = 0;
+	uint64_t t0 = 0, t1 = 0, frame_ms;
 	USART_TypeDef *usart = (USART_TypeDef *)DT_REG_ADDR(RS485_NODE);
 
 	if (argc < 2) {
@@ -1046,7 +1081,12 @@ static int cmd_rs485_tx(const struct shell *sh, size_t argc, char **argv)
 			return err(sh, E_INVAL, "option");
 		}
 	}
-	cmd_begin(rep * MAX(per_ms, 1U) + 2000U);
+	/* per repetition the longer of per_ms and the frame on the wire (octets and gaps) */
+	frame_ms = rs485_octets_ms(rs485, len);
+	for (uint32_t g = 0; g < ngap; g++) {
+		frame_ms += gap_us[g] / 1000U + 1U;
+	}
+	cmd_begin((uint64_t)rep * MAX((uint64_t)per_ms, frame_ms + 1U) + 2000U);
 	for (uint32_t r = 0; r < rep; r++) {
 		uint64_t start = k_uptime_get();
 
@@ -1096,7 +1136,10 @@ static int cmd_rs485_rx(const struct shell *sh, size_t argc, char **argv)
 	if (rs485 == NULL || !device_is_ready(rs485)) {
 		return err(sh, E_NODEV, "rs485 uart");
 	}
-	cmd_begin(tmo);
+	/* the timeout only bounds the wait for the first octet: a frame that starts late keeps
+	 * the loop going until the line idles or the buffer is full, so budget for both
+	 */
+	cmd_begin((uint64_t)tmo + rs485_octets_ms(rs485, sizeof(rbuf)) + idle_us / 1000U + 1U);
 	while (n < sizeof(rbuf)) {
 		uint64_t now = k_cycle_get_64();
 

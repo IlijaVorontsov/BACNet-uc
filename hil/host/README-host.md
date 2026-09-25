@@ -28,6 +28,7 @@ The design is `docs/HIL.md` §8.4, §8.5, §10 and §11 (W1, W3). Decisions it r
 | `bench.yml.example` | `/etc/hil/bench1/bench.yml` | hilrig | the bench description (commissioning values) |
 | `github-workflow-hil.yml` | `.github/workflows/hil.yml` (see below) | Actions | build and hil jobs |
 | `build.sh`, `install-net-wrappers.sh` | (from the checkout) | any / root | stand-alone image builds; the `hil-net-up`/`hil-net-down` wrappers |
+| `isolated.sh` | (from the checkout) | root | runs one pytest session in private namespaces (`-d`: with its own dockerd for the key-log broker); for SIL runs next to another run (hil/README.md, "SIL against the firmware") |
 
 `hil/twister/` holds the Twister side: `gen.py` renders the alt configs and
 `ci-build.sh` is the build half of a run (see "A run, end to end").

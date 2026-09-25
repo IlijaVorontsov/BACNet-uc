@@ -34,6 +34,13 @@ PROMPT = "stim:~$"
 MAX_LINE = 511  # SHELL_CMD_BUFF_SIZE=512 including the terminating NUL
 CTRL_C = "\x03"
 DEFAULT_PROFILE = "P1"  # It1 firmware serves the P1 map without a profile= key (HIL.md 5.2)
+# Reply-time allowances beyond a command's nominal duration (protocol section 7: duration + 2 s):
+# a pulse train longer than 50 ms sleeps between edges, and each of its two k_usleep phases per
+# pulse may end up to 2 ticks (200 us at 10 kHz) late; an edges reply lists up to 1024 edges of
+# up to 24 characters (20-digit t_ns, level, commas), about 2 s at 115200 baud (10 bits a byte).
+PULSE_SLACK_S = 400e-6
+EDGE_REPLY_CHARS = 24
+DEFAULT_MAX_EDGES = 64
 
 # Zephyr/newlib errno numbering (a BUILD_ASSERT in the firmware pins it).
 EPERM, ENOENT, EBUSY, ENODEV, EINVAL = -1, -2, -16, -19, -22
@@ -604,7 +611,7 @@ class Stim:
             period_us = 2 * width_us
         args = f"{width_us} {count}" + ("" if period_us is None else f" {period_us}")
         args += "" if active is None else f" {active}"
-        duration = count * (period_us or 2 * width_us) / 1e6
+        duration = count * ((period_us or 2 * width_us) / 1e6 + PULSE_SLACK_S)
         return self._query(
             f"stim pulse {chan} {args}",
             lambda r: Pulse(int(r["n"]), int(r["t0_ns"]), r.get("mode")),
@@ -614,8 +621,12 @@ class Stim:
     def edges(self, chan: str, window_ms: int, max_edges: int | None = None) -> Edges:
         """``stim edges``: record the edges on a channel for ``window_ms`` (at most ``max_edges``)."""
         arg = "" if max_edges is None else f" {max_edges}"
+        listing = (max_edges or DEFAULT_MAX_EDGES) * EDGE_REPLY_CHARS * 10 / self.baud
         return self._query(
-            f"stim edges {chan} {window_ms}{arg}", _edges, timeout=window_ms / 1000 + 2.0, read_only=True
+            f"stim edges {chan} {window_ms}{arg}",
+            _edges,
+            timeout=window_ms / 1000 + 2.0 + listing,
+            read_only=True,
         )
 
     def lat(self, out: str, out_level: Level, inp: str, in_level: Literal[0, 1], timeout_ms: int) -> Latency:

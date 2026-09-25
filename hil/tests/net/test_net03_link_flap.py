@@ -84,9 +84,10 @@ def test_net03_link_flap(
         nsmod.set_link(lan_a, nic, up=True)
         if hardware:
             assert dut_link.wait_dhcp(mark, DHCP_LIMIT_S) <= DHCP_LIMIT_S, f"flap {flap}: no DHCP within 5 s"
-        if app_image.app == "bacnet":
-            took = poll(lambda: bacnet.read(inst, "device", inst, "object-name"), RP_LIMIT_S)
-            assert took <= RP_LIMIT_S, f"flap {flap}: Device RP after {took:.1f} s"
+        if app_image.app == "bacnet":  # the 10 s run from link-up, not from the DHCP lease
+            poll(lambda: bacnet.read(inst, "device", inst, "object-name"), RP_LIMIT_S)
+            took = time.monotonic() - mark.mono
+            assert took <= RP_LIMIT_S, f"flap {flap}: Device RP {took:.1f} s after link-up"
         elif hardware:
             assert dut_link.wait_app(mark, CONNACK_LIMIT_S) <= CONNACK_LIMIT_S, (
                 f"flap {flap}: no CONNACK in 30 s"

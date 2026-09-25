@@ -226,3 +226,40 @@ def test_connection_attempts_count_resent_syns_once() -> None:
         capture_mod.Row(t, {"tcp.srcport": port}) for t, port in ((1.0, "4000"), (1.3, "4000"), (3.5, "4001"))
     ]
     assert capture_mod.connection_attempts(rows) == [1.0, 3.5]
+
+
+def mqtt_publish(topic: str, payload: bytes, msgid: int | None) -> bytes:
+    """An MQTT 3.1.1 PUBLISH: QoS 1 with ``msgid``, else QoS 0 (which carries no message id)."""
+    body = len(topic).to_bytes(2, "big") + topic.encode()
+    body += b"" if msgid is None else msgid.to_bytes(2, "big")
+    return bytes([0x32 if msgid is not None else 0x30, len(body + payload)]) + body + payload
+
+
+def pcap_of_tcp_segment(path: Path, payload: bytes, dport: int = 1883) -> None:
+    """A classic pcap file with one Ethernet/IPv4/TCP segment carrying ``payload``."""
+    tcp = struct.pack("!HHIIBBHHH", 40000, dport, 1, 1, 0x50, 0x18, 65535, 0, 0) + payload
+    src, dst = socket.inet_aton("192.0.2.10"), socket.inet_aton("192.0.2.1")
+    ip4 = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(tcp), 1, 0, 64, 6, 0, src, dst)
+    frame = bytes.fromhex("020000000001 0248494c000a 0800") + ip4 + tcp  # dst MAC, src MAC, IPv4
+    header = struct.pack("<IHHiIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 1)
+    path.write_bytes(header + struct.pack("<IIII", 1_790_000_000, 0, len(frame), len(frame)) + frame)
+
+
+def test_pdus_split_coalesced_mqtt_messages(tmp_path: Path) -> None:
+    """Regression: MQTT-02 paired PUBLISH and PUBACK message ids with ``-T fields``, which gives
+    only the first value of a segment that carries several MQTT messages (the DUT bursts its
+    PUBLISHes, the broker coalesces PUBACKs), so ids were missed or mismatched."""
+    pcap = tmp_path / "burst.pcap"
+    burst = mqtt_publish("t/status", b"online", None) + mqtt_publish("t/telemetry", b"{}", 7)
+    pcap_of_tcp_segment(pcap, burst + bytes([0x40, 0x02, 0x00, 0x08]))  # + PUBACK 8
+    first_only = capture_mod.rows_of(pcap, "mqtt.msgtype == 3", "mqtt.qos", "mqtt.msgid")
+    assert [(r["mqtt.qos"], r["mqtt.msgid"]) for r in first_only] == [("0", "7")]  # mismatched
+    got = capture_mod.pdus(
+        pcap, "mqtt", "mqtt", "mqtt.msgtype", "mqtt.qos", "mqtt.msgid", "mqtt.topic", "ip.src"
+    )
+    assert [tuple(r.fields.values()) for r in got] == [
+        ("3", "0", "", "t/status", "192.0.2.10"),
+        ("3", "1", "7", "t/telemetry", "192.0.2.10"),
+        ("4", "", "8", "", "192.0.2.10"),
+    ]
+    assert got[0].t == 1_790_000_000.0

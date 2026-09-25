@@ -181,6 +181,12 @@ class Capture:
             raise CaptureError("texts() analyses a stopped capture; call stop() first")
         return texts(self.path, display_filter, proto)
 
+    def pdus(self, display_filter: str, proto: str, *fields: str) -> list[Row]:
+        """:func:`pdus` of this (stopped) capture."""
+        if self.running:
+            raise CaptureError("pdus() analyses a stopped capture; call stop() first")
+        return pdus(self.path, display_filter, proto, *fields)
+
     def dropped(self) -> int | None:
         """Packets the kernel or dumpcap dropped, from tshark's summary (None: no summary yet)."""
         text = self.log.read_text() if self.log.exists() else ""
@@ -269,6 +275,39 @@ def texts(path: Path, display_filter: str, proto: str = "bacapp") -> list[TextRo
             if f.get("name") == "" and f.get("show")
         ]
         rows.append(TextRow(float(epoch.get("show", "0")) if epoch is not None else 0.0, tuple(items)))
+    return rows
+
+
+def pdus(path: Path, display_filter: str, proto: str, *fields: str) -> list[Row]:
+    """One row per ``proto`` PDU in the packets matching ``display_filter`` (sentinels excluded).
+
+    A TCP segment can carry several messages (a burst of MQTT PUBLISHes, PUBACKs coalesced by
+    the broker). ``-T fields`` then gives only a field's first value, or with ``occurrence=a``
+    lists that cannot be matched up when one message lacks the field (a QoS 0 PUBLISH has no
+    message id). Each row holds the packet's time and, per field, its value inside this PDU,
+    else the packet's first value outside every ``proto`` PDU (``ip.src``), else "".
+    """
+    pdml = _tool(
+        ["tshark", "-n", "-r", str(path), "-Y", f"({display_filter}) && {NOT_SENTINEL}", "-T", "pdml"]
+    )
+
+    def first(node: ET.Element, name: str) -> str | None:
+        found = next((f for f in node.iter("field") if f.get("name") == name), None)
+        return None if found is None else found.get("show", "")
+
+    rows = []
+    for packet in ET.fromstring(pdml).iter("packet"):
+        epoch = first(packet, "frame.time_epoch")
+        units = [p for p in packet.iter("proto") if p.get("name") == proto]
+        outside = [p for p in packet.findall("proto") if p.get("name") != proto]
+        for unit in units:
+            values = {}
+            for name in fields:
+                value = first(unit, name)
+                if value is None:
+                    value = next((v for layer in outside if (v := first(layer, name)) is not None), None)
+                values[name] = value or ""
+            rows.append(Row(float(epoch or 0.0), values))
     return rows
 
 

@@ -10,13 +10,15 @@
 #
 #   image        tier          what
 #   stim         rig           apps/hil_stimulus (nucleo_f767zi)
-#   bac-rel      release       FW/firmware + site/f767-app-pool.overlay, UC_APP_POOL_SIZE=98304 (D24)
+#   bac-rel      release       FW/firmware + site/f767-app-pool.overlay, UC_APP_POOL_SIZE=98304 (D24;
+#                              only while FW's own board overlay has no DTCM pool, FW-04)
 #   bac-inst     instrumented  bac-rel + -S hil -S hil-io + lib/hil
 #   mq-rel       release       MQ/apps/mqtt_tls + site/mqtt-site-hil.conf
 #   mq-mtls      release       mq-rel + site/mqtt-site-hil-mtls.conf
 #   mq-var       variant       mq-rel + site/variant-publish120.conf (It2, MQTT-09)
 #   mq-inst      instrumented  mq-rel + -S hil + lib/hil
 #   mq-sil       sil           native_sim/native/64: mq-rel site + site/sil/{native-sim-tap,mqtt-sil}.conf
+#   mq-sil-mtls  sil           mq-sil + site/mqtt-site-hil-mtls.conf: TLS-03's mTLS image in SIL
 #   bac-sil      sil           native_sim/native/64: FW/firmware + site/sil/native-sim-tap.conf
 #   bac-mcuboot  release       sysbuild with FW's overlay-mcuboot.conf + the workaround (It2, OTA-*;
 #                              built only when named)
@@ -55,7 +57,7 @@ HIL=$(cd "$(dirname "$0")/../.." && pwd -P)
 OUT=${OUT:-$PWD/hil-out}
 FW=${FW:-}
 MQ=${MQ:-}
-DEFAULT_IMAGES=(stim bac-rel bac-inst mq-rel mq-mtls mq-var mq-inst mq-sil bac-sil)
+DEFAULT_IMAGES=(stim bac-rel bac-inst mq-rel mq-mtls mq-var mq-inst mq-sil mq-sil-mtls bac-sil)
 F767=nucleo_f767zi
 NSIM=native_sim/native/64
 APP_POOL=(-DEXTRA_DTC_OVERLAY_FILE="$HIL/hil/site/f767-app-pool.overlay" -DCONFIG_UC_APP_POOL_SIZE=98304)
@@ -109,7 +111,11 @@ spec() {
 		board=$F767 app=$HIL/apps/hil_stimulus tier=rig ;;
 	bac-*)
 		mods=$(checkout FW "$FW")
-		app=$mods/firmware board=$F767 tier=release extra=("${APP_POOL[@]}")
+		app=$mods/firmware board=$F767 tier=release
+		# FW-04: the workaround only for a checkout whose board overlay does not put the WAMR
+		# pool into DTCM itself (BACnet e62a095 and later do, at 112 KiB; forcing 96 KiB there
+		# would no longer build the product's release image). twister/gen.py decides the same.
+		grep -qs 'uc,app-pool' "$app/boards/$F767.overlay" || extra=("${APP_POOL[@]}")
 		case $1 in
 		bac-rel) ;;
 		bac-inst) tier=instrumented west_args=(-S hil -S hil-io) ;;
@@ -126,6 +132,9 @@ spec() {
 		mq-var) conf+=";$SITE/variant-publish120.conf" tier=variant ;;
 		mq-inst) tier=instrumented west_args=(-S hil) ;;
 		mq-sil) conf+=";$SITE/sil/native-sim-tap.conf;$SITE/sil/mqtt-sil.conf" board=$NSIM tier=sil ;;
+		mq-sil-mtls)
+			conf+=";$SITE/mqtt-site-hil-mtls.conf;$SITE/sil/native-sim-tap.conf;$SITE/sil/mqtt-sil.conf"
+			board=$NSIM tier=sil ;;
 		mq-sil-inst)
 			conf+=";$SITE/sil/native-sim-tap.conf;$SITE/sil/mqtt-sil.conf" board=$NSIM
 			tier=instrumented west_args=(-S hil) ;;
@@ -143,16 +152,18 @@ spec() {
 
 # sizes <app dir name> <build dir> <log>: "flash ram extra" in bytes of the application image
 # (native_sim: text and data + bss of zephyr.exe; sysbuild: the table after "Performing build
-# step for '<app>'", with the MCUboot image's flash in extra)
+# step for '<app>'", with the MCUboot image's flash in extra). ld prints a used size that is a
+# whole multiple of 1 KiB, 1 MiB or 1 GiB in that unit ("96 KB"), so the unit is converted.
 sizes() {
 	if [[ $board == "$NSIM" ]]; then
 		size -B "$2/zephyr/zephyr.exe" | awk 'NR == 2 {printf "%s %s bss=%s\n", $1, $2 + $3, $3}'
 	else
 		awk -v app="'$1'" '
+			BEGIN { unit["B"] = 1; unit["KB"] = 1024; unit["MB"] = 1048576; unit["GB"] = 1073741824 }
 			/Performing build step for / { img = index($0, app) ? "app" : "other"; next }
 			/Memory region/ { cur = img == "" ? "app" : img; seen[cur] = 1
 				delete t[cur ",FLASH"]; delete t[cur ",RAM"]; delete t[cur ",DTCM"] }
-			$2 ~ /^[0-9]+$/ && $3 == "B" { sub(":", "", $1); t[cur "," $1] = $2 }
+			$2 ~ /^[0-9]+$/ && ($3 in unit) { sub(":", "", $1); t[cur "," $1] = $2 * unit[$3] }
 			END { printf "%s %s dtcm=%s%s\n", t["app,FLASH"], t["app,RAM"], t["app,DTCM"] + 0,
 				("other" in seen) ? " boot_flash=" t["other,FLASH"] : "" }' "$3"
 	fi

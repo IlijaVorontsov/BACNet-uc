@@ -188,6 +188,53 @@ while data := os.read(0, 64):
 """
 
 
+FAKE_EXITING_EXE = """#!{python}
+import sys, time
+if "--help" in sys.argv:
+    print("[--help]")
+    sys.exit(0)
+print("*** Booting Zephyr OS build fake ***", flush=True)
+time.sleep(0.3)  # then exits by itself, like native_sim on sys_reboot
+"""
+
+
+class StallingRestart(SilDut):
+    """A SilDut whose automatic restart stalls in argv() until the test has called stop()."""
+
+    def __init__(self, exe: Path, rundir: Path) -> None:
+        super().__init__(exe, rundir, netns=None)
+        self.calls = 0
+        self.restarting, self.stopped = threading.Event(), threading.Event()
+
+    def argv(self) -> list[str]:
+        self.calls += 1
+        if self.calls > 1:  # the restart after the exit of its own
+            self.restarting.set()
+            self.stopped.wait(5)
+        return super().argv()
+
+
+def test_sil_dut_stop_wins_over_a_pending_automatic_restart(tmp_path: Path) -> None:
+    """Regression: stop() during the automatic restart of an exited zephyr.exe returned while
+    the restart went on and started a new process, which then outlived the session on the TAP
+    and the SIL MAC (a second DUT at 192.0.2.10 once the other app's DUT started)."""
+    exe = tmp_path / "zephyr.exe"
+    exe.write_text(FAKE_EXITING_EXE.format(python=sys.executable))
+    exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+    dut = StallingRestart(exe, tmp_path / "run")
+    try:
+        dut.start()
+        assert dut.restarting.wait(5), "the exited process was not restarted"
+        dut.stop()
+        dut.stopped.set()
+        time.sleep(1.0)  # the stalled restart finishes (or, fixed, gives up)
+        assert dut.proc is None and not dut.running() and dut.starts == 1
+    finally:
+        dut.stopped.set()
+        dut.stop()
+        dut.console.shutdown()
+
+
 def test_sil_dut_generation_counts_every_boot(tmp_path: Path) -> None:
     """Regression: a BACnet test after a SIL DUT (re)start sent its Who-Is before the DUT had
     its lease (BIP-01 found no I-Am). app_image now waits again whenever the generation (boots

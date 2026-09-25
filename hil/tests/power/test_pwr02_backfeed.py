@@ -135,18 +135,24 @@ def test_pwr02_dut_survives_a_halted_and_an_unpowered_stimulus(
             return float(mqtt.telemetry(timeout=2 * interval + 5, since=mqtt.client.mark())["uptime_s"])
 
     svc = netns.ns("svc")
+    # every hold ends in a finally: a stimulus left halted or unpowered would fail the rest
+    # of the session as rig faults
     with Continuity(check, svc, bench.dut.ip) as halted:
-        flash_mod.reset_target(bench.stim.probe, halt=True)
-        time.sleep(HOLD_S)
-        flash_mod.reset_target(bench.stim.probe)  # run again: the stimulus boots into safe
+        try:
+            flash_mod.reset_target(bench.stim.probe, halt=True)
+            time.sleep(HOLD_S)
+        finally:
+            flash_mod.reset_target(bench.stim.probe)  # run again: the stimulus boots into safe
+    stim.reopen(connect_timeout=15)  # before the verdict, so the session keeps its link
     halted.assert_ok("stimulus halted")
-    stim.reopen(connect_timeout=15)
     with Continuity(check, svc, bench.dut.ip) as unpowered:
-        uhubctl(bench.hub.location, bench.hub.stim_port, "off")
-        time.sleep(HOLD_S)
-        uhubctl(bench.hub.location, bench.hub.stim_port, "on")
-    unpowered.assert_ok("stimulus unpowered")
+        try:
+            uhubctl(bench.hub.location, bench.hub.stim_port, "off")
+            time.sleep(HOLD_S)
+        finally:
+            uhubctl(bench.hub.location, bench.hub.stim_port, "on")
     stim.reopen(connect_timeout=30)
+    unpowered.assert_ok("stimulus unpowered")
     assert stim.adc("v5", 16).mv >= V5_MIN_MV
 
 

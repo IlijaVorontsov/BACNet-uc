@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import statistics
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -74,9 +74,7 @@ def test_r01_stim_info_fields(stim_link: Link) -> None:
     assert not missing, f"stimulus lacks bench channels {missing}"
 
 
-def test_r01_din_round_trip(
-    stim_link: Link, record_property: Callable[[str, object], None], rig_dir: Path
-) -> None:
+def test_r01_din_round_trip(stim_link: Link, rig_dir: Path) -> None:
     stim = stim_link.stim
     count = 1000 if stim_link.kind == "hardware" else 200
     rtts = []
@@ -93,8 +91,6 @@ def test_r01_din_round_trip(
     report = {"link": stim_link.kind, "command": "stim din do3", "commands": count, "errors": 0}
     report |= {"proto": info.proto, "fw": info.fw, "board": info.board, "rtt_ms": rtt_ms}
     (rig_dir / "R-01.json").write_text(json.dumps(report, indent=2) + "\n")
-    for key, value in rtt_ms.items():
-        record_property(f"stim_rtt_{key}_ms", round(value, 3))
     p50, p99_ms = rtt_ms["p50"], rtt_ms["p99"]
     print(f"R-01 ({stim_link.kind}): {count} x stim din do3, p50 {p50:.2f} ms, p99 {p99_ms:.2f} ms")
     if stim_link.kind == "hardware":

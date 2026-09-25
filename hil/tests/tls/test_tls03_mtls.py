@@ -31,7 +31,10 @@ from hilrig.services import TlsFront
 pytestmark = pytest.mark.release
 
 CONNACK_LIMIT_S = 20.0
-REFUSED_S = 20.0  # observe the refused attempts this long
+# Observe the refused attempts at least REFUSED_S, then until two were refused (their gap is a
+# criterion), at most REFUSED_MAX_S: the first attempt follows boot and DHCP, and the back-off
+# may have grown meanwhile (MQTT 75e0620 tried again only 19 s after its first refusal).
+REFUSED_S, REFUSED_MAX_S = 20.0, 90.0
 RECOVER_S = 90.0  # the DUT's back-off tops out at 60 s (+ jitter)
 BACKOFF_MIN_S = 1.0
 
@@ -72,9 +75,15 @@ def test_tls03_mutual_tls_matrix(
     front = tls_front(version, client_ca=pki.rogue_ca if case == "mtls-rogue" else pki.ca)
     dut_reset.reset(wait=False)
     rebooted = dut_reset.reboot_mark()  # after the rig's own reset
-    time.sleep(REFUSED_S)
-    refused = list(front.sessions)
-    assert refused and all(s.error for s in refused), f"a session was accepted: {refused}"
+    start = time.monotonic()
+    while time.monotonic() - start < REFUSED_MAX_S:
+        sessions = list(front.sessions)  # a finished handshake (version set) is an accepted one
+        refused = [s for s in sessions if s.error and not s.version]
+        if time.monotonic() - start >= REFUSED_S and (len(refused) >= 2 or any(s.version for s in sessions)):
+            break
+        time.sleep(0.5)
+    sessions = list(front.sessions)
+    assert sessions and not [s for s in sessions if s.version], f"a session was accepted: {sessions}"
     mark = dut_link.mark()
     front.set_client_ca(pki.ca if app_image.mtls else None)  # a valid broker configuration again
     recovered = dut_link.wait_app(mark, RECOVER_S)

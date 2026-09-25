@@ -388,6 +388,26 @@ def test_s_server_can_require_a_client_certificate(unit_net: Topology, pki: Pki,
             handshake(unit_net, 8888, pki.ca, versions=(TLS12, TLS12))
 
 
+@pytest.mark.parametrize("version", ["1.2", "1.3"])
+def test_s_server_counts_refused_and_completed_handshakes(
+    unit_net: Topology, pki: Pki, rundir: Path, version: Literal["1.2", "1.3"]
+) -> None:
+    """TLS-01 now waits for the DUT's second refused attempt by these counts, not a fixed 20 s:
+    a DUT whose back-off grew while DHCP was pending (MQTT 75e0620: 19 s) tried only once."""
+    good, pinned = pki.servers["good"], TLS12 if version == "1.2" else TLS13
+    name = f"s_server-count-tls{version.replace('.', '')}"
+    with TlsServer(
+        unit_net.ns("svc"), rundir, cert=good.cert, key=good.key, version=version, port=8890, name=name
+    ) as server:
+        with pytest.raises(ssl.SSLError):  # the client rejects the server certificate
+            handshake(unit_net, 8890, pki.rogue_ca, versions=(pinned, pinned))
+        handshake(unit_net, 8890, pki.ca, versions=(pinned, pinned))
+        deadline = time.monotonic() + 5
+        while server.handshakes() != (1, 1) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert server.handshakes() == (1, 1)
+
+
 def test_readiness_checks_the_address(unit_net: Topology, pki: Pki, rundir: Path) -> None:
     """Regression: a server on 192.0.2.2:8883 counted as ready while another held 192.0.2.1:8883."""
     good = pki.servers["good"]

@@ -27,7 +27,11 @@ from hilrig.services import TlsServer
 
 pytestmark = pytest.mark.release
 
-OBSERVE_S = 20.0  # at least two attempts: back-off 1 s, then 2 s, plus the handshakes
+# Observe at least OBSERVE_S, then until the DUT refused twice (the gap between its attempts is
+# a criterion) or finished a handshake (the expired case), at most OBSERVE_MAX_S: the first
+# attempt follows boot and DHCP, and the back-off may have grown meanwhile (MQTT 75e0620 tried
+# again only 19 s after its first refusal); it tops out at 60 s plus jitter.
+OBSERVE_S, OBSERVE_MAX_S = 20.0, 90.0
 BACKOFF_MIN_S = 1.0
 FATAL = "2"
 CASES = [
@@ -59,10 +63,15 @@ def test_tls01_server_certificate_negatives(
     dut_reset: DutControl,
     bench: Bench,
 ) -> None:
-    tls_server(pki.servers[case], version)
+    server = tls_server(pki.servers[case], version)
     dut_reset.reset(wait=False)
     rebooted = dut_reset.reboot_mark()  # after the rig's own reset
-    time.sleep(OBSERVE_S)
+    start = time.monotonic()
+    while (elapsed := time.monotonic() - start) < OBSERVE_MAX_S:
+        refused, completed = server.handshakes()
+        if elapsed >= OBSERVE_S and (refused >= 2 or completed):
+            break
+        time.sleep(0.5)
     capture.stop()
     dut = bench.dut.ip
     alerts = capture.rows(
@@ -76,7 +85,7 @@ def test_tls01_server_certificate_negatives(
     assert not capture.rows(f"tls.app_data && ip.src == {dut}"), "the DUT sent application data"
     syn = f"tcp.flags.syn == 1 && tcp.flags.ack == 0 && ip.src == {dut} && ip.dst == {SVC2_IP}"
     syns = connection_attempts(capture.rows(syn, "tcp.srcport"))  # a resent SYN is the same attempt
-    assert len(syns) >= 2, f"{len(syns)} attempt(s) in {OBSERVE_S} s"
+    assert len(syns) >= 2, f"{len(syns)} attempt(s) in {elapsed:.0f} s"
     for a in alerts:
         later = [t for t in syns if t > a.t]
         if later:

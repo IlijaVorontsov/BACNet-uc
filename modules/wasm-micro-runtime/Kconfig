@@ -40,14 +40,43 @@ config WAMR_FAST_INTERP
 config WAMR_AOT
 	bool "AOT module loader"
 	help
-	  Allow loading ahead-of-time compiled modules produced by wamrc. AOT
-	  code executes from RAM, so the MPU must allow execution from the
-	  runtime heap. Note for ARM MPU targets: WAMR 2.4.5's
-	  bh_platform_init() "enables" execution with RASR |= ~XN on every
-	  ARMv7-M MPU region that has XN set (upstream bug: it sets every
-	  other attribute bit instead of clearing XN), and does nothing on
-	  ARMv8-M, where SRAM stays execute-never. Only enable this where the
-	  MPU setup has been taken care of.
+	  Allow loading ahead-of-time compiled modules produced by wamrc
+	  (wasm/sdk/uc-aot). Off by default. AOT code is loaded into the WAMR
+	  pool and executed there, so the pool must be executable:
+
+	  - WAMR 2.4.5's own MPU handling (disable_mpu_rasr_xn() from
+	    bh_platform_init()) is broken and not built: on ARMv7-M it ORs
+	    ~XN into RASR of every region with XN, which switches those
+	    regions off (4 GiB, all subregions disabled) instead of clearing
+	    XN; on ARMv8-M it does nothing, SRAM stays execute-never.
+	  - Instead the application manager checks at start, from the MPU
+	    registers, that the pool is executable (wamr_zephyr_exec_enable())
+	    and refuses AOT files otherwise. With Zephyr's default MPU setup
+	    (CONFIG_XIP=y) it is not: NUCLEO-F767ZI (pool in DTCM, covered by
+	    the SRAM region with XN) and FRDM-MCXN947 (pool in SRAMX, its own
+	    RAM region with XN). WAMR_AOT_MPU_EXEC clears XN of those regions.
+	  - native_sim: the pool pages are made executable with mprotect().
+
+	  Cortex-M AOT files must use indirect mode (uc-aot's default): in
+	  direct mode LLVM emits calls to __aeabi_memclr, which WAMR 2.4.5's
+	  aot_reloc_thumb.c symbol map lacks. WAMR has no way to add symbols
+	  to that map from outside (the map also sizes the PLT), so the glue
+	  does not try. The application watchdog stops an AOT callback only if
+	  the file was compiled with --enable-multi-thread (uc-aot's default)
+	  and CONFIG_WAMR_THREAD_MGR=y; WAMR_INSTRUCTION_LIMIT does not apply
+	  to AOT code.
+
+config WAMR_AOT_MPU_EXEC
+	bool "Clear XN of the MPU regions holding the WAMR pool"
+	depends on WAMR_AOT && ARM_MPU
+	help
+	  Acknowledges that AOT code executes from RAM on an ARM MPU target:
+	  at start, the XN attribute of the enabled MPU regions that decide
+	  the access to the WAMR pool is cleared (ARMv7-M RASR.XN, ARMv8-M
+	  RBAR.XN; nothing else changes). Such a region becomes executable as
+	  a whole: on NUCLEO-F767ZI the SRAM region (all of SRAM including
+	  DTCM, like a CONFIG_XIP=n image), on FRDM-MCXN947 the SRAMX region
+	  (only the pool). Without it, AOT files are refused on these boards.
 
 config WAMR_BULK_MEMORY
 	bool "Bulk memory operations"
@@ -77,6 +106,25 @@ config WAMR_THREAD_MGR
 	  (WASM_ENABLE_HEAP_AUX_STACK_ALLOCATION=1). AOT code checks the flags
 	  only when it was compiled with thread manager support
 	  (wamrc --enable-multi-thread).
+
+config WAMR_INSTRUCTION_LIMIT
+	int "Instruction budget of one call into a module (0: unlimited)"
+	range 0 2147483647
+	default 100000000 if ARCH_POSIX
+	default 0
+	help
+	  Builds WAMR with instruction metering (WAMR_BUILD_INSTRUCTION_METERING)
+	  and gives every call into a module (every application callback)
+	  this many interpreted instructions; a call that exceeds it traps with
+	  "instruction limit exceeded". Interpreter only, not AOT code.
+
+	  Meant for native_sim, where the application watchdog
+	  (CONFIG_UC_APP_WATCHDOG_MS) cannot stop a callback that never
+	  blocks: simulated time only advances while the simulated CPU idles,
+	  so the watchdog timer does not expire during a busy loop and the
+	  whole node would hang. 100 million instructions take roughly 0.1 to
+	  0.5 s on a PC. On the boards the watchdog works in real time and the
+	  metering (one counter update per instruction) is left out.
 
 config WAMR_LOG
 	bool "Runtime diagnostics"

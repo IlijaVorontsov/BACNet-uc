@@ -4,10 +4,12 @@
  * Zephyr glue for WAMR's "zephyr" platform layer.
  *
  * wamr_zephyr_vprintf(): WAMR's os_printf()/os_vprintf() (runtime
- * diagnostics, BH_VPRINTF) as one printk() per call. The platform's
- * default is vprintf() through the stdout hook that bh_platform_init()
- * installs, which emits one printk("%c") per character; with
- * CONFIG_LOG_PRINTK every character would become a log message.
+ * diagnostics and the libc-builtin printf/vprintf/puts/putchar of the
+ * modules, BH_VPRINTF) as one printk() per call, unless the embedder's
+ * print hook (wamr_zephyr_set_print_hook()) takes the output. The
+ * platform's default is vprintf() through the stdout hook that
+ * bh_platform_init() installs, which emits one printk("%c") per character;
+ * with CONFIG_LOG_PRINTK every character would become a log message.
  *
  * __stdout_hook_install(): bh_platform_init() calls it unconditionally.
  * Zephyr's minimal libc and picolibc provide it; an external C library
@@ -20,10 +22,32 @@
 #include <zephyr/sys/printk.h>
 #include <zephyr/toolchain.h>
 
+#include "wamr_zephyr.h"
 #include "wamr_zephyr_glue.h"
+
+static wamr_zephyr_print_hook_t print_hook;
+
+void wamr_zephyr_set_print_hook(wamr_zephyr_print_hook_t hook)
+{
+	print_hook = hook;
+}
 
 int wamr_zephyr_vprintf(const char *format, va_list ap)
 {
+	wamr_zephyr_print_hook_t hook = print_hook;
+
+	if (hook != NULL) {
+		va_list aq;
+		bool done;
+
+		va_copy(aq, ap);
+		done = hook(format, aq);
+		va_end(aq);
+		if (done) {
+			return 0;
+		}
+	}
+
 	vprintk(format, ap);
 	return 0;
 }

@@ -53,7 +53,10 @@ def test_sys01_flash_and_boot_to_network(
         iam = [r for r in iam if r.t >= end]
         assert iam and iam[0].t - end <= IAM_LIMIT_S, "no I-Am with the bench instance within 15 s"
     else:
-        connack = rows_of(pcap, f"mqtt.msgtype == 2 && ip.dst == {ip}", "mqtt.conack.val")
+        # only the flashed image's session: the capture starts before the flash
+        connack = [
+            r for r in rows_of(pcap, f"mqtt.msgtype == 2 && ip.dst == {ip}", "mqtt.conack.val") if r.t >= end
+        ]
         if connack:  # decrypted with the broker key log
             assert connack[0]["mqtt.conack.val"] == "0" and connack[0].t - end <= CONNACK_LIMIT_S
         else:  # no key log: 'online' is published only after CONNACK 0 and SUBACK

@@ -10,7 +10,7 @@ the symbols listed here. `hil/host/build.sh` builds every image from these files
 
 | Image (build.sh name) | Files | Symbols it may change | Why |
 |---|---|---|---|
-| P1 BACnet release (`bac-rel`) | `f767-app-pool.overlay` + `-DCONFIG_UC_APP_POOL_SIZE=98304` | chosen `uc,app-pool = &dtcm`, `UC_APP_POOL_SIZE` | The default nucleo_f767zi build overflows RAM by 29,564 B (FW-04). This is the workaround documented in the BACnet branch (docs/architecture.md §6.2). It goes away when FW-04 lands. |
+| P1 BACnet release (`bac-rel`) | `f767-app-pool.overlay` + `-DCONFIG_UC_APP_POOL_SIZE=98304` | chosen `uc,app-pool = &dtcm`, `UC_APP_POOL_SIZE` | The default nucleo_f767zi build overflows RAM by 29,564 B (FW-04). This is the workaround documented in the BACnet branch (docs/architecture.md §6.2). It goes away when FW-04 lands: `host/build.sh` and `twister/gen.py` apply it only while the checkout's own `firmware/boards/nucleo_f767zi.overlay` does not choose `uc,app-pool` (BACnet e62a095 and later put the pool into DTCM themselves, 112 KiB, and then build unchanged). |
 | P1 BACnet MCUboot (`bac-mcuboot`, It2, OTA-* only) | the branch's own `overlay-mcuboot.conf` (sysbuild) + the workaround | the MCUboot symbols of that file; an OTA candidate adds only a `UC_FW_VERSION` suffix (`-hilota`) | OTA needs MCUboot. Built only when named. |
 | P1 MQTT release (`mq-rel`) | `mqtt-site-hil.conf` | `APP_MQTT_BROKER_HOSTNAME="broker.hil.lan"`, `APP_MQTT_TLS_CA_CERT_FILE` = the TEST-ONLY CA `hil/pki/ca.crt` | the rig's broker and CA (tier (a) of B12) |
 | P1 MQTT mTLS (`mq-mtls`) | `mqtt-site-hil.conf` + `mqtt-site-hil-mtls.conf` | plus `APP_MQTT_TLS_CLIENT_AUTH=y`, `_CLIENT_CERT_FILE`, `_CLIENT_KEY_FILE` = `hil/pki/dut-client.{crt,key}` | TLS-03 (`hil.mqtt.release.mtls`) |
@@ -42,11 +42,15 @@ native **TAP** driver instead:
 |---|---|---|
 | `sil/native-sim-tap.conf` | `mq-sil`, `bac-sil` | NSOS off; `ETH_NATIVE_TAP` on interface `zeth`; fixed MAC `02:48:49:4c:00:0a`; DHCPv4 and the connection manager on |
 | `sil/mqtt-sil.conf` | `mq-sil` (after `mqtt-site-hil.conf`) | `APP_MQTT_CLIENT_ID="hil-dut"`, the SIL bench's client id |
+| (the same two files) | `mq-sil-mtls` (after `mqtt-site-hil.conf` and `mqtt-site-hil-mtls.conf`) | the mTLS image for TLS-03 in SIL |
 | (the same two files) | `mq-sil-inst` (only when named) | mq-sil plus `-S hil` and lib/hil: HIL-BOOT/HIL-READY and the `hil` shell without hardware |
 | `sil/bench-native-sim.yml` | pytest `--sil --bench` | SIL bench for these images: board `native_sim/native/64`, the TAP MAC (dnsmasq reserves 192.0.2.10 on it), instance 260001, client id `hil-dut` |
 
-`hil/net/up.sh --sil` creates the TAP `zeth` in netns `lan-a` on bridge `br-a`. Run one image
-at a time inside that netns (both use the same TAP and MAC):
+The test session does all of the following by itself with `pytest --sil --sil-dut
+<app>=<out>/<image>/zephyr/zephyr.exe` (hil/README.md, "SIL against the firmware"). By hand:
+`hil/net/up.sh --sil` creates the TAP `zeth` in netns `lan-a` on bridge `br-a`, and with
+dnsmasq and a broker running in netns `svc` one image at a time runs inside `lan-a` (all of
+them use the same TAP and MAC):
 
 ```sh
 ip netns exec lan-a <out>/bac-sil/zephyr/zephyr.exe --flash=<tmp>/flash.bin --flash_erase

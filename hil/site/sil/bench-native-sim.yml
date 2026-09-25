@@ -1,10 +1,11 @@
-# SIL bench for the native_sim/native/64 images built by hil/host/build.sh (mq-sil, bac-sil).
-# The topology then has TAP zeth in netns lan-a (hilrig: board native_sim/native/64), and
-# dnsmasq reserves 192.0.2.10 on the fixed TAP MAC of hil/site/sil/native-sim-tap.conf.
-# Start one image at a time inside lan-a (both use the same TAP and MAC), for example:
-#   ip netns exec lan-a <out>/bac-sil/zephyr/zephyr.exe --flash=<tmp>/flash.bin --flash_erase
-#   ip netns exec lan-a <out>/mq-sil/zephyr/zephyr.exe
-#   sudo -E "$(command -v pytest)" --sil --bench hil/site/sil/bench-native-sim.yml ...
+# SIL bench for the native_sim/native/64 images built by hil/host/build.sh (mq-sil,
+# mq-sil-mtls, bac-sil). The topology then has TAP zeth in netns lan-a (hilrig: board
+# native_sim/native/64), and dnsmasq reserves 192.0.2.10 on the fixed TAP MAC of
+# hil/site/sil/native-sim-tap.conf. The tests start the image themselves (--sil-dut), and
+# with --sil-dut the conftest fills in the same identity from host/bench-sil.yml and the
+# image, so this file is only needed to state it explicitly:
+#   sudo -E "$(command -v pytest)" --sil --bench hil/site/sil/bench-native-sim.yml \
+#       --sil-dut mqtt=<out>/mq-sil/zephyr/zephyr.exe tests/mqtt
 name: sil-native
 mode: sil
 dut:

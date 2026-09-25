@@ -113,13 +113,26 @@ class Scenario:
     sysbuild: bool = False
 
 
-def scenarios(p: Paths, *, it2: bool = False) -> list[Scenario]:
-    """The scenarios of one run, as ``hil/host/build.sh`` builds the same images."""
-    site = p.out / "site"
-    pool = (
+def app_pool_workaround(p: Paths) -> tuple[str, ...]:
+    """FW-04's DTCM app-pool workaround, unless the checkout's board overlay has the pool there.
+
+    BACnet e62a095 and later place the WAMR pool (chosen ``uc,app-pool``) in DTCM themselves,
+    at 112 KiB: the workaround would shrink it to 96 KiB, and the release scenario would no
+    longer build the product's release image (D24). ``hil/host/build.sh`` decides the same way.
+    """
+    overlay = p.suite("bacnet") / "boards" / f"{p.platform.split('/')[0]}.overlay"
+    if overlay.is_file() and "uc,app-pool" in overlay.read_text():
+        return ()
+    return (
         f"EXTRA_DTC_OVERLAY_FILE={p.hil}/hil/site/f767-app-pool.overlay",
         f"CONFIG_UC_APP_POOL_SIZE={APP_POOL_SIZE}",
     )
+
+
+def scenarios(p: Paths, *, it2: bool = False) -> list[Scenario]:
+    """The scenarios of one run, as ``hil/host/build.sh`` builds the same images."""
+    site = p.out / "site"
+    pool = app_pool_workaround(p)
     instrumented = f"{p.hil}/lib/hil"
     snippet_root = f"SNIPPET_ROOT={p.hil}"
     plain = f"{site}/mqtt-site-hil.conf"

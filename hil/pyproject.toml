@@ -50,7 +50,7 @@ markers = [
 
 [tool.ruff]
 line-length = 110
-extend-exclude = ["tools"]  # bacnet-stack checkout (see README)
+extend-exclude = ["tools/bacnet-stack"]  # bacnet-stack checkout (see README)
 src = ["src", "tests/unit", "tests/mstp"]  # test helpers (fake_stim, mstp_bus) are first-party
 
 [tool.ruff.lint]

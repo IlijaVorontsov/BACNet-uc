@@ -63,7 +63,11 @@ class SilDut:
         self.started_at = 0.0  # time.time() of the last start: "reset release" in SIL
         self.exits = 0  # exits of its own (sys_reboot or a fatal error), each followed by a restart
         self._stopping = False
-        self._watch: threading.Thread | None = None
+        # stop() and the automatic restart of an exited process run in different threads: the
+        # lock orders them, and a restart is dropped when a stop() came after the exit it
+        # answers (_epoch), so no zephyr.exe outlives stop() on the TAP and the SIL MAC
+        self._lock = threading.Lock()
+        self._epoch = 0
 
     def argv(self) -> list[str]:
         """The command line, with only the options this build supports."""
@@ -81,22 +85,30 @@ class SilDut:
 
     def start(self) -> SilDut:
         """Start zephyr.exe inside the namespace and attach its output to :attr:`console`."""
+        self._start(None)
+        return self
+
+    def _start(self, epoch: int | None) -> None:
+        """Start the process; with ``epoch`` (an automatic restart) only if no stop() came since."""
         self.rundir.mkdir(parents=True, exist_ok=True)
         argv = nsmod.exec_argv(self.netns, self.argv())
-        self._stopping = False
-        self.proc = subprocess.Popen(
-            argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
-        )
-        since = self.console.mark()
-        self.console.attach(self.proc)
-        self.starts += 1
-        self.started_at = time.time()
+        with self._lock:
+            if epoch is not None and epoch != self._epoch:
+                return
+            self._stopping = False
+            proc = subprocess.Popen(
+                argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+            )
+            self.proc = proc
+            since = self.console.mark()
+            self.console.attach(proc)
+            self.starts += 1
+            self.started_at = time.time()
         with contextlib.suppress(TimeoutError):  # booted: later banners mean reboots (dutctl)
             self.console.wait_for(BOOT_BANNER, 5.0, since)
-        if self.proc.poll() is not None:
-            raise SilDutError(f"{self.exe} exited with {self.proc.returncode}; see {self.console.log}")
-        threading.Thread(target=self._restart_on_exit, args=(self.proc,), daemon=True).start()
-        return self
+        if proc.poll() is not None:
+            raise SilDutError(f"{self.exe} exited with {proc.returncode}; see {self.console.log}")
+        threading.Thread(target=self._restart_on_exit, args=(proc,), daemon=True).start()
 
     def _restart_on_exit(self, proc: subprocess.Popen[bytes]) -> None:
         """Start the process again when it ends by itself, as hardware comes back.
@@ -105,13 +117,14 @@ class SilDut:
         re-executes in place), and on a fatal error.
         """
         proc.wait()
-        if self._stopping or proc is not self.proc:
-            return
-        self.exits += 1
+        with self._lock:
+            if self._stopping or proc is not self.proc:
+                return
+            epoch = self._epoch
+            self.exits += 1
         self.console.close()
         time.sleep(0.2)
-        if not self._stopping:
-            self.start()
+        self._start(epoch)
 
     @property
     def generation(self) -> int:
@@ -124,8 +137,10 @@ class SilDut:
 
     def stop(self) -> None:
         """Stop the process: SIGTERM, then SIGKILL after 5 s (idempotent)."""
-        self._stopping = True
-        proc, self.proc = self.proc, None
+        with self._lock:
+            self._stopping = True
+            self._epoch += 1
+            proc, self.proc = self.proc, None
         if proc is None:
             return
         if proc.poll() is None:

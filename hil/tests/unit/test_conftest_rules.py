@@ -51,10 +51,15 @@ def nested(tmp_path: Path, *args: str, gate_ok: bool = True, bench: bool = True)
     (tmp_path / "bench.yml").write_text(BENCH)
     (tmp_path / "test_nested.py").write_text(TESTS.replace("GATE_OK", str(gate_ok)))
     argv = [sys.executable, "-m", "pytest", "-c", str(HIL / "pyproject.toml"), "--rootdir", str(HIL)]
-    argv += ["-p", "conftest", "-p", "no:cacheprovider", "-rs", str(tmp_path / "test_nested.py")]
+    # no:twister_harness: the host venv has the Twister plugin installed (D2), and it refuses to
+    # load without ZEPHYR_BASE, which this minimal environment leaves out on purpose
+    argv += ["-p", "conftest", "-p", "no:cacheprovider", "-p", "no:twister_harness"]
+    argv += ["-rs", str(tmp_path / "test_nested.py")]
     argv += ["--bench", str(tmp_path / "bench.yml")] if bench else []
     argv += ["--artifacts", str(tmp_path / "artifacts"), *args]
-    env = {"PYTHONPATH": f"{HIL / 'tests'}:{HIL / 'tests' / 'unit'}", "PATH": "/usr/bin:/bin"}
+    # hil/src first: the nested run tests this checkout's hilrig, not an installed copy
+    path = ":".join(str(p) for p in (HIL / "src", HIL / "tests", HIL / "tests" / "unit"))
+    env = {"PYTHONPATH": path, "PATH": "/usr/bin:/bin"}
     proc = subprocess.run(
         argv, capture_output=True, text=True, timeout=120, env=env, cwd=tmp_path, check=False
     )
@@ -91,6 +96,14 @@ def test_a_hil_run_with_no_executed_test_fails(tmp_path: Path) -> None:
     assert rc == 0, out
 
 
+def test_a_hil_run_that_selects_nothing_fails(tmp_path: Path) -> None:
+    """Regression: a -k/-m that deselected every test left exit 5, which Twister reports as a skip."""
+    rc, out = nested(tmp_path, "--hil", "-k", "no_such_test")
+    assert rc == 1 and "5 deselected" in out, out
+    rc, out = nested(tmp_path, "--hil", "--collect-only", "-k", "no_such_test")  # a listing is no run
+    assert rc == 5, out
+
+
 def test_hil_select_narrows_the_selection(tmp_path: Path) -> None:
     rc, out = nested(tmp_path, "--hil", "--cycles", "3", "--hil-select", "rig or (release and not slow)")
     assert rc == 0, out
@@ -111,3 +124,20 @@ def test_hil_select_narrows_the_selection(tmp_path: Path) -> None:
 def test_bad_option_combinations_are_usage_errors(tmp_path: Path, args: list[str], message: str) -> None:
     rc, out = nested(tmp_path, *args)
     assert rc == 4 and message in out
+
+
+def test_no_test_records_junit_properties() -> None:
+    """Regression: BIP-01 and R-01 used record_property for informational numbers.
+
+    Under the default junit family (xunit2) pytest drops those properties and warns, and under
+    xunit1 they become the first child of <testcase>, which Twister's pytest harness
+    (harness.py ``_parse_report_file``: ``elem_tc.find('*')``) takes as the verdict, so a pass
+    is recorded as an error. Informational values go to ``<artifacts>/rig/<id>.json``.
+    """
+    users = [
+        f"{path.relative_to(HIL)}:{n}"
+        for path in sorted((HIL / "tests").rglob("*.py"))
+        for n, line in enumerate(path.read_text().splitlines(), 1)
+        if "record_property" in line and path.name != Path(__file__).name
+    ]
+    assert not users, f"record_property in {users}"

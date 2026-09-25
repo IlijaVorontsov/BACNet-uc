@@ -21,7 +21,7 @@ west build -b nucleo_f767zi $HIL/apps/hil_stimulus -d b/stim     # or: hil/host/
 west flash -d b/stim -r openocd -- --cmd-pre-init "adapter serial $STIM_SN"
 ```
 
-Measured: 91,820 B flash and 42,624 B RAM, 0 warnings (2026-09-25, SDK 1.0.1, v4.4.2).
+Measured: 92,124 B flash and 42,624 B RAM, 0 warnings (2026-09-25, SDK 1.0.1, v4.4.2).
 
 Always select the probe by serial. The DUT and the stimulus are both ST-LINK V2-1
 (0483:374b, platform `nucleo_f767zi`). `west flash --serial` does not choose the probe on this
@@ -40,7 +40,7 @@ the banner, then send `stim info`, `stim chan di1` and `stim safe`.
 | `boards/nucleo_f767zi.overlay` | the P1 channel map (`hil-stim` node, `profile = "P1"`), DAC1, ADC1/ADC3 senses with 480-cycle sampling and prescaler 4 (27 MHz), TIM5/TIM2/TIM4 capture, USART2 injector with hardware DE 8/8 (It2); disables `gpio_keys`, `mac`, `mdio`, `spi1`, `can1`, `usart6`, `timers1` |
 | `dts/bindings/hil,stim-channels.yaml` | app-local binding: one child per channel with `kind`, `gpios`, `io-channels` (`src`/`sense`), `pwms`, `range-mv`, `scale`, `stim-pin`, `dut-pin` |
 | `dts/bindings/vendor-prefixes.txt` | vendor prefix `hil` |
-| `src/main.c` | banner, IWDG (4 s) feeding, heartbeat LED; stops feeding when a command overruns its budget + 5 s |
+| `src/main.c` | banner, IWDG (4 s) feeding, heartbeat LED; stops feeding when a command overruns its budget + 5 s (the budget is the command's worst case: a sleeping pulse train includes up to 4 ticks per pulse, RS-485 tx/rx the frame's time on the wire at the current rate) |
 | `src/stim_cmds.c` | the `stim` commands; the channel table is built with `DT_FOREACH_CHILD_STATUS_OKAY_SEP` |
 
 ## Channel map (profile P1)

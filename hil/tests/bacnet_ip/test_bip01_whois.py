@@ -6,13 +6,16 @@ until R-05.
 
 Expected I-Am values are the device profile of docs/bacnet.md 1 (BACnet branch):
 Max_APDU_Length_Accepted 1476, segmentation not supported, vendor id 260 (bacnet-stack
-default). The capture fixture fails the test on any malformed frame from the DUT.
+default). The capture fixture fails the test on any malformed frame from the DUT. The
+informational I-Am latency goes to ``<artifacts>/rig/BIP-01.json``.
 """
 
 from __future__ import annotations
 
 import statistics
 from collections.abc import Callable
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -35,7 +38,7 @@ def test_bip01_who_is_i_am(
     bacnet: Bacnet,
     capture: Capture,
     bench: Bench,
-    record_property: Callable[[str, object], None],
+    rig_report: Callable[[str, dict[str, Any]], Path],
 ) -> None:
     inst, dut = bench.dut.bacnet_instance, bench.dut.ip
     for i in range(WHO_IS_COUNT):
@@ -54,5 +57,5 @@ def test_bip01_who_is_i_am(
     latencies = [min((r.t - w for r in rows if r.t >= w), default=float("nan")) * 1e3 for w in who]
     valid = [x for x in latencies if x == x]
     if valid:  # informational until the SYNC fit (R-05)
-        record_property("iam_latency_ms_median", round(statistics.median(valid), 2))
-        record_property("iam_latency_ms_max", round(max(valid), 2))
+        median, worst = round(statistics.median(valid), 2), round(max(valid), 2)
+        rig_report("BIP-01", {"who_is": len(who), "iam_latency_ms": {"median": median, "max": worst}})

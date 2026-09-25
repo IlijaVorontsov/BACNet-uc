@@ -309,3 +309,24 @@ def test_silent_port_is_refused(tmp_path: Path) -> None:
     finally:
         os.close(master)
         os.close(slave)
+
+
+def test_long_pulse_trains_and_edge_lists_get_their_reply_time(
+    stim: Stim, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: the host waited count x period + 2 s for a pulse train, but in sleep mode each
+    of a pulse's two k_usleep phases ends up to 2 ticks late (+400 us a pulse: +40 s for 100000),
+    and an edges reply of 1024 edges takes about 2 s on the wire; both timed out while the board
+    was still working."""
+    seen: list[float] = []
+
+    def query(line: str, build: object, *, timeout: float | None = None, read_only: bool = False) -> None:
+        seen.append(timeout or 0.0)
+
+    monkeypatch.setattr(stim, "_query", query)
+    stim.pulse("di1", 500, 100_000, 1000, active=0)  # 100 s nominal
+    assert seen[-1] >= 100.0 + 100_000 * stim_mod.PULSE_SLACK_S + 2.0
+    stim.edges("m0", 100, max_edges=1024)  # 1024 x 24 characters at 115200 baud: 2.1 s
+    assert seen[-1] >= 0.1 + 2.0 + 1024 * 24 * 10 / 115200
+    stim.edges("m0", 100)  # 64 edges by default
+    assert 2.1 < seen[-1] < 2.4

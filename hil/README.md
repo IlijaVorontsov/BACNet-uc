@@ -51,8 +51,14 @@ DUT's console. `Bench.load()` rejects unknown keys and bad values, and names the
 error (`bench.yml: dut.mac: '02:80:e1' is not a MAC address ...`).
 
 ```sh
-sudo -E "$(command -v pytest)" --hil --bench /etc/hil/bench1/bench.yml   # or HIL_BENCH=...
+sudo -E "$(command -v pytest)" --hil --bench /etc/hil/bench1/bench.yml tests   # or HIL_BENCH=...
 ```
+
+Name the test directory (`tests`, or single test files) whenever an option value is an
+existing path outside the checkout (`--bench`, `--dut-build`, `--release-build`, ...), or write
+it as `--bench=PATH`. pytest takes such a bare path for a test path, looks for its
+`pyproject.toml` above it, finds none, and then fails with "unrecognized arguments", because
+the options come from `tests/conftest.py`, which it never loaded.
 
 | Option | Meaning |
 |---|---|
@@ -65,7 +71,7 @@ sudo -E "$(command -v pytest)" --hil --bench /etc/hil/bench1/bench.yml   # or HI
 | `--hil-select EXPR` | marker expression that narrows the scenario's `-m` (`and`, `or`, `not`, parentheses) |
 | `--dut-build DIR` | local hardware runs: the image under test; flashed at session start unless `--no-flash` |
 | `--dut-app bacnet\|mqtt` | the app already on the DUT, when no build dir is given |
-| `--sil-dut APP=EXE` / `$HIL_SIL_DUT` | SIL: a native_sim TAP build as the DUT (see "SIL DUT"); repeat for both apps |
+| `--sil-dut APP=EXE` / `$HIL_SIL_DUT` | SIL: a native_sim TAP build as the DUT (see "SIL against the firmware"); repeat for both apps |
 | `--release-build DIR`, `--plain-build DIR` | SEC-01: release builds and the plain builds they are compared with |
 | `--mqtt-checkout DIR` / `$HIL_MQTT_CHECKOUT` | S-03: the MQTT branch checkout inside a west workspace |
 | `$HIL_BACNET_BIN` | bacnet-stack tool directory |
@@ -107,7 +113,11 @@ hil/
     mstp.py la.py sync.py MS/TP frames and timing, logic analyzers, clock fit
   net/up.sh down.sh       topology scripts, installed as hil-net-up / hil-net-down
   pki/                    TEST-ONLY CA and DUT client certificate, mkpki.sh (see pki/README.md)
-  host/                   bench.yml.example (P1), bench-sil.yml, install-net-wrappers.sh
+  host/                   bench.yml.example (P1), bench-sil.yml, build.sh (firmware images),
+                          isolated.sh, install-net-wrappers.sh; CI and host setup (README-host.md)
+  site/                   site configuration of the images (D24) and the SIL confs (site/README.md)
+  twister/                gen.py (Twister alt configs), ci-build.sh (the build half of a CI run)
+  tools/                  survey.sh (branch drift), check_catalog.py (DUT devicetree vs pin tables)
   decoders/ saleae/       sigrok and Logic 2 MS/TP decoders
   tests/
     conftest.py           fixtures, options and marks
@@ -150,8 +160,10 @@ runs the scripts in the checkout; as any other user it runs `sudo -n hil-net-up`
 
 sudoers never allows `ip netns exec`, which amounts to a root shell, and never allows
 scripts from a work tree, which anyone who can push could edit. Running processes inside a
-namespace needs CAP_SYS_ADMIN, so the test session itself runs as root. In CI that happens
-in the privileged job container. On Ubuntu 24.04, dumpcap is `/usr/bin/dumpcap`.
+namespace needs CAP_SYS_ADMIN, so the test session itself runs as root. In CI the jobs run
+on the host without a job container, and the runner user's only sudoers entry is the
+root-owned `/opt/hil/bin/run-hil` (D32, `host/README-host.md`). On Ubuntu 24.04, dumpcap is
+`/usr/bin/dumpcap`.
 
 ## Fixtures
 
@@ -226,37 +238,71 @@ Channel names are the DUT catalog names (`di1`, `do3`, `ai0`, `ao0`) plus `nrst`
 `nrst_sense`, `pwr`, `sync`, `lb`, `v3v3`, `v5` and `m0`..`m3`; `hilrig.bench.logical()`
 applies a catalog channel's polarity.
 
-## SIL DUT (native_sim)
+## SIL against the firmware (native_sim)
 
-`--sil-dut bacnet=EXE` and `--sil-dut mqtt=EXE` run the firmware itself as the DUT in the
-SIL tier: `zephyr.exe` of a `native_sim/native/64` build on a TAP interface (`zeth`) in netns
-`lan-a`, with the SIL MAC `02:48:49:4c:00:0a` (`--mac-addr`), hwinfo device id
-`0x48494c31` (`--device_id`; MQTT client id `z914koc8`), a flash file under the artifacts
-and the console on stdio. The bench is `host/bench-sil.yml` with that board, MAC and client
-id. `$HIL_SIL_DUT` takes the same specs separated by `;`. Build the DUT with an extra
-configuration fragment:
+`--sil-dut mqtt=EXE` and `--sil-dut bacnet=EXE` run the real firmware as the DUT in the SIL
+tier: `zephyr.exe` of a `native_sim/native/64` build on the native TAP driver (FW-13), built
+by `host/build.sh` from `site/sil/` (see `site/README.md`). The session then:
 
+1. brings the topology up with `net/up.sh --sil`: TAP `zeth` on bridge `br-a` in netns `lan-a`;
+2. starts dnsmasq and mosquitto in netns `svc` (the DUT reservation 192.0.2.10 on the SIL
+   MAC `02:48:49:4c:00:0a`, `broker.hil.lan` -> 192.0.2.1; the broker from the
+   `eclipse-mosquitto:2.1.2-alpine` image when docker has it, which gives the key log);
+3. starts `ip netns exec lan-a zephyr.exe` with `--mac-addr`, `--device_id` 0x48494c31
+   (hwinfo UID `48494c31`), `--flash=<artifacts>/sil-dut/<app>/flash.bin` and
+   `--uart_stdinout`, each only when the build offers the option. One DUT runs at a time.
+   A reset or power cycle restarts the process, and a process that exits by itself (native_sim
+   exits on `sys_reboot` unless built with `CONFIG_NATIVE_SIM_REBOOT`) is started again;
+4. for the BACnet image, waits for its I-Am and applies `rig_config` over SMP, as the
+   hardware session start does (needs `$HIL_BACNET_HARNESS`).
+
+The bench is `host/bench-sil.yml` with the native_sim board, the SIL MAC and UID, and the
+image's `CONFIG_APP_MQTT_CLIENT_ID` (`hil-dut` in the `mq-sil*` images; else `z` + base32 of
+the UID, `z914koc8`). `$HIL_SIL_DUT` takes the same specs separated by `;`. Timing criteria,
+the stimulus and the per-link-up DHCP criterion of NET-03 (a TAP has no carrier to lose) are
+hardware only.
+
+Build the images (in the west workspace whose manifest matches the checkouts; the firmware
+checkouts can be `git worktree add` of the branch tips):
+
+```sh
+. /opt/zvenv/bin/activate                          # the west venv
+export ZEPHYR_SDK_INSTALL_DIR=/opt/zsdk/zephyr-sdk-1.0.1 WEST_WS=/home/user
+hil/host/build.sh -o $OUT -f $FW -m $MQ mq-sil mq-sil-mtls bac-sil
 ```
-# Zephyr's IP stack on the TAP instead of NSOS; a fixed MAC (else --mac-addr is not offered)
-CONFIG_NET_SOCKETS_OFFLOAD=n
-CONFIG_NET_NATIVE_OFFLOADED_SOCKETS=n
-CONFIG_ETH_NATIVE_TAP=y
-CONFIG_ETH_NATIVE_TAP_RANDOM_MAC=n
-CONFIG_NET_L2_ETHERNET=y
-CONFIG_NET_DHCPV4=y
-# sys_reboot re-executes the image in place instead of exiting
-CONFIG_REBOOT=y
-CONFIG_NATIVE_SIM_REBOOT=y
+
+Run them (as root, from `hil/`; `$HIL_BACNET_BIN` = the bacnet-stack tools):
+
+```sh
+PYTEST="$(command -v pytest)"
+# MQTT-01..03, TLS-01, TLS-03 (plain image: no client certificate), NET-03
+sudo -E "$PYTEST" --sil --sil-dut mqtt=$OUT/mq-sil/zephyr/zephyr.exe --enable-slow \
+    tests/mqtt tests/tls tests/net/test_net03_link_flap.py
+# TLS-03 on the mTLS image (valid and rogue client certificate), MQTT-01 again
+sudo -E "$PYTEST" --sil --sil-dut mqtt=$OUT/mq-sil-mtls/zephyr/zephyr.exe \
+    tests/tls/test_tls03_mtls.py tests/mqtt/test_mqtt01_boot_to_online.py
+# BIP-01, BIP-03, NET-03, PERS-01 (rig_config over SMP)
+sudo -E HIL_BACNET_HARNESS=$FW/harness "$PYTEST" --sil --sil-dut bacnet=$OUT/bac-sil/zephyr/zephyr.exe \
+    tests/bacnet_ip tests/net/test_net03_link_flap.py tests/persistence
+# S-01, S-02: the bacserv stand-in and the fake MQTT DUT (no firmware)
+sudo -E "$PYTEST" --sil tests/sil
 ```
 
-The MQTT build adds `CONFIG_NET_CONNECTION_MANAGER=y`, `CONFIG_HEAP_MEM_POOL_SIZE=16384` and
-the site symbols (`CONFIG_APP_MQTT_BROKER_HOSTNAME="broker.hil.lan"`, the test CA as
-`CONFIG_APP_MQTT_TLS_CA_CERT_FILE`, and for mTLS the client certificate and key).
+The broker's key log needs a running dockerd with the image (`docker pull
+eclipse-mosquitto:2.1.2-alpine`); without it the broker is the local mosquitto 2.0.18 and the
+checks that need the decrypted session skip with that reason. To keep a run apart from any
+other on the host, wrap each command in `host/isolated.sh -d` (private namespaces and a
+dockerd of its own, stopped at the end; see the script):
 
-A DUT process that ends by itself is started again, as hardware comes back after a reset.
-MQTT-01..03, TLS-01, TLS-03, NET-03, BIP-01, BIP-03 and PERS-01 run against it; timing
-criteria and anything needing the stimulus board skip. The BACnet tests need
-`$HIL_BACNET_HARNESS` (SMP) as on hardware.
+```sh
+sudo -E DOCKER_DATA_ROOT=/var/lib/docker host/isolated.sh -d "$PYTEST" --sil --sil-dut ...
+```
+
+`DOCKER_DATA_ROOT` is the image store the private dockerd uses; it must not belong to a
+dockerd that is running at the same time (stop the host's, or keep a second store).
+
+Each run leaves `sil-dut/<app>/console.log` (the DUT console with host timestamps), one
+pcapng per test with the TLS secrets injected, and the service logs under `--artifacts`.
 
 ## bacnet-stack tools
 
@@ -282,12 +328,12 @@ The test directories are type-checked in three runs because mypy cannot hold two
 named `conftest` at once.
 
 Two runs on one host share the namespace names (`hu-`, `hn-`, the rig's). To run suites
-side by side, give each its own `/run/netns` and network namespace:
-`unshare --mount --net --propagation private sh -c 'mkdir -p /run/netns && mount -t tmpfs
-tmpfs /run/netns && ip link set lo up && exec pytest --sil'`. A docker broker cannot join
-such a run, because dockerd resolves `/run/netns/svc` in the host's view: run isolated
-suites where docker is not running. The broker then runs locally without a key log, and the
-tests that decrypt its TLS skip with that reason.
+side by side, give each its own `/run/netns` and network namespace with
+`sudo hil/host/isolated.sh pytest --sil`. A host dockerd cannot serve such a run, because it
+resolves `/run/netns/svc` in the host's view: `isolated.sh -d` starts a dockerd of its own
+inside (sockets on a private tmpfs, `--bridge none`, no iptables changes). Without docker the
+broker runs locally without a key log, and the tests that decrypt its TLS skip with that
+reason.
 
 The sigrok decoder (`decoders/`) and the Logic 2 extension (`saleae/`) are checked as
 Python 3.8 code in their hosts' style. Every fix made during integration has a regression

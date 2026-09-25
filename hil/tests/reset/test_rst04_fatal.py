@@ -7,14 +7,19 @@ BACnet is xfail(strict) until FW-05.
 The 4.4.2 default fatal handler halts (kernel/fatal.c): only a watchdog or a reboot in the
 handler brings the DUT back. mqtt_tls feeds the IWDG through task_wdt with a 1 s hardware
 fallback (FW-05 status), so its allowance is a few seconds.
+
+A DUT that does not come back is power-cycled after the verdict, so a halted image (BACnet
+until FW-05) does not fail the tests that run after this one as well.
 """
 
 from __future__ import annotations
 
+import contextlib
+
 import pytest
 
 from hilrig.console import Console
-from hilrig.dutctl import DutLink
+from hilrig.dutctl import DutControl, DutLink
 from hilrig.release import DutImage
 from hilrig.stim import Stim
 
@@ -39,16 +44,21 @@ WATCHDOG_S = {"mqtt": 5.0, "bacnet": 0.0}  # IWDG 2 s window + task_wdt fallback
     indirect=True,
 )
 def test_rst04_fatal_error_recovery(
-    app_image: DutImage, console: Console, dut_link: DutLink, stim: Stim
+    app_image: DutImage, console: Console, dut_link: DutLink, dut_power: DutControl, stim: Stim
 ) -> None:
     deadline = BACK_S + WATCHDOG_S[app_image.app]
-    for run in range(RUNS):
-        before = stim.rstmon().n
-        mark = dut_link.mark()
-        console.send("hil panic")
-        back = dut_link.wait_app(mark, deadline)  # no rig intervention in between
-        after = stim.rstmon()
-        assert after.n >= before + 1, (
-            f"run {run}: no internal reset pulse on NRST (rstmon {before} -> {after.n})"
-        )
-        assert back <= deadline
+    try:
+        for run in range(RUNS):
+            before = stim.rstmon().n
+            mark = dut_link.mark()
+            console.send("hil panic")
+            back = dut_link.wait_app(mark, deadline)  # no rig intervention in between
+            after = stim.rstmon()
+            assert after.n >= before + 1, (
+                f"run {run}: no internal reset pulse on NRST (rstmon {before} -> {after.n})"
+            )
+            assert back <= deadline
+    except BaseException:
+        with contextlib.suppress(Exception):  # after the verdict: bring a halted DUT back
+            dut_power.cycle(timeout=60.0)
+        raise

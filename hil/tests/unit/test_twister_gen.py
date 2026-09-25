@@ -103,6 +103,22 @@ def test_release_images_carry_site_configuration_only(paths: Any) -> None:
     assert "CONFIG_UC_APP_POOL_SIZE=98304" in rendered(paths, "bacnet")["hil.bacnet.release"]["extra_args"]
 
 
+def test_app_pool_workaround_only_for_a_firmware_without_its_own_dtcm_pool(paths: Any) -> None:
+    """Regression: BACnet e62a095 puts the WAMR pool into DTCM itself (112 KiB, FW-04 done), and
+    the workaround still forced 96 KiB, so the release scenario no longer built the product's
+    release image (D24)."""
+    gen.render(paths, it2=True)
+    workaround = f"EXTRA_DTC_OVERLAY_FILE={paths.hil}/hil/site/f767-app-pool.overlay"
+    for entry in rendered(paths, "bacnet").values():
+        assert workaround in entry["extra_args"] and "CONFIG_UC_APP_POOL_SIZE=98304" in entry["extra_args"]
+    board = paths.bacnet / "firmware" / "boards" / "nucleo_f767zi.overlay"
+    board.parent.mkdir(parents=True)
+    board.write_text("/ {\n\tchosen {\n\t\tuc,app-pool = &dtcm;\n\t};\n};\n")
+    gen.render(paths, it2=True)
+    for name, entry in rendered(paths, "bacnet").items():
+        assert not [a for a in entry["extra_args"] if "app-pool" in a or "APP_POOL" in a], name
+
+
 def test_extra_args_name_existing_rendered_files(paths: Any) -> None:
     gen.render(paths, it2=True)
     for app in ("bacnet", "mqtt"):

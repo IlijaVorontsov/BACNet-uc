@@ -1,5 +1,5 @@
-# bacnet-stack checkout and build (see README, Quickstart)
-tools/
+# bacnet-stack checkout and build (see README, Quickstart); tools/*.py and *.sh are source
+tools/bacnet-stack/
 # build and tool caches
 *.egg-info/
 __pycache__/

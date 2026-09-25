@@ -134,11 +134,18 @@ def _twister_device(config: pytest.Config) -> Any:
     return harness_config.devices[0] if harness_config and harness_config.devices else None
 
 
-def _twister_bench(config: pytest.Config) -> str:
+def _twister_bench(config: pytest.Config) -> str | None:
+    """The bench path of the reserved DUT's ``hil_bench:<path>`` fixture (map.yml, D31).
+
+    Under ``--collect-only`` the harness plugin builds no device configuration, so a listing
+    runs without a bench instead of failing.
+    """
     device = _twister_device(config)
     for fixture in (device.fixtures or []) if device else []:
         if fixture.startswith("hil_bench:"):
             return str(fixture.split(":", 1)[1])
+    if device is None and config.getoption("collectonly"):
+        return None
     raise pytest.UsageError("Twister mode: the reserved DUT has no hil_bench:<path> fixture (map.yml)")
 
 
@@ -332,8 +339,10 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         (artifacts / "rig").mkdir(parents=True, exist_ok=True)
         (artifacts / "rig" / "rig-fault.json").write_text(json.dumps({"rig_fault": fault}, indent=2) + "\n")
     hil = config.stash[MODE] == "hil" or config.stash[TWISTER]
-    if hil and executed == 0 and session.testscollected and not config.getoption("collectonly"):
-        session.exitstatus = pytest.ExitCode.TESTS_FAILED  # D31: an all-skipped HIL run is not green
+    # D31: an all-skipped HIL run is not green, and neither is one whose -m/-k/--hil-select
+    # deselected everything (pytest would exit 5, which Twister records as a skip)
+    if hil and executed == 0 and not config.getoption("collectonly"):
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
 def pytest_terminal_summary(terminalreporter: Any, exitstatus: int, config: pytest.Config) -> None:
@@ -893,10 +902,14 @@ def tls_server(
         services.dnsmasq.point_broker(nsmod.SVC2_IP)
         return server
 
-    yield start
-    services.dnsmasq.point_broker(nsmod.HOSTS["svc"].ip)
-    for server in started:
-        server.stop()
+    try:
+        yield start
+    finally:  # the servers stop even if the name cannot be pointed back
+        try:
+            services.dnsmasq.point_broker(nsmod.HOSTS["svc"].ip)
+        finally:
+            for server in started:
+                server.stop()
 
 
 @pytest.fixture
@@ -933,10 +946,14 @@ def tls_front(
         services.dnsmasq.point_broker(nsmod.SVC2_IP)
         return front
 
-    yield start
-    services.dnsmasq.point_broker(nsmod.HOSTS["svc"].ip)
-    for front in started:
-        front.stop()
+    try:
+        yield start
+    finally:  # the fronts stop even if the name cannot be pointed back
+        try:
+            services.dnsmasq.point_broker(nsmod.HOSTS["svc"].ip)
+        finally:
+            for front in started:
+                front.stop()
 
 
 @pytest.fixture

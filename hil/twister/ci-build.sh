@@ -192,7 +192,9 @@ import sys
 from pathlib import Path
 
 out = Path(sys.argv[1])
-region = re.compile(r"^\s*(FLASH|RAM|DTCM):\s+(\d+) B\s")
+# ld prints a used size that is a whole multiple of 1 KiB, 1 MiB or 1 GiB in that unit ("96 KB")
+region = re.compile(r"^\s*(FLASH|RAM|DTCM):\s+(\d+) (B|KB|MB|GB)\s")
+unit = {"B": 1, "KB": 1 << 10, "MB": 1 << 20, "GB": 1 << 30}
 print("scenario\tstatus\tflash_B\tram_B\tdtcm_B\treason")
 for app in ("bacnet", "mqtt"):
     report = out / app / "twister.json"
@@ -203,7 +205,7 @@ for app in ("bacnet", "mqtt"):
                 if "Memory region" in line:
                     sizes = {}
                 elif m := region.match(line):
-                    sizes[m[1]] = m[2]
+                    sizes[m[1]] = str(int(m[2]) * unit[m[3]])
         cols = [suite["name"], suite.get("status", ""), *(sizes.get(r, "-") for r in ("FLASH", "RAM", "DTCM"))]
         print("\t".join([*cols, suite.get("reason") or ""]))
 EOF

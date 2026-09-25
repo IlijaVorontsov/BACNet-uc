@@ -472,6 +472,21 @@ class TlsServer(Service):
     def ready(self) -> bool:
         return nsmod.listening(self.netns, "tcp", self.port, self.bind_ip)
 
+    def handshakes(self) -> tuple[int, int]:
+        """(refused, completed) handshakes so far; readable while the server runs.
+
+        ``refused``: fatal alerts from the client, which s_server reports on stderr
+        (unbuffered) as ``... SSL alert number <n>`` (under TLS 1.3 too: it decrypts them).
+        ``completed``: handshakes the client finished, which leave ``CLIENT_TRAFFIC_SECRET_0``
+        (TLS 1.3) or ``CLIENT_RANDOM`` (TLS 1.2) in the key log that s_server flushes line by
+        line; a client that rejects the server certificate aborts before either is derived.
+        """
+        log = self.log.read_text(errors="replace") if self.log.exists() else ""
+        keys = self.keylog.read_text(errors="replace") if self.keylog.exists() else ""
+        label = "CLIENT_TRAFFIC_SECRET_0 " if self.version == "1.3" else "CLIENT_RANDOM "
+        refused = sum(1 for line in log.splitlines() if "SSL alert number" in line)
+        return refused, sum(1 for line in keys.splitlines() if line.startswith(label))
+
 
 class Chrony(Service):
     """chronyd serving NTP on ``bind_ip`` from the host clock, which it never adjusts (-x)."""

@@ -5,7 +5,9 @@ strictly +1. Every QoS 1 PUBLISH has a PUBACK with the same message id. No DISCO
 reconnect. Test timeout 420 s.
 
 The expected count follows the image's publish interval (10 s in release images). The PUBACK
-pairing needs the decrypted session (broker key log).
+pairing needs the decrypted session (broker key log). It reads every MQTT message of a TCP
+segment (``Capture.pdus``): the DUT bursts PUBLISHes and the broker coalesces PUBACKs, and the
+first-value fields of ``Capture.rows`` would hide all but the first one.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from hilrig.services import RigServices
 pytestmark = [pytest.mark.release, pytest.mark.slow]
 
 WINDOW_S = 300.0
+PUBLISH, PUBACK = "3", "4"  # MQTT control packet types
 
 
 @pytest.mark.timeout(420)
@@ -59,13 +62,16 @@ def test_mqtt02_telemetry_cadence(
 
     dut = bench.dut.ip
     window = f"frame.time_epoch >= {wall_start} && frame.time_epoch <= {wall_end}"
-    publishes = capture.rows(
-        f"mqtt.msgtype == 3 && mqtt.qos == 1 && ip.src == {dut} && {window}", "mqtt.msgid"
-    )
+    fields = ("mqtt.msgtype", "mqtt.qos", "mqtt.msgid", "mqtt.topic", "ip.src")
+    messages = capture.pdus(f"mqtt && ip.addr == {dut}", "mqtt", *fields)
+    in_window = [m for m in messages if wall_start <= m.t <= wall_end]
+    publishes = [m for m in in_window if m["ip.src"] == dut and m["mqtt.msgtype"] == PUBLISH]
     if not publishes and len(records):
         pytest.skip(f"session not decrypted, PUBACKs not paired: {services.broker.keylog_status}")
-    acks = {r["mqtt.msgid"] for r in capture.rows(f"mqtt.msgtype == 4 && ip.dst == {dut}", "mqtt.msgid")}
-    unacked = [p["mqtt.msgid"] for p in publishes if p["mqtt.msgid"] not in acks]
+    qos = {m["mqtt.qos"] for m in publishes if m["mqtt.topic"] == telemetry}
+    assert qos == {"1"}, f"telemetry PUBLISH QoS {sorted(qos)}, expected 1"
+    acks = {m["mqtt.msgid"] for m in messages if m["ip.src"] != dut and m["mqtt.msgtype"] == PUBACK}
+    unacked = [m["mqtt.msgid"] for m in publishes if m["mqtt.qos"] == "1" and m["mqtt.msgid"] not in acks]
     assert not unacked, f"QoS 1 PUBLISH without PUBACK: message ids {unacked}"
     assert not capture.rows(f"mqtt.msgtype == 14 && ip.src == {dut} && {window}"), "the DUT sent DISCONNECT"
     assert not capture.rows(f"mqtt.msgtype == 1 && ip.src == {dut} && {window}"), (
