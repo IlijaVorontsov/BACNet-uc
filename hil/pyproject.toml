@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hilrig"
+version = "0.1.0"
+description = "Host side of the BACnet-uc hardware-in-the-loop test rig"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pyserial>=3.5",
+    "pyyaml>=6",
+    "paho-mqtt>=2,<3",
+    "pytest>=8",
+    "pytest-timeout>=2.3",
+    "numpy>=1.26",  # hilrig.la (logic analyzer sample processing)
+]
+
+[project.optional-dependencies]
+saleae = ["logic2-automation>=1.0.11"]
+# linters and type checker of the package and its tests (see README, "Development")
+dev = ["ruff>=0.6", "mypy>=1.11", "types-PyYAML", "types-pyserial"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+hilrig = ["py.typed"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+# fake_stim.py and other test helpers live in tests/unit and are shared with tests/rig, sil.
+pythonpath = ["tests/unit"]
+addopts = "-ra --strict-markers"
+timeout = 300
+markers = [
+    "hil_only: needs the real rig (skipped in SIL and without --hil/--bench)",
+    "timing: timing assertion, valid on hardware only (skipped in SIL)",
+    "slow: long-running (nightly/weekly); needs --enable-slow",
+    "destructive: may corrupt the DUT (power cut during flash writes); needs --enable-destructive",
+    "mstp: needs the MS/TP bench bus (an mstp section in bench.yml)",
+    "release: runs against the unmodified release artifact (tier a, black box)",
+    "capture(bpf): capture filter of the test's pcapng (capture fixture)",
+]
+
+[tool.ruff]
+line-length = 110
+extend-exclude = ["tools"]  # bacnet-stack checkout (see README)
+src = ["src", "tests/unit", "tests/mstp"]  # test helpers (fake_stim, mstp_bus) are first-party
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F", "I", "B", "UP", "SIM", "RUF", "C4", "PIE", "PT", "PGH", "T10",
+    "S602", "S604", "S605", "S606",  # no shell: every subprocess gets an argument list
+    "PLW1510",  # subprocess.run states check= explicitly
+]
+ignore = [
+    "PT018",  # composite assertions read better in these tests
+    "SIM905",  # channel catalogs read best as "di0 di1 ...".split()
+]
+
+[tool.ruff.lint.per-file-ignores]
+# External plugins keep their host's conventions: sigrok decoders (older libsigrokdecode Pythons,
+# list-valued class attributes, the package re-exports Decoder) and Logic 2 HLAs (Python 3.8).
+"decoders/**" = ["UP031", "RUF012", "F401"]
+"saleae/**" = ["UP031", "RUF012"]
+
+[tool.ruff.per-file-target-version]
+"decoders/**" = "py38"
+"saleae/**" = "py38"
+
+[tool.mypy]
+strict = true
+files = ["src"]
+
+[[tool.mypy.overrides]]
+module = ["saleae.*"]  # the optional 'saleae' extra ships no type information
+ignore_missing_imports = true

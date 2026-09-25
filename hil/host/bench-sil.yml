@@ -1,0 +1,11 @@
+# SIL bench: bacserv from bacnet-stack stands in for the DUT at 192.0.2.10 (netns dut on
+# br-a). Used by 'pytest --sil' when no --bench is given. For native_sim, set board to
+# native_sim/native/64: the topology then has TAP zeth in lan-a instead of netns dut.
+name: sil
+mode: sil
+dut:
+  profile: sil
+  board: bacserv
+  ip: 192.0.2.10
+  bacnet_instance: 260001
+  mqtt_client_id: hil-dut

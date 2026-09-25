@@ -1,0 +1,13 @@
+{
+  "name": "BACnet MS/TP",
+  "apiVersion": "1.0.0",
+  "author": "BACNet-uc HIL rig",
+  "version": "0.2.0",
+  "description": "BACnet MS/TP frames on top of Async Serial: header/data CRC, COBS extended frames, receive errors and Tframe_gap.",
+  "extensions": {
+    "BACnet MS/TP": {
+      "type": "HighLevelAnalyzer",
+      "entryPoint": "HighLevelAnalyzer.MstpHla"
+    }
+  }
+}
