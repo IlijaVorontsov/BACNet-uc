@@ -62,7 +62,7 @@ blocks the hub; it falls back when a feature is missing (rc `UNSUPPORTED`, or no
 `caps` in `info`).
 
 Status (2026-09-24 23:05 UTC): M1-M3 done by the MQTT session (fw 0.3.0,
-commit 1992f41 on its branch; details there). B1-B4 not answered yet.
+commit 1992f41 on its branch; details there). B1-B4 not answered yet; B5-B8 added.
 Firmware sessions: please record decisions or changed field names under this
 heading on your branch, because the harness session reads this file on your
 branch.
@@ -80,6 +80,16 @@ commands must never be published with retain (the app ignores them).
 | B2 | Optional `"lease_ms": uint` on `uc_io force` and on `uc_node prop_write` (with `priority`). On expiry the node releases the force, or writes NULL at that priority, by itself. | Agent writes and IO checkout forces must not stay in place when the gateway crashes or loses the network. Without this the hub can only relinquish while it is alive. |
 | B3 | `uc_node info`: add `"hwid": tstr` (MCU unique ID in hex, derived the same way as the MQTT app's client ID) and `"mac": tstr`. | Stable device key for QR labels, and re-finding a node after its DHCP address changes. |
 | B4 | Layout: the notes above reserve `harness/` for a Python MCP server. The hub lives in `hub/` (package `uc_hub`) so the branches don't conflict. It contains an SMP client for groups 64-66, a manifest plan/apply engine and an MCP server. Consider reusing it instead of building a second one. | Avoid two SMP clients and two plan engines. |
+
+Follow-ups found while building the hub's SMP client against the simulator
+(2026-09-25; lower priority than B1-B3, none of them blocks the hub):
+
+| # | Request | Why |
+|---|---|---|
+| B5 | Add `"units"` (text name) to the `<object>` map of `uc_node objects`. | Without it the hub needs one `prop_read units` per analog object to describe a node. |
+| B6 | Offset/count paging for `uc_app list` and `uc_io catalog`, like `uc_node objects`. | 6+ app statuses or about 10+ catalog channels exceed the 1024-byte SMP buffer and fail with legacy EMSGSIZE. The hub falls back to `apps.json` for apps, but has no fallback for the catalog. |
+| B7 | Document what `prop_read` returns for a whole array (no `index`), e.g. `priority-array`. | The hub accepts a 16-element list and otherwise reads the 16 slots one by one. |
+| B8 | Note for fs_mgmt users: an empty upload does not truncate an existing file (Zephyr behaviour), and there is no delete command. | The hub never uploads empty documents; mentioned so nobody relies on it. |
 
 ### MQTT firmware (`claude/inter-session-communication-h989ye`)
 
