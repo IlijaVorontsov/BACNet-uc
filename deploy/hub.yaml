@@ -1,0 +1,43 @@
+# uc-hub configuration for the site server; install as /etc/uc-hub/hub.yaml.
+# Every key is documented in docs/ai-harness/SITE.md. Secrets come from
+# /etc/uc-hub/uc-hub.env (deploy/uc-hub.env.example).
+
+site_file: /etc/uc-hub/site.yaml     # imported as revision 1 on the first start only
+data_dir: /var/lib/uc-hub
+# Loopback only: a TLS reverse proxy (Caddy or Tailscale, see deploy/README.md)
+# serves the app to phones and laptops. Service workers, and so the installable
+# app, need HTTPS.
+listen: {host: 127.0.0.1, port: 8080}
+web_dir: /opt/uc-hub/BACNet-uc/web/dist
+
+auth:
+  tokens:
+    - {user: admin, roles: [admin], token_env: UC_HUB_TOKEN_ADMIN}
+    - {user: tech, roles: [operator], token_env: UC_HUB_TOKEN_TECH}
+
+llm:
+  provider: zai
+  model: glm-5.3
+  base_url: https://api.z.ai/api/paas/v4
+  api_key_env: ZAI_API_KEY
+  reasoning_effort: high
+
+drivers:
+  bacnet_uc:
+    timeout_s: 1.5
+    retries: 3
+  mqtt:
+    host: 127.0.0.1                 # must match a name in the broker certificate
+    port: 8883
+    tls:
+      ca: /etc/uc-hub/mqtt/ca.crt
+      cert: /etc/uc-hub/mqtt/uc-hub.crt
+      key: /etc/uc-hub/mqtt/uc-hub.key
+    client_id: uc-hub
+  # Uncomment when the site has third-party BACnet/IP devices. The hub then
+  # binds UDP 47808 on all interfaces as its own BACnet device.
+  # bacnet_ip:
+  #   interface: 0.0.0.0
+  #   port: 47808
+  #   device_instance: 4194000
+  #   device_name: uc-hub

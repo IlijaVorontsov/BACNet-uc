@@ -1,0 +1,36 @@
+# Starter site for the first server: one lab bench with one MQTT board
+# (apps/mqtt_tls fw 0.3.0 on a NUCLEO-F767ZI). Install as
+# /etc/uc-hub/site.yaml, replace the client ID, check it with
+#   uc-hub validate /etc/uc-hub/site.yaml
+# and extend it (BACnet-uc nodes under system:, BACnet/IP devices, bridges) as
+# boards arrive; the format is in docs/ai-harness/SITE.md and a complete example
+# is hub/examples/demo/site.yaml. After the first start the hub keeps its own
+# revisions: change the site through the agent (manifest_edit, plan, apply)
+# instead of editing this file.
+apiVersion: bacnet-uc/v1
+kind: Site
+metadata:
+  name: lab
+  description: Development lab
+
+spaces:
+  - {id: lab, name: Lab}
+  - {id: bench1, name: Bench 1, parent: lab}
+
+placement:
+  bench1-mqtt: bench1
+
+external_devices:
+  - name: bench1-mqtt
+    protocol: mqtt
+    profile: mqtt_tls
+    # The board's MQTT client ID: "z" + base32 of its UID (20 characters),
+    # printed in its boot log and in the retained .../info message.
+    client_id: zREPLACEWITHCLIENTID0
+    topic_root: bacnet-uc
+    description: NUCLEO-F767ZI running apps/mqtt_tls
+
+policy:
+  agent_write_priority: 12
+  default_lease_s: 300
+  max_lease_s: 3600

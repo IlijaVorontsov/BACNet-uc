@@ -1,0 +1,40 @@
+# systemd unit for uc-hub; install as /etc/systemd/system/uc-hub.service.
+# See deploy/README.md for the directory layout it expects.
+
+[Unit]
+Description=uc-hub building gateway
+Documentation=file:/opt/uc-hub/BACNet-uc/deploy/README.md
+After=network-online.target mosquitto.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=uchub
+Group=uchub
+EnvironmentFile=/etc/uc-hub/uc-hub.env
+ExecStart=/opt/uc-hub/BACNet-uc/hub/.venv/bin/uc-hub serve -c /etc/uc-hub/hub.yaml
+WorkingDirectory=/var/lib/uc-hub
+StateDirectory=uc-hub
+StateDirectoryMode=0750
+# SIGTERM makes the hub release every lease (agent writes and forces) before
+# it exits; give it time to reach slow devices.
+KillSignal=SIGTERM
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+LockPersonality=yes
+ReadWritePaths=/var/lib/uc-hub
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+# Mosquitto ACL for a uc-hub site broker; install as /etc/mosquitto/uc-hub.acl.
+# User names are certificate CNs (use_identity_as_username).
+
+# The hub reads everything and sends commands.
+user uc-hub
+topic readwrite #
+
+# A board (apps/mqtt_tls) may only use its own subtree. Issue its certificate
+# with CN = its MQTT client ID (z + base32 of the MCU UID since fw 0.3.0, or
+# CONFIG_APP_MQTT_CLIENT_ID). Change "bacnet-uc" if the boards use another
+# CONFIG_APP_MQTT_TOPIC_ROOT.
+pattern readwrite bacnet-uc/%u/#
