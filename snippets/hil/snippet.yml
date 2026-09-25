@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# HIL instrumentation snippet (docs/HIL.md Appendix A, contract FW-15).
+#
+#   west build ... -S hil -- -DSNIPPET_ROOT=$HIL -DZEPHYR_EXTRA_MODULES=$HIL/lib/hil
+#
+# hil.conf enables lib/hil (HIL-BOOT/HIL-READY lines, markers m0-m3, 'hil' shell). CONFIG_HIL
+# is defined by the lib/hil module, so the snippet must be used together with that module:
+# without it the build stops on the undefined symbol (Kconfig warnings are errors).
+# The board overlay adds the rig extras for the DUT board (markers, MS/TP UART). It
+# references only SoC and board nodes, never &uc_io, so it applies to firmware/ (BACnet) and
+# to apps/mqtt_tls alike. Release images never use this snippet (SEC-01).
+name: hil
+append:
+  EXTRA_CONF_FILE: hil.conf
+boards:
+  # Zephyr 4.4 matches the full board target: BOARD/BOARD_QUALIFIERS is
+  # nucleo_f767zi/stm32f767xx, so a bare 'nucleo_f767zi' key never applies.
+  nucleo_f767zi/stm32f767xx:
+    append:
+      EXTRA_DTC_OVERLAY_FILE: boards/nucleo_f767zi.overlay

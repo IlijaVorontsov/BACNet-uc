@@ -26,7 +26,9 @@ from hilrig.services import (
     RigServices,
     Service,
     ServiceError,
+    TlsFront,
     TlsServer,
+    dns_query,
     docker_image_available,
     mosquitto_has_keylog,
 )
@@ -150,6 +152,55 @@ def test_dnsmasq_offers_nothing_to_other_macs(rig: RigServices, unit_net: Topolo
 
 def test_dnsmasq_answers_the_broker_name(rig: RigServices, unit_net: Topology) -> None:
     assert dns_a(unit_net.ns("sim1"), SVC_IP, "broker.hil.lan") == [SVC_IP]
+
+
+def test_point_broker_moves_the_name_and_back(rig: RigServices, unit_net: Topology) -> None:
+    """D33: TLS endpoints on 192.0.2.2 take over broker.hil.lan through addn-hosts + SIGHUP."""
+    rig.dnsmasq.point_broker(netns.SVC2_IP)
+    try:
+        assert dns_a(unit_net.ns("sim1"), SVC_IP, "broker.hil.lan") == [netns.SVC2_IP]
+        assert dns_query(unit_net.ns("sim1"), SVC_IP, "broker.hil.lan") == [netns.SVC2_IP]
+    finally:
+        rig.dnsmasq.point_broker(SVC_IP)
+    assert dns_a(unit_net.ns("sim1"), SVC_IP, "broker.hil.lan") == [SVC_IP]
+    assert f"broker.hil.lan -> {netns.SVC2_IP}" in rig.dnsmasq.log.read_text()
+
+
+def test_svc_holds_the_second_address(unit_net: Topology) -> None:
+    """D33: up.sh adds 192.0.2.2 on svc0; 192.0.2.1 stays the source address."""
+    addrs = netns.run(unit_net.ns("svc"), ["ip", "-4", "-o", "addr", "show", "dev", "svc0"]).stdout
+    assert "192.0.2.1/24" in addrs and f"{netns.SVC2_IP}/24" in addrs
+    route = netns.run(unit_net.ns("svc"), ["ip", "-4", "route", "get", "192.0.2.11"]).stdout
+    assert "src 192.0.2.1" in route
+
+
+def test_dnsmasq_logs_dhcp_events(rig: RigServices, unit_net: Topology) -> None:
+    mark = rig.dnsmasq.mark()
+    ip, offer = dhcp(unit_net.ns("sim1"), DUT_MAC, 1, os.urandom(4))
+    requested = bytes([50, 4]) + socket.inet_aton(ip) + bytes([54, 4]) + offer[54]
+    dhcp(unit_net.ns("sim1"), DUT_MAC, 3, os.urandom(4), requested)
+    ack = rig.dnsmasq.wait_for("DHCPACK", DUT_MAC, mark, timeout=5)
+    assert (ack.kind, ack.mac, ack.ip) == ("DHCPACK", DUT_MAC, netns.DUT_IP)
+    kinds = [e.kind for e in rig.dnsmasq.events(mark, DUT_MAC)]
+    assert kinds[:2] == ["DHCPDISCOVER", "DHCPOFFER"] and "DHCPREQUEST" in kinds
+    with pytest.raises(TimeoutError, match="no DHCPACK"):
+        rig.dnsmasq.wait_for("DHCPACK", "02:00:00:00:00:77", mark, timeout=0.3)
+
+
+def test_dnsmasq_any_mac_serves_the_dut_address_in_sil(unit_net: Topology, rundir: Path) -> None:
+    """SIL: a native_sim TAP build with a random MAC still gets 192.0.2.10.
+
+    Served from sim2, since the module's dnsmasq already holds svc0.
+    """
+    sim2 = HOSTS["sim2"]
+    server = Dnsmasq(
+        unit_net.ns("sim2"), rundir / "anymac", dut_mac=None, any_mac=True, lease_s=LEASE_S, iface=sim2.iface,
+        server_ip=sim2.ip,
+    )  # fmt: skip
+    with server:
+        ip, offer = dhcp(unit_net.ns("sim1"), "02:00:5e:00:53:17", 1, os.urandom(4))
+        assert ip == netns.DUT_IP and offer[53] == b"\x02"
+        server.test_config()
 
 
 # ---- mosquitto --------------------------------------------------------------------------------
@@ -335,6 +386,85 @@ def test_s_server_can_require_a_client_certificate(unit_net: Topology, pki: Pki,
         )
         with pytest.raises((ssl.SSLError, ConnectionResetError)):
             handshake(unit_net, 8888, pki.ca, versions=(TLS12, TLS12))
+
+
+def test_readiness_checks_the_address(unit_net: Topology, pki: Pki, rundir: Path) -> None:
+    """Regression: a server on 192.0.2.2:8883 counted as ready while another held 192.0.2.1:8883."""
+    good = pki.servers["good"]
+    with TlsServer(unit_net.ns("svc"), rundir, cert=good.cert, key=good.key, version="1.3", port=8889):
+        svc = unit_net.ns("svc")
+        assert netns.listening(svc, "tcp", 8889, SVC_IP) and netns.listening(svc, "tcp", 8889)
+        assert not netns.listening(svc, "tcp", 8889, netns.SVC2_IP)
+
+
+# ---- TLS front (D13 2b) --------------------------------------------------------------------------
+def mqtt_over_tls(
+    unit_net: Topology,
+    ip: str,
+    ca: Path,
+    version: ssl.TLSVersion,
+    cert: tuple[Path, Path] | None = None,
+) -> bytes:
+    """MQTT 3.1.1 CONNECT over TLS to ``ip``:8883 verifying broker.hil.lan; return the CONNACK."""
+    ctx = ssl.create_default_context(cafile=str(ca))
+    ctx.minimum_version = ctx.maximum_version = version
+    if cert:
+        ctx.load_cert_chain(*cert)
+    client_id = b"hil-front-probe"
+    body = b"\x00\x04MQTT\x04\x02\x00\x3c" + struct.pack("!H", len(client_id)) + client_id
+    with netns.enter(unit_net.ns("sim1")):
+        raw = socket.create_connection((ip, 8883), timeout=5)
+    with ctx.wrap_socket(raw, server_hostname="broker.hil.lan") as tls:
+        tls.sendall(bytes([0x10, len(body)]) + body)
+        return tls.recv(4)
+
+
+CONNACK_OK = b"\x20\x02\x00\x00"
+
+
+def test_tls_front_pins_tls12_and_forwards_to_the_broker(
+    rig: RigServices, unit_net: Topology, pki: Pki, rundir: Path
+) -> None:
+    good = pki.servers["good"]
+    with TlsFront(unit_net.ns("svc"), rundir, cert=good.cert, key=good.key) as front:
+        assert mqtt_over_tls(unit_net, netns.SVC2_IP, pki.ca, TLS12) == CONNACK_OK
+        with pytest.raises(ssl.SSLError):
+            mqtt_over_tls(unit_net, netns.SVC2_IP, pki.ca, TLS13)
+    assert front.sessions[0].version == "TLSv1.2" and front.sessions[0].down_bytes == 4
+    assert front.sessions[1].error is not None
+    assert "CLIENT_RANDOM" in front.keylog.read_text()
+    assert "hil-front-probe" in rig.broker.log.read_text()
+
+
+@pytest.mark.parametrize(("version", "tls"), [("1.2", TLS12), ("1.3", TLS13)])
+def test_tls_front_requires_the_client_certificate(
+    rig: RigServices,
+    unit_net: Topology,
+    pki: Pki,
+    rundir: Path,
+    version: Literal["1.2", "1.3"],
+    tls: ssl.TLSVersion,
+) -> None:
+    good = pki.servers["good"]
+    dut = (pki.dut.cert, pki.dut.key)
+    front = TlsFront(
+        unit_net.ns("svc"),
+        rundir,
+        cert=good.cert,
+        key=good.key,
+        version=version,
+        client_ca=pki.ca,
+        name=f"f{version}",
+    )
+    with front:
+        assert mqtt_over_tls(unit_net, netns.SVC2_IP, pki.ca, tls, cert=dut) == CONNACK_OK
+        for client in (None, (pki.clients["rogue"].cert, pki.clients["rogue"].key)):
+            with pytest.raises((ssl.SSLError, OSError)):  # 1.2: handshake; 1.3: alert on first read
+                assert mqtt_over_tls(unit_net, netns.SVC2_IP, pki.ca, tls, cert=client) == CONNACK_OK
+        front.set_client_ca(pki.rogue_ca)  # now the DUT's valid certificate is refused too
+        with pytest.raises((ssl.SSLError, OSError)):
+            assert mqtt_over_tls(unit_net, netns.SVC2_IP, pki.ca, tls, cert=dut) == CONNACK_OK
+    assert sum(1 for s in front.sessions if s.error) == 3
 
 
 # ---- chrony ------------------------------------------------------------------------------------

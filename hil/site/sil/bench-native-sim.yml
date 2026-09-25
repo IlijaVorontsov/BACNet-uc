@@ -1,0 +1,16 @@
+# SIL bench for the native_sim/native/64 images built by hil/host/build.sh (mq-sil, bac-sil).
+# The topology then has TAP zeth in netns lan-a (hilrig: board native_sim/native/64), and
+# dnsmasq reserves 192.0.2.10 on the fixed TAP MAC of hil/site/sil/native-sim-tap.conf.
+# Start one image at a time inside lan-a (both use the same TAP and MAC), for example:
+#   ip netns exec lan-a <out>/bac-sil/zephyr/zephyr.exe --flash=<tmp>/flash.bin --flash_erase
+#   ip netns exec lan-a <out>/mq-sil/zephyr/zephyr.exe
+#   sudo -E "$(command -v pytest)" --sil --bench hil/site/sil/bench-native-sim.yml ...
+name: sil-native
+mode: sil
+dut:
+  profile: sil
+  board: native_sim/native/64
+  mac: "02:48:49:4c:00:0a"         # CONFIG_ETH_NATIVE_TAP_MAC_ADDR of native-sim-tap.conf
+  ip: 192.0.2.10
+  bacnet_instance: 260001          # BACnet default instance (FW-02)
+  mqtt_client_id: hil-dut          # CONFIG_APP_MQTT_CLIENT_ID of mqtt-sil.conf

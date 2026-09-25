@@ -1,0 +1,2 @@
+# SPDX-License-Identifier: Apache-2.0
+hil	BACNet-uc hardware-in-the-loop rig (apps/hil_stimulus)

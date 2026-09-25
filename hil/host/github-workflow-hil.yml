@@ -1,0 +1,201 @@
+# HIL rig CI (docs/HIL.md 10, D27, D28, D32). Shipped as hil/host/github-workflow-hil.yml; it
+# becomes .github/workflows/hil.yml on the HIL branch only once the self-hosted runner is
+# registered (hil/host/README-host.md, "Installing the workflow"): with no runner, every run
+# would sit queued.
+#
+# Triggers:
+# - push to the HIL branch: the build job only (stimulus and DUT images, catalog checks,
+#   SEC-01, lint, unit/rig/SIL tests). It never touches the bench.
+# - push to hil/nightly: build + hil. The host timer (hil-nightly.timer, /opt/hil/bin/nightly)
+#   force-pushes the HIL tip plus a run commit carrying .hil-run.env (firmware refs, marker
+#   selection, cycle count). schedule and workflow_dispatch only work for a workflow file on
+#   the default branch, which never carries this one.
+# - workflow_dispatch: kept for the day hil.yml reaches the default branch.
+# Both jobs run directly on the HIL host as runner user hil, without a job container (job
+# containers cannot use --network, so they would not see the DUT NIC, the probes or the bench
+# lock). Root work goes through the runner user's only sudo command, /opt/hil/bin/run-hil.
+name: hil
+
+on:
+  push:
+    branches: [claude/hardware-in-loop-testing-x74tww, hil/nightly]
+    paths:
+      - "hil/**"
+      - "apps/hil_stimulus/**"
+      - "lib/hil/**"
+      - "snippets/**"
+      - ".github/workflows/hil.yml"
+      - ".hil-run.env"
+  workflow_dispatch:
+    inputs:
+      bacnet_ref:
+        description: BACnet firmware ref (empty = tip of claude/zephyr-bacnet-stm32-162k1g)
+        type: string
+        default: ""
+      mqtt_ref:
+        description: MQTT firmware ref (empty = tip of claude/inter-session-communication-h989ye)
+        type: string
+        default: ""
+      select:
+        description: marker expression that narrows every scenario (pytest --hil-select)
+        type: string
+        default: not destructive
+      cycles:
+        description: power-cycle and reset loop count
+        type: string
+        default: "20"
+
+permissions:
+  contents: read
+
+env:
+  BACNET_BRANCH: claude/zephyr-bacnet-stm32-162k1g
+  MQTT_BRANCH: claude/inter-session-communication-h989ye
+  HIL_VENV: /opt/hil/venv
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: [self-hosted, linux, hil-build]
+    concurrency:
+      group: hil-build-${{ github.ref }}
+      cancel-in-progress: true
+    timeout-minutes: 120
+    outputs:
+      out_dir: ${{ steps.plan.outputs.out_dir }}
+      select: ${{ steps.plan.outputs.select }}
+      cycles: ${{ steps.plan.outputs.cycles }}
+      weekly: ${{ steps.plan.outputs.weekly }}
+    steps:
+      - name: Check out the HIL branch
+        uses: actions/checkout@v4
+        with:
+          path: hil
+          persist-credentials: false
+
+      - name: Run parameters (.hil-run.env of hil/nightly, dispatch inputs)
+        id: plan
+        env:
+          IN_BACNET_REF: ${{ inputs.bacnet_ref }}
+          IN_MQTT_REF: ${{ inputs.mqtt_ref }}
+          IN_SELECT: ${{ inputs.select }}
+          IN_CYCLES: ${{ inputs.cycles }}
+          RUN: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          # data, never sourced: KEY=VALUE lines with known keys only
+          declare -A p=([BACNET_REF]=$BACNET_BRANCH [MQTT_REF]=$MQTT_BRANCH [SELECT]="not destructive"
+                        [CYCLES]=20 [WEEKLY]=0)
+          if [[ -f hil/.hil-run.env ]]; then
+            while IFS= read -r line; do
+              if [[ $line =~ ^([A-Z_]+)=(.*)$ ]] && [[ -v p[${BASH_REMATCH[1]}] ]]; then
+                p[${BASH_REMATCH[1]}]=${BASH_REMATCH[2]}
+              fi
+            done < hil/.hil-run.env
+          fi
+          if [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
+            p[BACNET_REF]=${IN_BACNET_REF:-${p[BACNET_REF]}} p[MQTT_REF]=${IN_MQTT_REF:-${p[MQTT_REF]}}
+            p[SELECT]=$IN_SELECT p[CYCLES]=${IN_CYCLES:-20}
+          fi
+          ref='^[A-Za-z0-9._/-]+$'
+          if ! [[ ${p[BACNET_REF]} =~ $ref && ${p[MQTT_REF]} =~ $ref && ${p[CYCLES]} =~ ^[1-9][0-9]{0,3}$ &&
+                  ${p[SELECT]} =~ ^[A-Za-z0-9_\ ()]*$ && ${p[WEEKLY]} =~ ^[01]$ ]]; then
+            echo "::error::bad run parameters: $(declare -p p)"
+            exit 1
+          fi
+          {
+            echo "bacnet_ref=${p[BACNET_REF]}"
+            echo "mqtt_ref=${p[MQTT_REF]}"
+            echo "select=${p[SELECT]}"
+            echo "cycles=${p[CYCLES]}"
+            echo "weekly=${p[WEEKLY]}"
+            echo "out_dir=/opt/hil/out/$RUN"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check out the BACnet firmware
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.plan.outputs.bacnet_ref }}
+          path: ws/fw
+          persist-credentials: false
+
+      - name: Check out the MQTT firmware
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.plan.outputs.mqtt_ref }}
+          path: ws/mq
+          persist-credentials: false
+
+      # snapshot into OUT/src, gen.py, stimulus image, 'west twister --build-only' per app
+      # (-O OUT/<app>, outside _work), check_catalog and SEC-01 on the builds; run-hil reuses
+      # OUT/twister/<app>.args
+      - name: Build
+        env:
+          OUT: ${{ steps.plan.outputs.out_dir }}
+        run: hil/hil/twister/ci-build.sh -o "$OUT" -f ws/fw -m ws/mq --update
+
+      - name: Lint (ruff, mypy)
+        working-directory: hil/hil
+        run: |
+          "$HIL_VENV/bin/ruff" check .
+          "$HIL_VENV/bin/ruff" format --check .
+          "$HIL_VENV/bin/mypy"
+
+      # namespaces need root: through run-hil, which also holds the bench lock (SIL shares lan-a)
+      - name: Unit, rig and SIL tests
+        env:
+          OUT: ${{ steps.plan.outputs.out_dir }}
+        run: sudo -n /opt/hil/bin/run-hil --sil "$OUT"
+
+      - name: Upload build and SIL reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.plan.outputs.out_dir }}/results/build/
+            ${{ steps.plan.outputs.out_dir }}/results/sil/
+            ${{ steps.plan.outputs.out_dir }}/images/*.log
+            ${{ steps.plan.outputs.out_dir }}/images/sizes.tsv
+            ${{ steps.plan.outputs.out_dir }}/src/*.rev
+          retention-days: 7
+          if-no-files-found: warn
+
+  hil:
+    needs: build
+    if: github.ref == 'refs/heads/hil/nightly' || github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, linux, hil, bench1]
+    timeout-minutes: 300
+    concurrency:
+      group: hil-bench1
+      cancel-in-progress: false
+      queue: max
+    steps:
+      # flock -w 1800 on the bench, hub on, stim safe, stimulus firmware check and reflash, then
+      # 'west twister --test-only' per app with the build's -T, --alt-config-root, --tag and -O
+      - name: Bench run
+        env:
+          OUT: ${{ needs.build.outputs.out_dir }}
+          SELECT: ${{ needs.build.outputs.select }}
+          CYCLES: ${{ needs.build.outputs.cycles }}
+          WEEKLY: ${{ needs.build.outputs.weekly }}
+        run: |
+          args=(--select "$SELECT" --cycles "$CYCLES")
+          if [[ $WEEKLY == 1 ]]; then args+=(--weekly); fi
+          sudo -n /opt/hil/bin/run-hil "${args[@]}" "$OUT"
+
+      # JUnit (twister_report.xml, report.xml), twister.json, handler/device logs and hil/**
+      # (pcaps with TLS keys injected, stim.log, service logs, rig reports)
+      - name: Upload bench results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hil-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ needs.build.outputs.out_dir }}/results/bacnet/
+            ${{ needs.build.outputs.out_dir }}/results/mqtt/
+            ${{ needs.build.outputs.out_dir }}/results/stim-verify.log
+          retention-days: 7
+          if-no-files-found: warn

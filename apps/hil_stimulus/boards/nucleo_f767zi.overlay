@@ -1,0 +1,437 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * apps/hil_stimulus on NUCLEO-F767ZI (MB1137), Zephyr v4.4.2.
+ *
+ * The stimulus is powered from its own ST-LINK USB (JP3 = U5V, default) and is
+ * the always-on board. Every DUT-facing line has 1 kOhm in series at the
+ * stimulus end. Pins avoided on the stimulus: RMII (PA1 PA2 PA7 PB13 PC1 PC4
+ * PC5 PG11 PG13), VCP (PD8 PD9), USB OTG FS (PA8..PA12, PG6 PG7), SWD/SWO
+ * (PA13 PA14 PB3), clocks (PH0 PH1 PC14 PC15), B1 (PC13), PE2 (on two Zio pins).
+ *
+ * EXTI lines used by interrupt inputs (one per pin number, all ports share a
+ * line): 0 m0/PG0, 1 m1/PG1, 2 m2/PG2, 3 m3/PG3, 7 do0/PE7, 8 do1/PE8,
+ * 10 do2/PE10, 11 lb/PB11, 12 do4/PF12, 13 do3/PF13, 15 nrst_sense/PE15.
+ * Free: 4 5 6 9 14. The ao pins (PA0, PA15, PD12) share lines 0, 15 and 12 with
+ * m0, nrst_sense and do4, so ao is never armed on EXTI (din/pwmcap only) and
+ * lines_safe() never reconfigures it (TIM AF + pull-down from pinctrl stay).
+ */
+
+#include <zephyr/dt-bindings/adc/adc.h>
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/pwm/pwm.h>
+
+/ {
+	/* B1 on PC13 would claim EXTI13 (needed by do3 = PF13) if CONFIG_INPUT=y */
+	gpio_keys {
+		status = "disabled";
+	};
+
+	stim: hil-stim {
+		compatible = "hil,stim-channels";
+		profile = "P1";
+		rs485-uart = <&usart2>;
+
+		/* ---- stimulus -> DUT digital inputs (catalog di*) ---- */
+		di0 {
+			kind = "di";
+			gpios = <&gpioe 14 GPIO_ACTIVE_HIGH>;
+			stim-pin = "PE14 CN10-28";
+			dut-pin = "PC13 CN11-23 (B1, 220k pull-down)";
+		};
+		di1 {
+			kind = "di";
+			gpios = <&gpiof 15 GPIO_ACTIVE_HIGH>;
+			stim-pin = "PF15 CN10-12 D2";
+			dut-pin = "PF15 CN10-12 D2 (pull-up, active low)";
+		};
+		di2 {
+			kind = "di";
+			gpios = <&gpiof 14 GPIO_ACTIVE_HIGH>;
+			stim-pin = "PF14 CN10-8 D4";
+			dut-pin = "PF14 CN10-8 D4 (pull-up, active low)";
+		};
+
+		/* ---- DUT digital outputs (catalog do*) -> stimulus inputs ---- */
+		do0 {
+			kind = "do";
+			gpios = <&gpioe 7 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+			stim-pin = "PE7 CN10-20";
+			dut-pin = "PB0 CN10-31 (LD1)";
+		};
+		do1 {
+			kind = "do";
+			gpios = <&gpioe 8 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+			stim-pin = "PE8 CN10-18";
+			dut-pin = "PB7 CN11-21 (LD2)";
+		};
+		do2 {
+			kind = "do";
+			gpios = <&gpioe 10 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+			stim-pin = "PE10 CN10-24";
+			dut-pin = "PB14 CN12-28 (LD3)";
+		};
+		do3 {
+			kind = "do";
+			gpios = <&gpiof 13 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+			stim-pin = "PF13 CN10-2 D7";
+			dut-pin = "PF13 CN10-2 D7";
+		};
+		do4 {
+			kind = "do";
+			gpios = <&gpiof 12 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+			stim-pin = "PF12 CN7-20 D8";
+			dut-pin = "PF12 CN7-20 D8";
+		};
+
+		/* ---- DUT analog inputs (catalog ai*): source + sense on the node ---- */
+		ai0 {
+			kind = "ai";
+			io-channels = <&dac1 1>, <&adc1 3>;
+			io-channel-names = "src", "sense";
+			range-mv = <200 3100>;
+			stim-pin = "src PA4 CN7-17, sense PA3 CN9-1 A0";
+			dut-pin = "PA3 CN9-1 A0 (ADC1_IN3)";
+		};
+		ai1 {
+			kind = "ai";	/* It1: 10k/10k from DUT 3V3; It2: MCP4728 ch A */
+			io-channels = <&adc1 10>;
+			io-channel-names = "sense";
+			stim-pin = "sense PC0 CN9-3 A1";
+			dut-pin = "PC0 CN9-3 A1 (ADC1_IN10)";
+		};
+		ai2 {
+			kind = "ai";	/* It1: 20k/10k from DUT 3V3; It2: MCP4728 ch B */
+			io-channels = <&adc1 13>;
+			io-channel-names = "sense";
+			stim-pin = "sense PC3 CN9-5 A2";
+			dut-pin = "PC3 CN9-5 A2 (ADC1_IN13)";
+		};
+		ai3 {
+			kind = "ai";
+			io-channels = <&dac1 2>, <&adc3 9>;
+			io-channel-names = "src", "sense";
+			range-mv = <200 3100>;
+			stim-pin = "src PA5 CN7-10 D13, sense PF3 CN9-7 A3";
+			dut-pin = "PF3 CN9-7 A3 (ADC3_IN9)";
+		};
+		ai4 {
+			kind = "ai";	/* It1: 10k/20k from DUT 3V3; It2: MCP4728 ch C */
+			io-channels = <&adc3 15>;
+			io-channel-names = "sense";
+			stim-pin = "sense PF5 CN9-9 A4";
+			dut-pin = "PF5 CN9-9 A4 (ADC3_IN15)";
+		};
+		ai5 {
+			kind = "ai";	/* It1: 33k/10k from DUT 3V3; It2: MCP4728 ch D */
+			io-channels = <&adc3 8>;
+			io-channel-names = "sense";
+			stim-pin = "sense PF10 CN9-11 A5";
+			dut-pin = "PF10 CN9-11 A5 (ADC3_IN8)";
+		};
+
+		/* ---- DUT PWM outputs (catalog ao*) -> timer capture ---- */
+		ao0 {
+			kind = "ao";
+			pwms = <&stim_cap5 1 PWM_MSEC(1) PWM_POLARITY_NORMAL>;
+			gpios = <&gpioa 0 GPIO_ACTIVE_HIGH>;	/* level read for 0 %/100 % */
+			stim-pin = "PA0 CN10-29 D32 via SB179 (TIM5_CH1, 32 bit)";
+			dut-pin = "PE9 CN10-4 D6 (TIM1_CH1)";
+		};
+		ao1 {
+			kind = "ao";
+			pwms = <&stim_cap2 1 PWM_MSEC(1) PWM_POLARITY_NORMAL>;
+			gpios = <&gpioa 15 GPIO_ACTIVE_HIGH>;
+			stim-pin = "PA15 CN7-9 (TIM2_CH1, 32 bit)";
+			dut-pin = "PE11 CN10-6 D5 (TIM1_CH2)";
+		};
+		ao2 {
+			kind = "ao";
+			pwms = <&stim_cap4 1 PWM_MSEC(1) PWM_POLARITY_NORMAL>;
+			gpios = <&gpiod 12 GPIO_ACTIVE_HIGH>;
+			stim-pin = "PD12 CN10-21 D29 (TIM4_CH1, 16 bit)";
+			dut-pin = "PE13 CN10-10 D3 (TIM1_CH3)";
+		};
+
+		/* ---- rig channels ---- */
+		nrst {
+			kind = "nrst";	/* 1 = FET on = DUT NRST low; 100k gate pull-down */
+			gpios = <&gpioe 4 GPIO_ACTIVE_HIGH>;
+			stim-pin = "PE4 CN9-16";
+			dut-pin = "NRST CN11-14 / CN8-5";
+		};
+		nrst_sense {
+			kind = "nrst-sense";	/* 1 = DUT NRST low; NO internal pull (10k series) */
+			gpios = <&gpioe 15 GPIO_ACTIVE_LOW>;
+			stim-pin = "PE15 CN10-30";
+			dut-pin = "NRST CN11-14 via 10k";
+		};
+		pwr {
+			kind = "pwr";	/* logical 1 = DUT powered = PE5 low (inverter FET off) */
+			gpios = <&gpioe 5 GPIO_ACTIVE_LOW>;
+			stim-pin = "PE5 CN9-18";
+			dut-pin = "load switch ON (via BSS138 inverter) -> DUT E5V CN11-6";
+		};
+		sync {
+			kind = "sync";
+			gpios = <&gpioe 6 GPIO_ACTIVE_HIGH>;
+			stim-pin = "PE6 CN9-20";
+			dut-pin = "LA SYNC channel (100R)";
+		};
+		m0 {
+			kind = "marker";
+			gpios = <&gpiog 0 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+			stim-pin = "PG0 CN9-29";
+		};
+		m1 {
+			kind = "marker";
+			gpios = <&gpiog 1 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+			stim-pin = "PG1 CN9-30";
+		};
+		m2 {
+			kind = "marker";
+			gpios = <&gpiog 2 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+			stim-pin = "PG2 CN8-14";
+		};
+		m3 {
+			kind = "marker";
+			gpios = <&gpiog 3 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+			stim-pin = "PG3 CN8-16";
+		};
+		lb {
+			kind = "marker";	/* self-test loopback: jumper SYNC (PE6) -> PB11 */
+			gpios = <&gpiob 11 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+			stim-pin = "PB11 CN10-34 (EXTI11)";
+		};
+		v3v3 {
+			kind = "sense";	/* DUT 3V3 (CN8-7) via 100k/100k, 100 nF at PB1 */
+			io-channels = <&adc1 9>;
+			io-channel-names = "sense";
+			scale = <2 1>;
+			stim-pin = "PB1 CN10-7 A6";
+		};
+		v5 {
+			kind = "sense";	/* DUT E5V (switch output) via 100k/100k, 100 nF at PF4 */
+			io-channels = <&adc3 14>;
+			io-channel-names = "sense";
+			scale = <2 1>;
+			stim-pin = "PF4 CN10-11 A8";
+		};
+	};
+};
+
+/* Board peripherals the stimulus does not use (frees PA5..PA7, PD14, PD0/PD1, PG9/PG14, PE13) */
+&spi1 {
+	status = "disabled";
+};
+
+&can1 {
+	status = "disabled";
+};
+
+&usart6 {
+	status = "disabled";
+};
+
+&timers1 {
+	status = "disabled";
+};
+
+&mac {
+	status = "disabled";
+};
+
+&mdio {
+	status = "disabled";
+};
+
+/* DAC1: OUT1 PA4 -> DUT ai0, OUT2 PA5 -> DUT ai3 (both 1k + 100 nF at the DUT pin) */
+&dac1 {
+	pinctrl-0 = <&dac_out1_pa4 &dac_out2_pa5>;
+	pinctrl-names = "default";
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	channel@1 {
+		reg = <1>;
+		zephyr,resolution = <12>;
+		zephyr,buffered;
+		zephyr,vref-mv = <3300>;
+	};
+
+	channel@2 {
+		reg = <2>;
+		zephyr,resolution = <12>;
+		zephyr,buffered;
+		zephyr,vref-mv = <3300>;
+	};
+};
+
+/*
+ * ADC1/ADC3 sense inputs. The F7 ADC prescaler is common to all ADCs: PCLK2
+ * 108 MHz / 4 = 27 MHz (<= 36 MHz). 480 cycles = 17.8 us sampling, enough for
+ * the 50 kOhm dividers (RAIN max 50 kOhm) with 100 nF at the pin.
+ */
+&adc1 {
+	pinctrl-0 = <&adc1_in3_pa3 &adc1_in10_pc0 &adc1_in13_pc3 &adc1_in9_pb1>;
+	pinctrl-names = "default";
+	st,adc-clock-source = "SYNC";
+	st,adc-prescaler = <4>;
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	channel@3 {
+		reg = <3>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 480)>;
+		zephyr,resolution = <12>;
+		zephyr,vref-mv = <3300>;
+	};
+
+	channel@9 {
+		reg = <9>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 480)>;
+		zephyr,resolution = <12>;
+		zephyr,vref-mv = <3300>;
+	};
+
+	channel@a {
+		reg = <10>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 480)>;
+		zephyr,resolution = <12>;
+		zephyr,vref-mv = <3300>;
+	};
+
+	channel@d {
+		reg = <13>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 480)>;
+		zephyr,resolution = <12>;
+		zephyr,vref-mv = <3300>;
+	};
+};
+
+&adc3 {
+	pinctrl-0 = <&adc3_in9_pf3 &adc3_in15_pf5 &adc3_in8_pf10 &adc3_in14_pf4>;
+	pinctrl-names = "default";
+	st,adc-clock-source = "SYNC";
+	st,adc-prescaler = <4>;
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	channel@8 {
+		reg = <8>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 480)>;
+		zephyr,resolution = <12>;
+		zephyr,vref-mv = <3300>;
+	};
+
+	channel@9 {
+		reg = <9>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 480)>;
+		zephyr,resolution = <12>;
+		zephyr,vref-mv = <3300>;
+	};
+
+	channel@e {
+		reg = <14>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 480)>;
+		zephyr,resolution = <12>;
+		zephyr,vref-mv = <3300>;
+	};
+
+	channel@f {
+		reg = <15>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 480)>;
+		zephyr,resolution = <12>;
+		zephyr,vref-mv = <3300>;
+	};
+};
+
+/*
+ * PWM capture of the DUT AOs (two-channel mode: CH1 + CH2 of each timer,
+ * slave-mode reset). APB1 timer clock = 2 x 54 MHz = 108 MHz.
+ *   TIM5/TIM2 (32 bit): prescaler 0 -> 9.26 ns ticks, max period 39.7 s.
+ *   TIM4 (16 bit): prescaler 10 -> 9.818 MHz, 101.9 ns ticks, max period 6.67 ms.
+ */
+&timers5 {
+	st,prescaler = <0>;
+	status = "okay";
+
+	stim_cap5: pwm {
+		pinctrl-0 = <&tim5_ch1_pa0>;
+		pinctrl-names = "default";
+		status = "okay";
+	};
+};
+
+&timers2 {
+	st,prescaler = <0>;
+	status = "okay";
+
+	stim_cap2: pwm {
+		pinctrl-0 = <&tim2_ch1_pa15>;
+		pinctrl-names = "default";
+		status = "okay";
+	};
+};
+
+&timers4 {
+	st,prescaler = <10>;
+	status = "okay";
+
+	stim_cap4: pwm {
+		pinctrl-0 = <&tim4_ch1_pd12>;
+		pinctrl-names = "default";
+		status = "okay";
+	};
+};
+
+/* capture inputs read 0 when the DUT is unpowered instead of floating */
+&tim5_ch1_pa0 {
+	bias-pull-down;
+};
+
+&tim2_ch1_pa15 {
+	bias-pull-down;
+};
+
+&tim4_ch1_pd12 {
+	bias-pull-down;
+};
+
+/*
+ * MS/TP injector (It2): USART2 PD5 TX / PD6 RX / PD4 DE (hardware DE, AF7).
+ * Transceiver: DE 10k pull-down, /RE to GND (hears its own frames), RO 10k
+ * pull-up. DE assert/deassert = 8/16 bit.
+ */
+&usart2 {
+	pinctrl-0 = <&usart2_tx_pd5 &usart2_rx_pd6 &usart2_de_pd4>;
+	pinctrl-names = "default";
+	current-speed = <38400>;
+	de-enable;
+	de-assert-time = <8>;
+	de-deassert-time = <8>;
+	status = "okay";
+};
+
+/* I2C1 (PB8 SCL CN7-2, PB9 SDA CN7-4) stays enabled by the board DTS for It2:
+ * MCP4728 @0x60 (VDD = 3V3, LDAC = GND), ADS1115 @0x48/0x49, INA226 @0x40.
+ */

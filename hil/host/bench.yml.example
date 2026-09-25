@@ -1,60 +1,72 @@
 # HIL bench description for profile P1 (NUCLEO-F767ZI DUT, NUCLEO-F767ZI stimulus).
-# Copy to /etc/hil/<bench>/bench.yml, fill in the serials and the DUT MAC, and pass it with
-# 'pytest --hil --bench /etc/hil/<bench>/bench.yml' (or HIL_BENCH=...).
+# Copy to /etc/hil/<bench>/bench.yml, fill in the serials and the commissioning values, and
+# pass it with 'pytest --hil --bench /etc/hil/<bench>/bench.yml' (or HIL_BENCH=...).
 name: bench1
 mode: hil
 
 dut:
   profile: P1
   board: nucleo_f767zi
-  serial: /dev/hil/dut0            # ST-LINK VCP of the DUT (udev symlink)
-  probe: "0671FF000000000000000000" # ST-LINK serial, for pyocd -u / west flash --dev-id
-  # The DUT's real MAC keys the dnsmasq reservation for 192.0.2.10. On Zephyr 4.4.2 the
-  # STM32 MAC is 02:80:e1 plus a CRC of the UID: learn it once from the DUT's console or
-  # HIL-READY line (no forced MAC in the firmware).
-  mac: "02:80:e1:00:00:00"
+  serial: /dev/hil/dut0            # ST-LINK VCP of the DUT (udev link keyed on the ST-LINK serial)
+  # ST-LINK serial. Flashing and the R-07 guard select the probe with OpenOCD
+  # '--cmd-pre-init "adapter serial <probe>"' ('west flash --serial' does not select it here).
+  probe: "0671FF000000000000000000"
+  # Identity is learned, never forced (D29, FW-02). At commissioning read the UID with OpenOCD
+  # ('mdw 0x1ff0f420 3' prints w0 w1 w2) and compute, with hilrig.bench:
+  #   uid            = stm32_uid(w0, w1, w2).hex()   (as hwinfo returns it; the MQTT info 'hwid')
+  #   mac            = stm32_mac(w0, w1, w2)         (02:80:e1 + crc32 of the UID)
+  #   mqtt_client_id = stm32_client_id(w0, w1, w2)   ('z' + 20 base32 digits)
+  # then confirm the MAC from the first DHCPDISCOVER. Bench.load() checks that the three agree.
+  # The values below are those of w0=0x00290038 w1=0x33385114 w2=0x34373932.
+  uid: "343739323338511400290038"
+  mac: "02:80:e1:67:44:68"
   ip: 192.0.2.10
-  bacnet_instance: 260001
-  mqtt_client_id: hil-dut1         # empty in firmware = "z" + 20 base32 chars of the UID
+  bacnet_instance: 260001          # written to device.json by the rig_config fixture (D30)
+  mqtt_client_id: z6grjichj718h801900s0
 
 stim:
   serial: /dev/hil/stim0           # ST-LINK VCP of the stimulus board
+  probe: "0672FF000000000000000000"  # its ST-LINK serial (OpenOCD resets in R-01, PWR-02)
   baud: 115200
   # DUT channels from firmware/boards/io/nucleo_f767zi.dtsi (BACnet branch), named as the
-  # DUT channel each stimulus pin is wired to, plus the rig channels.
+  # DUT channel each stimulus pin is wired to, plus the rig channels (docs/hil/pin-tables.md 2).
   chans:
-    - di0     # PC13 B1 user button
-    - di1     # PF15 Arduino D2
-    - di2     # PF14 Arduino D4
-    - do0     # PB0  LD1 green
-    - do1     # PB7  LD2 blue
-    - do2     # PB14 LD3 red
+    - di0     # PC13 B1 user button (CN11-23)
+    - di1     # PF15 Arduino D2 (active low, pull-up)
+    - di2     # PF14 Arduino D4 (active low, pull-up)
+    - do0     # PB0  LD1 green (mqtt_tls led0)
+    - do1     # PB7  LD2 blue (CN11-21)
+    - do2     # PB14 LD3 red (CN12-28)
     - do3     # PF13 Arduino D7
     - do4     # PF12 Arduino D8
-    - ai0     # PA3  Arduino A0 (ADC1_IN3)
-    - ai1     # PC0  Arduino A1 (ADC1_IN10)
-    - ai2     # PC3  Arduino A2 (ADC1_IN13)
-    - ai3     # PF3  Arduino A3 (ADC3_IN9)
-    - ai4     # PF5  Arduino A4 (ADC3_IN15)
-    - ai5     # PF10 Arduino A5 (ADC3_IN8)
+    - ai0     # PA3  Arduino A0 (ADC1_IN3), stimulus DAC1
+    - ai1     # PC0  Arduino A1 (ADC1_IN10), 10k/10k divider
+    - ai2     # PC3  Arduino A2 (ADC1_IN13), 20k/10k divider
+    - ai3     # PF3  Arduino A3 (ADC3_IN9), stimulus DAC2
+    - ai4     # PF5  Arduino A4 (ADC3_IN15), 10k/20k divider
+    - ai5     # PF10 Arduino A5 (ADC3_IN8), 33k/10k divider
     - ao0     # PE9  Arduino D6 (TIM1_CH1 PWM)
     - ao1     # PE11 Arduino D5 (TIM1_CH2 PWM)
     - ao2     # PE13 Arduino D3 (TIM1_CH3 PWM)
-    - nrst        # DUT NRST, open drain
-    - nrst_sense  # DUT NRST level
-    - pwr         # DUT E5V power switch
+    - nrst        # DUT NRST FET (1 = asserted)
+    - nrst_sense  # DUT NRST level (1 = in reset), counted by rstmon
+    - pwr         # DUT E5V load switch (logical 1 = DUT on)
     - sync        # SYNC pulse to the logic analyzer
-    - m0          # DUT timing markers (HIL snippet)
+    - lb          # SYNC loopback jumper (R-02a)
+    - m0          # DUT markers PG0..PG3 (snippet hil)
     - m1
     - m2
     - m3
+    - v3v3        # DUT 3V3 sense (100k/100k)
+    - v5          # DUT E5V sense (100k/100k)
 
 net:
   dut_iface: enx00e04c680001       # host NIC cabled to the DUT; moved into netns lan-a
 
 la:
-  driver: fx2lafw                  # minimal tier (decision B9)
-  channels: {do3: 0, di1: 1, m0: 2, m1: 3, nrst_sense: 4, sync: 7}
+  driver: fx2lafw                  # It1 FX2, 24 MS/s, on a host root port (HIL.md 6)
+  # vcp_tx only after the SB7 continuity check; otherwise probe m2 on channel 6.
+  channels: {nrst: 0, m0: 1, m1: 2, di1: 3, do3: 4, do0: 5, vcp_tx: 6, sync: 7}
 
 mstp:
   ftdi: /dev/hil/rs485
@@ -62,3 +74,13 @@ mstp:
 
 power:
   method: stim
+
+hub:                               # uhubctl -l <location> -p <port>
+  location: "1-1"
+  dut_port: 1                      # DUT ST-LINK (never switched in tests, recovery only)
+  stim_port: 2                     # stimulus ST-LINK (its only supply; PWR-02)
+
+commissioning:                     # DMM readings (W2), checked by PWR-02
+  v_on_released_v: 2.9             # load switch ON with the stimulus released (> 1.2 V)
+  v_on_cut_v: 0.05                 # with 'stim power off' (< 0.3 V)
+  nrst_idle_v: 3.25                # DUT NRST with the stimulus idle (>= 3.0 V)

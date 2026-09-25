@@ -1,8 +1,9 @@
-"""R-04 capture pipeline self-test on the DUT's wire (SIL and HIL).
+"""R-04 Ethernet capture pipeline on the DUT's wire (rig gate; SIL and HIL).
 
-The capture fixture only returns after a readiness sentinel was captured. This test checks
-that sentinels are in the pcapng but invisible to analysis, and that a known packet sent
-from sim1 is captured and decoded field by field.
+Catalogue R-04: sentinels are present in the pcapng and absent from rows(). A known Who-Is
+from sim1 is captured and decoded field by field. dumpcap reports 0 dropped packets.
+
+The capture fixture only returns after a readiness sentinel was captured.
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ import pytest
 from hilrig import netns as nsmod
 from hilrig.capture import SENTINEL_PORT, Capture, sentinel_count
 from hilrig.netns import HOSTS, Topology
+
+pytestmark = pytest.mark.rig(gate=True)
 
 # BVLC Original-Broadcast-NPDU, NPDU (no routing), Who-Is for instances 4194000..4194001:
 # nobody answers, so the capture holds exactly this request.
@@ -50,3 +53,4 @@ def test_r04_capture_pipeline(capture: Capture, netns: Topology) -> None:
         )
         for r in rows
     ] == [(HOSTS["sim1"].ip, nsmod.BROADCAST_A, "0x0b", "4194000", "4194001")]
+    assert capture.dropped() == 0, f"dumpcap dropped packets (see {capture.log})"

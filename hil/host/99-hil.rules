@@ -1,0 +1,20 @@
+# /etc/udev/rules.d/99-hil.rules - HIL bench device links (docs/HIL.md 5.1, 8.4).
+#
+# Installed by hil/host/bootstrap.sh, which replaces @DUT_SN@, @STIM_SN@ and @RS485_SN@ with
+# the serial numbers of this bench (bench.yml dut.probe, stim.probe; the FTDI cable in It2).
+# An unreplaced placeholder never matches a device, so the file is harmless before
+# commissioning. The OpenOCD probe permissions come from the SDK's 60-openocd.rules.
+#
+# The DUT and the stimulus are both ST-LINK V2-1 (0483:374b) on nucleo_f767zi, so the only
+# thing that tells them apart is the ST-LINK serial: /dev/hil/dut0 and /dev/hil/stim0 follow
+# the probe, whatever ttyACM number the kernel hands out.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="374b", ATTRS{serial}=="@DUT_SN@", SYMLINK+="hil/dut0"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="374b", ATTRS{serial}=="@STIM_SN@", SYMLINK+="hil/stim0"
+# It2 MS/TP host node: FTDI USB-RS485-WE (0403:6001)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", ATTRS{serial}=="@RS485_SN@", SYMLINK+="hil/rs485"
+
+# ModemManager must never probe these ports: its AT commands would land in the stimulus shell
+# and the DUT console. The property is set on every device of those USB IDs (the USB device,
+# its interfaces and the tty); ModemManager reads it from the udev database.
+ACTION!="remove", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="374b", ENV{ID_MM_DEVICE_IGNORE}="1"
+ACTION!="remove", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", ENV{ID_MM_DEVICE_IGNORE}="1"

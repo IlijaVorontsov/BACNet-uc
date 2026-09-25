@@ -1,0 +1,312 @@
+#!/bin/bash
+# run-hil - the hardware half of a HIL run; the runner user's only sudo command (D32).
+#
+# Installed root-owned as /opt/hil/bin/run-hil by install-runner.sh, with the sudoers entry
+# 'hil ALL=(root) NOPASSWD: /opt/hil/bin/run-hil'. hil/twister/ci-build.sh (unprivileged)
+# wrote OUT; this script (docs/HIL.md 10, D27, D28, D31):
+#   1. takes flock -w 1800 /run/hil/<bench>.lock; a local run holds the same lock and wins;
+#   2. turns all ports of the bench's USB hub on, runs 'stim safe', checks the stimulus
+#      firmware against OUT/images/stim (OpenOCD verify_image, probe by serial) and reflashes
+#      it when it differs, then 'stim safe' again;
+#   3. per app runs 'west twister' with OUT/twister/<app>.args, the very arguments of the
+#      build (-T, --alt-config-root, --tag, -O, hardware map), plus --test-only, the cycle
+#      count and the marker selection. The Twister pytest harness flashes the DUT (after the
+#      pre-flash.sh guard) and runs hil/tests from OUT/src/hil as root;
+#   4. collects JUnit, twister.json, the handler/device/pytest logs and the pytest artifacts
+#      under OUT/results/<app>/, owned by the calling user so the job can upload them.
+#
+# Usage: sudo run-hil [--select EXPR] [--cycles N] [--weekly] [--apps LIST] [--local] [--dry-run] OUT
+#        sudo run-hil --sil [--dry-run] OUT
+#   OUT         $HIL_OUT/<run> (default /opt/hil/out/<run>), written by ci-build.sh
+#   --select    marker expression that narrows each scenario's -m (pytest --hil-select)
+#   --cycles    power-cycle and reset loop count (default 20; weekly runs 50)
+#   --weekly    also --timeout-multiplier 2
+#   --apps      comma-separated subset of bacnet,mqtt (default both)
+#   --local     started outside Actions (nightly fallback): results also go to
+#               /var/lib/hil/nightly/<UTC date>
+#   --sil       the SIL tier as root (pytest --sil on OUT/src/hil/hil): namespaces, no bench
+#               actions, but the same lock, because SIL and the bench share netns lan-a
+#   --dry-run   validate, then print the commands instead of running them (no lock)
+# Configuration: /etc/hil/hil.env (root-owned; HIL_CONF when run as root without sudo).
+# Exit status: 0 all scenarios passed, 1 a test, flash or stimulus step failed, 2 usage or
+# setup error, 75 the bench lock stayed busy.
+set -euo pipefail
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+umask 022
+
+die() { echo "run-hil: $*" >&2; exit 2; }
+usage() { sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0"; exit "${1:-0}"; }
+log() { echo "run-hil: $*"; }
+
+# ---- configuration: KEY=VALUE lines of a root-owned file (never sourced) ---------------------
+declare -A C=(
+	[HIL_BENCH_NAME]=bench1 [HIL_OUT]=/opt/hil/out [WEST_WS]=/opt/hil/ws [HIL_VENV]=/opt/hil/venv
+	[ZEPHYR_SDK_INSTALL_DIR]=/opt/zephyr-sdk-1.0.1 [HIL_BACNET_BIN]=/opt/hil/tools/bacnet-stack/bin
+	[HIL_BACNET_STACK]=/opt/hil/tools/bacnet-stack [HIL_NIGHTLY_DIR]=/var/lib/hil/nightly
+	[HIL_ETC]=/etc/hil
+)
+conf=/etc/hil/hil.env
+[[ -n ${SUDO_USER:-} ]] || conf=${HIL_CONF:-$conf}
+if [[ -f $conf ]]; then
+	[[ $(stat -c '%u %A' "$conf") =~ ^0\ -....-..-.$ ]] || die "$conf must be owned by root, writable by root only"
+	while IFS='=' read -r key value; do
+		[[ -v C[$key] && $value =~ ^[A-Za-z0-9_./-]+$ ]] && C[$key]=$value
+	done < <(grep -E '^[A-Z_]+=' "$conf")
+fi
+BENCH_NAME=${C[HIL_BENCH_NAME]}
+[[ $BENCH_NAME =~ ^[a-z0-9_-]+$ ]] || die "bad HIL_BENCH_NAME '$BENCH_NAME'"
+BENCH=${C[HIL_ETC]}/$BENCH_NAME/bench.yml
+MAP=${C[HIL_ETC]}/$BENCH_NAME/map.yml
+LOCK=/run/hil/$BENCH_NAME.lock
+PY=${C[HIL_VENV]}/bin/python
+
+# ---- arguments ------------------------------------------------------------------------------
+select="" cycles=20 weekly=0 apps=(bacnet mqtt) local=0 sil=0 dry=0 out=""
+while (($#)); do
+	case $1 in
+	--select) select=${2?}; shift ;;
+	--cycles) cycles=${2?}; shift ;;
+	--weekly) weekly=1 ;;
+	--apps) IFS=, read -ra apps <<<"${2?}"; shift ;;
+	--local) local=1 ;;
+	--sil) sil=1 ;;
+	--dry-run) dry=1 ;;
+	-h | --help) usage 0 ;;
+	-*) usage 2 >&2 ;;
+	*) [[ -z $out ]] || usage 2 >&2; out=$1 ;;
+	esac
+	shift
+done
+[[ -n $out ]] || usage 2 >&2
+((EUID == 0)) || die "run as root: sudo $0"
+[[ $cycles =~ ^[1-9][0-9]{0,3}$ ]] || die "--cycles must be 1..9999"
+[[ $select =~ ^[A-Za-z0-9_\ ()]*$ ]] || die "--select: only marker names, 'and', 'or', 'not' and parentheses"
+for app in "${apps[@]}"; do [[ $app == bacnet || $app == mqtt ]] || die "--apps: bacnet and/or mqtt"; done
+
+# OUT: a direct child of HIL_OUT, no symlink games, with the layout ci-build.sh writes
+root=$(realpath -e "${C[HIL_OUT]}") || die "${C[HIL_OUT]} does not exist"
+out=$(realpath -e "$out") || die "$out does not exist"
+[[ $(dirname "$out") == "$root" && $(basename "$out") =~ ^[A-Za-z0-9._-]+$ ]] ||
+	die "$out is not a run directory in $root"
+SRC=$out/src
+[[ -d $SRC/hil/hil/tests && -d $SRC/bacnet && -d $SRC/mqtt ]] || die "$out has no src/ snapshot (ci-build.sh)"
+
+# ---- environment of Twister, pytest and pre-flash.sh (sudo cleared the caller's) -------------
+export PATH=${C[HIL_VENV]}/bin:$PATH
+export ZEPHYR_BASE=${C[WEST_WS]}/zephyr ZEPHYR_SDK_INSTALL_DIR=${C[ZEPHYR_SDK_INSTALL_DIR]}
+export PYTHONPATH=$SRC/hil/hil/src PYTHONDONTWRITEBYTECODE=1 PYTEST_ADDOPTS="-p no:cacheprovider"
+export HIL_TESTS=$SRC/hil/hil/tests HIL_PYTHON=$PY HIL_CYCLES=$cycles
+export HIL_BACNET_BIN=${C[HIL_BACNET_BIN]} HIL_BACNET_STACK=${C[HIL_BACNET_STACK]}
+export HIL_BACNET_HARNESS=$SRC/bacnet/harness HIL_BACNET_SCHEMAS=$SRC/bacnet/schemas
+OPENOCD_DIR=${C[ZEPHYR_SDK_INSTALL_DIR]}/hosttools/sysroots/x86_64-pokysdk-linux/usr
+export HIL_OPENOCD=${HIL_OPENOCD:-$OPENOCD_DIR/bin/openocd}
+
+# run <cmd...>: run it, or print it with --dry-run
+run() {
+	if ((dry)); then
+		printf '+'
+		printf ' %q' "$@"
+		printf '\n'
+	else
+		"$@"
+	fi
+}
+
+# common_args <app>: OUT/twister/<app>.args, accepted only in the shape gen.py writes, so the
+# root run cannot be pointed at another hardware map, output directory or option
+common_args() {
+	local app=$1 file=$out/twister/$1.args i=0 option value
+	[[ -f $file ]] || die "$file missing (ci-build.sh did not render $app)"
+	mapfile -t ARGS <"$file"
+	while ((i < ${#ARGS[@]})); do
+		option=${ARGS[i]} value=${ARGS[i + 1]:-}
+		case $option in
+		--device-testing | --disable-warnings-as-errors | --allow-installed-plugin) i=$((i + 1)); continue ;;
+		-T) [[ $value == "$SRC"/* && -d $value ]] ;;
+		--alt-config-root) [[ $value == "$out/alt/$app" ]] ;;
+		-O) [[ $value == "$out/$app" ]] ;;
+		--hardware-map) [[ $value == "$MAP" ]] ;;
+		--tag) [[ $value == hil ]] ;;
+		-p) [[ $value =~ ^[a-z0-9_/]+$ ]] ;;
+		*) false ;;
+		esac || die "$file: unexpected '$option $value' (want the gen.py layout, map $MAP)"
+		i=$((i + 2))
+	done
+	[[ -f $out/$app/twister.json ]] || die "$out/$app/twister.json missing: the $app build did not run"
+}
+
+lock() {
+	if ((dry)); then
+		run flock -w 1800 "$LOCK" # held from here to the end of the run
+		return 0
+	fi
+	mkdir -p /run/hil
+	exec 9>"$LOCK"
+	if ! flock -n 9; then
+		log "$LOCK is held (a local run or another job); waiting up to 1800 s"
+		flock -w 1800 9 || { echo "run-hil: $LOCK still busy after 1800 s" >&2; exit 75; }
+	fi
+}
+
+# bench_values: KEY=VALUE lines from bench.yml, validated by hilrig.bench
+declare -A B=()
+bench_values() {
+	[[ -r $BENCH ]] || die "$BENCH not readable (bootstrap.sh installs it)"
+	local line
+	while IFS= read -r line; do B[${line%%=*}]=${line#*=}; done < <("$PY" - "$BENCH" <<'EOF'
+import sys
+from hilrig.bench import Bench, BenchError
+try:
+    b = Bench.load(sys.argv[1])
+except BenchError as e:
+    sys.exit(str(e))
+if b.mode != "hil" or b.stim is None or not b.stim.probe or not b.dut.probe:
+    sys.exit(f"{sys.argv[1]}: a hil bench with dut.probe, stim.serial and stim.probe is needed")
+hub = b.hub.location if b.hub else ""
+for key, value in dict(dut_probe=b.dut.probe, dut_serial=b.dut.serial or "", stim_serial=b.stim.serial,
+                       stim_baud=b.stim.baud, stim_probe=b.stim.probe, hub=hub).items():
+    print(f"{key}={value}")
+EOF
+	)
+	[[ -n ${B[stim_probe]:-} ]] || die "cannot read $BENCH"
+}
+
+# stim_safe: 'stim safe' then 'stim info' through hilrig (3 attempts: the board may be booting)
+stim_safe() {
+	run "$PY" - "${B[stim_serial]}" "${B[stim_baud]}" <<'EOF'
+import sys
+import time
+from hilrig.stim import Stim, StimError, StimLinkError
+error = None
+for _ in range(3):
+    try:
+        with Stim(sys.argv[1], baud=int(sys.argv[2]), connect_timeout=10.0) as stim:
+            stim.safe()
+            i = stim.info()
+        print(f"run-hil: stim safe: fw={i.fw} board={i.board} profile={i.profile} pwr={i.pwr} caps={','.join(i.caps)}")
+        sys.exit(0)
+    except (StimError, StimLinkError) as e:
+        error = e
+        time.sleep(2)
+sys.exit(f"run-hil: stim safe failed: {error}")
+EOF
+}
+
+# stim_verify: does the stimulus flash hold OUT/images/stim's zephyr.bin? (OpenOCD
+# verify_image: CRC on the target, binary compare on mismatch; the core is halted by a reset
+# and let run again, so every DUT line goes to its fail-safe state meanwhile)
+stim_verify() {
+	local image=$out/images/stim/zephyr/zephyr.bin config=$out/images/stim/zephyr/.config
+	local base offset address ocd
+	base=$(sed -n 's/^CONFIG_FLASH_BASE_ADDRESS=//p' "$config")
+	offset=$(sed -n 's/^CONFIG_FLASH_LOAD_OFFSET=//p' "$config")
+	address=$(printf '0x%08x' $((base + ${offset:-0})))
+	ocd=("$HIL_OPENOCD" -s "$OPENOCD_DIR/share/openocd/scripts" -f board/st_nucleo_f7.cfg
+		-c "adapter serial ${B[stim_probe]}" -c init -c "reset halt"
+		-c "verify_image $image $address bin" -c "reset run" -c shutdown)
+	if ((dry)); then
+		run "${ocd[@]}"
+		return 1 # show the reflash too
+	fi
+	"${ocd[@]}" >"$out/results/stim-verify.log" 2>&1 && grep -q '^verified ' "$out/results/stim-verify.log"
+}
+
+# stimulus: hub on, safe, firmware check and reflash, safe. It runs in a '||' context, where
+# errexit does not apply, so every step checks its own status.
+stimulus() {
+	local image=$out/images/stim/zephyr/zephyr.bin sha
+	[[ -f $image ]] || die "$image missing (ci-build.sh builds the stimulus image)"
+	sha=$(sha256sum "$image" | cut -d' ' -f1) || return 1
+	if [[ -n ${B[hub]} ]]; then
+		run uhubctl -l "${B[hub]}" -a on || { echo "run-hil: uhubctl -l ${B[hub]} -a on failed" >&2; return 1; }
+		for _ in {1..20}; do
+			((dry)) || [[ -e ${B[stim_serial]} && -e ${B[dut_serial]:-/} ]] && break
+			sleep 1
+		done
+	fi
+	stim_safe || log "stim safe failed before the firmware check; checking the firmware"
+	if stim_verify; then
+		log "stimulus firmware matches $image (sha256 $sha)"
+	else
+		log "stimulus firmware differs from $image (sha256 $sha): reflashing"
+		run west flash -d "$out/images/stim" -r openocd -- --cmd-pre-init "adapter serial ${B[stim_probe]}" ||
+			{ echo "run-hil: stimulus flash failed" >&2; return 1; }
+		((dry)) || stim_verify || { echo "run-hil: stimulus verify failed after the flash" >&2; return 1; }
+	fi
+	((dry)) || echo "$sha" >"/run/hil/$BENCH_NAME.stim.sha256"
+	stim_safe
+}
+
+# verdict <app>: every scenario of the app passed. Twister reports a scenario whose pytest
+# selected no test (exit status 5) as skipped and still exits 0; a HIL run treats that as a
+# failure (R31, D31: an all-skipped run is not green).
+verdict() {
+	((dry)) && return 0
+	"$PY" - "$out/$1/twister.json" <<'EOF'
+import json
+import sys
+suites = json.load(open(sys.argv[1])).get("testsuites", [])
+bad = [f"{s['name']}: {s.get('status')} {s.get('reason') or ''}" for s in suites if s.get("status") != "passed"]
+for line in bad:
+    print(f"run-hil: not passed: {line}")
+sys.exit(1 if bad or not suites else 0)
+EOF
+}
+
+# collect <app>: JUnit, twister.json and per-scenario logs into OUT/results/<app>
+collect() {
+	local app=$1 dest=$out/results/$1
+	((dry)) && return 0
+	mkdir -p "$dest"
+	for f in twister.json twister.xml twister_report.xml twister_suite_report.xml twister.log; do
+		[[ -f $out/$app/$f ]] && cp "$out/$app/$f" "$dest/"
+	done
+	(cd "$out/$app" && find . \( -name report.xml -o -name handler.log -o -name device.log \
+		-o -name twister_harness.log \) -exec cp --parents {} "$dest/" \;)
+}
+
+publish() {
+	((dry)) && return 0
+	[[ -d $out/results ]] || return 0
+	chown -R "${SUDO_UID:-0}:${SUDO_GID:-0}" "$out/results"
+	if ((local)); then
+		local dest
+		dest=${C[HIL_NIGHTLY_DIR]}/$(date -u +%F)
+		[[ -e $dest ]] && dest=$dest-$(basename "$out")
+		mkdir -p "$dest"
+		cp -a "$out/results/." "$dest/"
+		log "results copied to $dest"
+	fi
+}
+
+# ---- main -----------------------------------------------------------------------------------
+((dry)) || mkdir -p "$out/results"
+cd "${C[WEST_WS]}" || die "WEST_WS ${C[WEST_WS]} missing"
+lock
+if ((sil)); then
+	log "SIL tier on $SRC/hil/hil (bench $BENCH_NAME untouched)"
+	status=0
+	(cd "$SRC/hil/hil" && run "$PY" -m pytest --sil --artifacts="$out/results/sil/hil" \
+		--junit-xml="$out/results/sil/junit.xml" tests) || status=1
+	publish
+	exit "$status"
+fi
+
+export HIL_BENCH=$BENCH # pre-flash.sh (the pytest session takes it from map.yml's hil_bench)
+bench_values
+for app in "${apps[@]}"; do common_args "$app"; done
+status=0
+stimulus || { publish; exit 1; }
+for app in "${apps[@]}"; do
+	common_args "$app"
+	cmd=(west twister "${ARGS[@]}" --test-only --inline-logs "--pytest-args=--cycles=$cycles")
+	[[ -z $select ]] || cmd+=("--pytest-args=--hil-select=$select")
+	((weekly)) && cmd+=(--timeout-multiplier 2)
+	log "$app: ${cmd[*]}"
+	run "${cmd[@]}" || status=1
+	verdict "$app" || status=1
+	collect "$app"
+done
+stim_safe || status=1 # leave the bench safe whatever the tests did
+publish
+exit "$status"

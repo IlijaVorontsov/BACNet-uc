@@ -156,6 +156,30 @@ def test_keylog_is_injected_so_the_pcap_decrypts_on_its_own(tmp_path: Path) -> N
     assert len(plain.rows("tls.app_data")) >= 1  # the records are there, but opaque
 
 
+@live
+def test_key_logs_of_several_endpoints_are_merged(tmp_path: Path) -> None:
+    """The broker's key log plus one added by a TLS endpoint fixture (s_server, TLS front)."""
+    pki = Pki.generate(tmp_path / "pki")
+    first, second = tmp_path / "broker-keys.log", tmp_path / "front-keys.log"
+    with capture(tmp_path, "tcp port 8883", keylog=first, name="merged") as cap:
+        cap.add_keylog(second)
+        cap.add_keylog(second)  # added once
+        tls_session(pki, first, "hil-first")
+        tls_session(pki, second, "hil-second")
+    assert cap.keylogs == [first, second]
+    ids = sorted(r["mqtt.clientid"] for r in cap.rows("mqtt.msgtype == 1", "mqtt.clientid"))
+    assert ids == ["hil-first", "hil-second"]
+
+
+@live
+def test_drop_count_is_reported_after_stop(tmp_path: Path) -> None:
+    """R-04: dumpcap's drop count comes from tshark's summary (0 on an idle veth)."""
+    cap = capture(tmp_path, "udp port 47808", name="drops")
+    with cap:
+        assert cap.dropped() is None  # no summary while running
+    assert cap.dropped() == 0
+
+
 def netns_pids(ns: str) -> list[int]:
     out = subprocess.run(["ip", "netns", "pids", ns], capture_output=True, text=True, check=True).stdout
     return [int(pid) for pid in out.split()]
@@ -194,3 +218,11 @@ def test_rows_keep_values_that_contain_line_separator_characters(tmp_path: Path)
     cap = Capture("unused0", None, "", syslog_pcap(tmp_path / "syslog.pcap", text.encode()))
     rows = cap.rows("syslog", "syslog.msg", "udp.dstport")
     assert [(r["syslog.msg"], r["udp.dstport"]) for r in rows] == [(text, "514")]
+
+
+def test_connection_attempts_count_resent_syns_once() -> None:
+    """Regression (TLS-03 on native_sim): a SYN resent on the same port counted as a new attempt."""
+    rows = [
+        capture_mod.Row(t, {"tcp.srcport": port}) for t, port in ((1.0, "4000"), (1.3, "4000"), (3.5, "4001"))
+    ]
+    assert capture_mod.connection_attempts(rows) == [1.0, 3.5]

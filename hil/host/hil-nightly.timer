@@ -1,0 +1,14 @@
+# /etc/systemd/system/hil-nightly.timer - start hil-nightly.service every night at 01:17 host
+# local time (docs/HIL.md 10). Enabled by 'install-runner.sh --enable-nightly' once the hil
+# user's push token works. Not Persistent: a host that was off at 01:17 does not start a bench
+# run when it boots during the working day.
+[Unit]
+Description=HIL nightly run at 01:17
+
+[Timer]
+OnCalendar=*-*-* 01:17:00
+Persistent=false
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,58 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * HIL snippet (-S hil), NUCLEO-F767ZI (MB1137) DUT, Zephyr v4.4.2.
+ * Applies to both apps (firmware/ BACnet and apps/mqtt_tls): it references
+ * only SoC/board nodes, never &uc_io.
+ *
+ *   function      MCU   connector            notes
+ *   MS/TP TX      PD5   Zio CN9-6  (D53)     USART2_TX AF7 -> transceiver DI
+ *   MS/TP RX      PD6   Zio CN9-4  (D52)     USART2_RX AF7 <- RO, pull-up (RO Hi-Z while DE=/RE=1)
+ *   MS/TP DE      PD4   Zio CN9-8  (D54)     USART2_DE AF7, hardware DEM, push-pull,
+ *                                            10 kOhm pull-down on the DE net (fail-safe)
+ *   marker m0     PG0   Zio CN9-29 (D65)     push-pull output
+ *   marker m1     PG1   Zio CN9-30 (D64)
+ *   marker m2     PG2   Zio CN8-14 (D49)
+ *   marker m3     PG3   Zio CN8-16 (D50)     all on GPIOG bits 0..3: one BSRR write
+ *   GND                 Zio CN9-12, CN9-23, CN8-11/13
+ *
+ * Not in devicetree (rig side only): NRST at Zio CN8-5, E5V at morpho CN11-6.
+ */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/pinctrl/stm32-pinctrl.h>
+
+&pinctrl {
+	/* usart2_rx_pd6 of hal_stm32 has no bias; RO floats while the
+	 * transceiver drives the bus (DE and /RE tied), so pull it up.
+	 */
+	hil_usart2_rx_pd6_pu: hil_usart2_rx_pd6_pu {
+		pinmux = <STM32_PINMUX('D', 6, AF7)>;
+		bias-pull-up;
+	};
+};
+
+&usart2 {
+	/* replaces the board default (TX/RX/RTS/CTS on PD5/PD6/PD4/PD3) */
+	pinctrl-0 = <&usart2_tx_pd5 &hil_usart2_rx_pd6_pu &usart2_de_pd4>;
+	pinctrl-names = "default";
+	current-speed = <38400>;
+	/* no hw-flow-control: it would select RTS/CTS instead of DE */
+	de-enable;
+	de-assert-time = <16>;   /* 1/16 bit units: 1 bit before the start bit */
+	de-deassert-time = <16>; /* 1 bit after the stop bit (Tpostdrive <= 15 bits) */
+	status = "okay";
+};
+
+/ {
+	aliases {
+		mstp-uart0 = &usart2;
+	};
+
+	zephyr,user {
+		hil-marker-gpios = <&gpiog 0 GPIO_ACTIVE_HIGH>,
+				   <&gpiog 1 GPIO_ACTIVE_HIGH>,
+				   <&gpiog 2 GPIO_ACTIVE_HIGH>,
+				   <&gpiog 3 GPIO_ACTIVE_HIGH>;
+	};
+};

@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: Apache-2.0
+description: |
+  HIL stimulus channel map (apps/hil_stimulus).
+
+  Each child node is one stim-protocol channel. The node name IS the protocol
+  channel name (baseline B5): the DUT catalog channel it is wired to (di1, do3,
+  ai0, ao0) or a rig channel (nrst, nrst_sense, pwr, sync, m0..m3, v3v3, v5).
+  The protocol and the host code only ever see names; this node maps names to
+  stimulus pins, so the same host code drives any stimulus board.
+
+compatible: "hil,stim-channels"
+
+include: base.yaml
+
+properties:
+  profile:
+    type: string
+    required: true
+    description: |
+      DUT profile (P1, P2, ...) this channel map is wired for. "stim info"
+      reports it as profile=, and the host checks it against bench.yml (D22).
+  rs485-uart:
+    type: phandle
+    description: UART with hardware DE used as the MS/TP injector (It2).
+
+child-binding:
+  description: One stimulus channel.
+  properties:
+    kind:
+      type: string
+      required: true
+      enum:
+        - "di"          # stimulus drives a DUT digital input (0/1/z)
+        - "do"          # stimulus reads a DUT digital output (EXTI timestamps)
+        - "ai"          # stimulus sources ("src") and/or senses ("sense") a DUT analog input
+        - "ao"          # stimulus captures a DUT PWM output (pwms) and reads its level (gpios)
+        - "nrst"        # 2N7002/BSS138 gate driving DUT NRST (1 = reset asserted)
+        - "nrst-sense"  # DUT NRST read back through 10 kOhm (1 = DUT in reset); no pull!
+        - "pwr"         # inverter gate driving the load-switch ON pin (1 = DUT powered)
+        - "sync"        # SYNC output to the logic analyzer
+        - "marker"      # DUT marker/trace output read by the stimulus (EXTI timestamps)
+        - "sense"       # analog rig sense (DUT 3V3, DUT 5V) through a divider
+    gpios:
+      type: phandle-array
+    io-channels:
+      type: phandle-array
+    io-channel-names:
+      type: string-array
+      description: '"src" = DAC/MCP4728 output, "sense" = ADC input on the same node.'
+    pwms:
+      type: phandle-array
+    range-mv:
+      type: array
+      description: Usable source range [min, max] in mV (buffered STM32 DAC 200..VDDA-200).
+    scale:
+      type: array
+      default: [1, 1]
+      description: Sense divider [num, den]; reported mV = pin mV * num / den.
+    stim-pin:
+      type: string
+      description: Stimulus pin and connector position (informational).
+    dut-pin:
+      type: string
+      description: DUT pin and connector position (informational).

@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# lib/hil: HIL rig instrumentation as a separate Zephyr module (docs/HIL.md D26, FW-15).
+# Instrumented images add it with -DZEPHYR_EXTRA_MODULES=$HIL/lib/hil together with
+# -S hil -DSNIPPET_ROOT=$HIL, so nothing changes in the firmware branches.
+name: hil
+build:
+  cmake: .
+  kconfig: Kconfig

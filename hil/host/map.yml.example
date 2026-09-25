@@ -1,0 +1,27 @@
+# Twister hardware map of HIL bench 1, profile P1 (docs/HIL.md 8.4). Copy to
+# /etc/hil/bench1/map.yml (bootstrap.sh does, with --dut-sn) and replace the id.
+#
+# - Only the DUT is listed. The stimulus is the same board type (ST-LINK V2-1, 0483:374b,
+#   platform nucleo_f767zi) and must never be picked for a scenario, so it stays out of here.
+# - id: the DUT's ST-LINK serial (the probe of bench.yml dut.probe). With product
+#   'STM32 STLink' and runner openocd Twister adds --cmd-pre-init "hla_serial <id>" (an alias
+#   of 'adapter serial'), which selects the probe; 'west flash --serial' would not (D3).
+# - serial: the DUT's VCP through the udev link keyed on that ST-LINK serial (99-hil.rules).
+# - pre_script: the R-07 OpenOCD guard (identity, RDP level, UID-derived MAC) before every
+#   flash. It runs with no arguments and never opens the stimulus tty.
+# - fixtures: Twister matches a scenario's 'fixture: hil_bench' on the part before ':'
+#   (hardwaremap.py); the pytest harness gets the full string, and hilrig takes the bench
+#   file from it (D31). hil-dut-f767 names the DUT kind for scenarios that need no bench.
+# - flash_timeout: SYS-01 allows 120 s for a flash (the default is 60 s).
+- connected: true
+  id: "0671FF000000000000000000"
+  platform: nucleo_f767zi
+  product: STM32 STLink
+  runner: openocd
+  serial: /dev/hil/dut0
+  baud: 115200
+  flash_timeout: 120
+  pre_script: /opt/hil/bin/pre-flash.sh
+  fixtures:
+    - "hil_bench:/etc/hil/bench1/bench.yml"
+    - hil-dut-f767

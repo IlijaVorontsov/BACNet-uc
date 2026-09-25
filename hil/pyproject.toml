@@ -19,8 +19,11 @@ dependencies = [
 
 [project.optional-dependencies]
 saleae = ["logic2-automation>=1.0.11"]
+# SMP to the BACnet DUT through the BACnet branch's harness client (hilrig.smp; see README),
+# and validation of the golden configuration documents against its schemas (hilrig.rigconfig)
+smp = ["cbor2>=5.6", "jsonschema>=4.21"]
 # linters and type checker of the package and its tests (see README, "Development")
-dev = ["ruff>=0.6", "mypy>=1.11", "types-PyYAML", "types-pyserial"]
+dev = ["ruff>=0.6", "mypy>=1.11", "types-PyYAML", "types-pyserial", "types-jsonschema"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

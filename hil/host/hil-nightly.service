@@ -1,0 +1,21 @@
+# /etc/systemd/system/hil-nightly.service - one nightly HIL run (docs/HIL.md 10, D27).
+# Installed by hil/host/install-runner.sh; started by hil-nightly.timer, or by hand:
+#   sudo systemctl start hil-nightly.service
+# /opt/hil/bin/nightly pushes the HIL tip plus a run commit to hil/nightly, which starts the
+# workflow; when no Actions run appears within 10 min it builds and runs the bench here
+# (ci-build.sh, then 'sudo run-hil --local', the hil user's only sudo command).
+[Unit]
+Description=HIL nightly run (push to hil/nightly, direct run as fallback)
+Documentation=file:///opt/hil/README-host.md
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+User=hil
+Group=hil
+EnvironmentFile=/etc/hil/hil.env
+ExecStart=/opt/hil/bin/nightly
+# fallback budget: build (about 15 min) plus the bench job's 300 min
+TimeoutStartSec=6h
+Nice=5

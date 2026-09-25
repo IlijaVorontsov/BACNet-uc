@@ -8,8 +8,10 @@ Rules (design section 3.1):
   "Capturing on ..." is printed before the socket really receives; sentinels are excluded
   from every analysis;
 - analysis only after :meth:`Capture.stop`, with ``tshark -r ... -Y ... -T fields``;
-- with a TLS key log, the secrets are injected into the pcapng (``editcap --inject-secrets``)
-  so the artifact decrypts on its own.
+- with TLS key logs (the broker's, and those of the TLS endpoints a test adds with
+  :meth:`Capture.add_keylog`), the secrets are merged and injected into the pcapng
+  (``editcap --inject-secrets``) so the artifact decrypts on its own;
+- dumpcap's drop count is reported by :meth:`Capture.dropped` (R-04 needs 0).
 
 The sentinel needs carrier on the capture interface: a DUT that is powered off cannot be
 the only thing behind it when the capture starts.
@@ -19,11 +21,13 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import signal
 import socket
 import subprocess
 import threading
 import time
+import xml.etree.ElementTree as ET
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -81,7 +85,7 @@ class Capture:
         self.path = out
         self.sentinel_netns = sentinel_netns
         self.sentinel_dst = sentinel_dst
-        self.keylog = keylog
+        self.keylogs: list[Path] = [keylog] if keylog else []
         self.ready_timeout = ready_timeout
         self.settle = settle
         self.log = out.with_suffix(".tshark.log")
@@ -93,6 +97,16 @@ class Capture:
     def running(self) -> bool:
         """Tell whether the capture is running."""
         return self._proc is not None
+
+    @property
+    def keylog(self) -> Path | None:
+        """The first key log (the broker's, when the ``services`` fixture is active)."""
+        return self.keylogs[0] if self.keylogs else None
+
+    def add_keylog(self, path: Path) -> None:
+        """Inject this key log too when the capture stops (s_server, the TLS front)."""
+        if path not in self.keylogs:
+            self.keylogs.append(path)
 
     def __enter__(self) -> Capture:
         return self.start()
@@ -152,11 +166,27 @@ class Capture:
             return self.path
         time.sleep(self.settle)  # frames still in flight land in the file
         self._terminate()
-        if self.keylog and self.keylog.exists() and self.keylog.stat().st_size:
+        secrets = b"".join(k.read_bytes() for k in self.keylogs if k.exists())
+        if secrets.strip():
+            merged = self.path.with_suffix(".keys")
+            merged.write_bytes(secrets if secrets.endswith(b"\n") else secrets + b"\n")
             injected = self.path.with_suffix(".dsb.pcapng")
-            _tool(["editcap", "--inject-secrets", f"tls,{self.keylog}", str(self.path), str(injected)])
+            _tool(["editcap", "--inject-secrets", f"tls,{merged}", str(self.path), str(injected)])
             os.replace(injected, self.path)
         return self.path
+
+    def texts(self, display_filter: str, proto: str = "bacapp") -> list[TextRow]:
+        """:func:`texts` of this (stopped) capture."""
+        if self.running:
+            raise CaptureError("texts() analyses a stopped capture; call stop() first")
+        return texts(self.path, display_filter, proto)
+
+    def dropped(self) -> int | None:
+        """Packets the kernel or dumpcap dropped, from tshark's summary (None: no summary yet)."""
+        text = self.log.read_text() if self.log.exists() else ""
+        if not re.search(r"\b\d+ packets? captured", text):
+            return None
+        return sum(int(n) for n in re.findall(r"\b(\d+) packets? dropped", text))
 
     def _terminate(self) -> None:
         """Stop tshark and its dumpcap child, as Ctrl-C would, and kill both if that hangs.
@@ -176,26 +206,70 @@ class Capture:
             self._reader.join(timeout=5)
 
     def rows(self, display_filter: str, *fields: str, all_occurrences: bool = False) -> list[Row]:
-        """Return the packets matching ``display_filter``, sentinels excluded.
-
-        Each row carries ``frame.time_epoch`` and the first occurrence of every field
-        (all occurrences, comma-separated, with ``all_occurrences``).
-        """
+        """Return the packets matching ``display_filter``, sentinels excluded (see :func:`rows_of`)."""
         if self.running:
             raise CaptureError("rows() analyses a stopped capture; call stop() first")
-        occurrence = "a" if all_occurrences else "f"
-        output = ["-T", "fields", "-E", "separator=\t", "-E", f"occurrence={occurrence}"]
-        output += ["-E", "aggregator=,"]
-        argv = ["tshark", "-n", "-r", str(self.path), "-Y", f"({display_filter}) && {NOT_SENTINEL}", *output]
-        for field in ("frame.time_epoch", *fields):
-            argv += ["-e", field]
-        rows = []
-        # tshark escapes tab and newline inside values but leaves other characters that
-        # str.splitlines() would split on (\x1c, U+0085, U+2028), so split on "\n" only.
-        for line in filter(None, _tool(argv).split("\n")):
-            time_epoch, *values = line.split("\t")  # every field has a column, empty if absent
-            rows.append(Row(float(time_epoch), dict(zip(fields, values, strict=True))))
-        return rows
+        return rows_of(self.path, display_filter, *fields, all_occurrences=all_occurrences)
+
+
+def rows_of(path: Path, display_filter: str, *fields: str, all_occurrences: bool = False) -> list[Row]:
+    """The packets of the pcapng ``path`` matching ``display_filter``, sentinels excluded.
+
+    Each row carries ``frame.time_epoch`` and the first occurrence of every field (all
+    occurrences, comma-separated, with ``all_occurrences``).
+    """
+    occurrence = "a" if all_occurrences else "f"
+    output = ["-T", "fields", "-E", "separator=\t", "-E", f"occurrence={occurrence}", "-E", "aggregator=,"]
+    argv = ["tshark", "-n", "-r", str(path), "-Y", f"({display_filter}) && {NOT_SENTINEL}", *output]
+    for field in ("frame.time_epoch", *fields):
+        argv += ["-e", field]
+    rows = []
+    # tshark escapes tab and newline inside values but leaves other characters that
+    # str.splitlines() would split on (\x1c, U+0085, U+2028), so split on "\n" only.
+    for line in filter(None, _tool(argv).split("\n")):
+        time_epoch, *values = line.split("\t")  # every field has a column, empty if absent
+        rows.append(Row(float(time_epoch), dict(zip(fields, values, strict=True))))
+    return rows
+
+
+@dataclass(frozen=True)
+class TextRow:
+    """One packet from :meth:`Capture.texts`: capture time and the protocol's text items."""
+
+    t: float
+    texts: tuple[str, ...]
+
+    def value(self, label: str) -> str | None:
+        """The text after ``<label>:`` of the first item with that label, else None."""
+        for text in self.texts:
+            name, sep, value = text.partition(":")
+            if sep and name.strip() == label:
+                return value.strip()
+        return None
+
+
+def texts(path: Path, display_filter: str, proto: str = "bacapp") -> list[TextRow]:
+    """The unnamed text items of ``proto`` in each matching packet (sentinels excluded).
+
+    Some dissectors show decoded values only as text items, which ``-T fields`` cannot
+    extract: bacapp prints ``Maximum ADPU Length Accepted: (Unsigned) 1476`` or
+    ``firmware-revision: UTF-8 '0.1.0'``. These come from ``tshark -T pdml``.
+    """
+    pdml = _tool(
+        ["tshark", "-n", "-r", str(path), "-Y", f"({display_filter}) && {NOT_SENTINEL}", "-T", "pdml"]
+    )
+    rows = []
+    for packet in ET.fromstring(pdml).iter("packet"):
+        epoch = packet.find("./proto[@name='frame']/field[@name='frame.time_epoch']")
+        items = [
+            f.get("show", "")
+            for p in packet.iter("proto")
+            if p.get("name") == proto
+            for f in p.iter("field")
+            if f.get("name") == "" and f.get("show")
+        ]
+        rows.append(TextRow(float(epoch.get("show", "0")) if epoch is not None else 0.0, tuple(items)))
+    return rows
 
 
 def _signal_group(proc: subprocess.Popen[str], sig: signal.Signals) -> None:
@@ -209,6 +283,17 @@ def _tool(argv: list[str]) -> str:
     if proc.returncode != 0:
         raise CaptureError(f"{argv[0]} failed ({proc.returncode}): {proc.stderr.strip()}")
     return proc.stdout
+
+
+def connection_attempts(rows: list[Row]) -> list[float]:
+    """First-SYN times per TCP source port: one connect(), however often its SYN was resent.
+
+    ``rows`` are SYN (no ACK) packets with the ``tcp.srcport`` field.
+    """
+    first: dict[str, float] = {}
+    for row in rows:
+        first.setdefault(row["tcp.srcport"], row.t)
+    return sorted(first.values())
 
 
 def sentinel_count(path: Path) -> int:

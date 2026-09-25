@@ -14,8 +14,12 @@ from __future__ import annotations
 
 import contextlib
 import ctypes
+import json
 import os
+import socket
+import struct
 import subprocess
+import time
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +28,7 @@ SUBNET_A = "192.0.2.0/24"
 BROADCAST_A = "192.0.2.255"
 DUT_IP = "192.0.2.10"
 ROUTER_A_IP = "192.0.2.254"
+SVC2_IP = "192.0.2.2"  # second svc0 address: TLS endpoints that take over broker.hil.lan (D33)
 
 WRAPPER_UP = Path("/usr/local/sbin/hil-net-up")
 WRAPPER_DOWN = Path("/usr/local/sbin/hil-net-down")
@@ -151,20 +156,98 @@ def exists(netns: str) -> bool:
     return Path("/run/netns", netns).exists()
 
 
-def listening(netns: str | None, proto: str, port: int) -> bool:
+def listening(netns: str | None, proto: str, port: int, ip: str | None = None) -> bool:
     """Tell whether an IPv4 TCP socket listens, or a UDP socket is bound, on ``port``.
 
-    Reads the namespace's socket table, so readiness checks need no probe connection
-    (which servers would log as a failed client).
+    With ``ip`` only a socket bound to that address (or to 0.0.0.0) counts, so a server on
+    192.0.2.2:8883 is not taken for ready while mosquitto holds 192.0.2.1:8883. Reads the
+    namespace's socket table, so readiness checks need no probe connection (which servers
+    would log as a failed client).
     """
     with enter(netns) if netns else contextlib.nullcontext():
         table = Path(f"/proc/thread-self/net/{proto}").read_text()
     for line in table.splitlines()[1:]:
         cols = line.split()
-        local_port = int(cols[1].rsplit(":", 1)[1], 16)
-        if local_port == port and (proto == "udp" or cols[3] == "0A"):
+        local_ip, _, local_port = cols[1].rpartition(":")
+        bound = socket.inet_ntoa(struct.pack("<I", int(local_ip, 16)))
+        if int(local_port, 16) != port or (proto != "udp" and cols[3] != "0A"):
+            continue
+        if ip is None or bound in (ip, "0.0.0.0"):
             return True
     return False
+
+
+def carrier(netns: str | None, iface: str) -> bool:
+    """Tell whether ``iface`` has carrier (LOWER_UP), for example the DUT NIC in lan-a."""
+    proc = run(netns, ["ip", "-j", "link", "show", "dev", iface])
+    flags: list[str] = json.loads(proc.stdout)[0].get("flags", [])
+    return "LOWER_UP" in flags
+
+
+def set_link(netns: str | None, iface: str, up: bool) -> float:
+    """Set ``iface`` administratively up or down and return the wall-clock time it happened.
+
+    Taking the host side of the DUT's cable down powers down the NIC's PHY on the usual
+    drivers, so the DUT loses carrier (R-06, NET-03). The time is ``time.time()``, the clock
+    of the capture timestamps.
+    """
+    run(netns, ["ip", "link", "set", "dev", iface, "up" if up else "down"])
+    return time.time()
+
+
+@dataclass(frozen=True)
+class PingResult:
+    """ICMP echo statistics: requests sent, replies received and their round-trip times (s)."""
+
+    sent: int
+    received: int
+    rtts: tuple[float, ...]
+
+    @property
+    def loss(self) -> float:
+        """Fraction of requests without a reply."""
+        return 1.0 - self.received / self.sent if self.sent else 1.0
+
+
+def _icmp_checksum(data: bytes) -> int:
+    data += b"\0" * (len(data) % 2)
+    total: int = sum(struct.unpack(f"!{len(data) // 2}H", data))
+    total = (total >> 16) + (total & 0xFFFF)
+    total += total >> 16
+    return ~total & 0xFFFF
+
+
+def ping(
+    netns: str | None, dst: str, *, count: int = 10, interval: float = 0.2, timeout: float = 1.0
+) -> PingResult:
+    """Send ``count`` ICMP echo requests to ``dst`` from ``netns`` (raw socket: needs root).
+
+    In-process, so the rig does not depend on iputils being installed on the host.
+    """
+    with enter(netns) if netns else contextlib.nullcontext():
+        sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
+    ident, rtts = os.getpid() & 0xFFFF, []
+    with sock:
+        sock.settimeout(timeout)
+        for seq in range(count):
+            header = struct.pack("!BBHHH", 8, 0, 0, ident, seq)
+            payload = b"hil-ping" + struct.pack("!d", time.monotonic())
+            packet = struct.pack("!BBHHH", 8, 0, _icmp_checksum(header + payload), ident, seq) + payload
+            start = time.monotonic()
+            sock.sendto(packet, (dst, 0))
+            while (left := timeout - (time.monotonic() - start)) > 0:
+                sock.settimeout(left)
+                try:
+                    reply, (src, _) = sock.recvfrom(1500)
+                except TimeoutError:
+                    break
+                icmp = reply[(reply[0] & 0x0F) * 4 :]
+                kind, _, _, rid, rseq = struct.unpack("!BBHHH", icmp[:8])
+                if src == dst and kind == 0 and (rid, rseq) == (ident, seq):
+                    rtts.append(time.monotonic() - start)
+                    break
+            time.sleep(max(0.0, interval - (time.monotonic() - start)))
+    return PingResult(count, len(rtts), tuple(rtts))
 
 
 @dataclass(frozen=True)

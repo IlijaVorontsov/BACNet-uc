@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# lib/hil (docs/HIL.md 8.3). Enabled only by snippets/hil/hil.conf; release images never set
+# these symbols (SEC-01 checks their .config).
+
+config HIL
+	bool "HIL rig instrumentation (lib/hil)"
+	depends on HWINFO
+	help
+	  Instrumented DUT images for the BACNet-uc HIL rig. Prints
+	  "HIL-BOOT board=... zephyr=... reset=0x... uid=..." before main()
+	  and "HIL-READY ip=... mac=..." whenever the DUT gains an IPv4
+	  address, and toggles marker m0 at both lines. The markers are the
+	  hil-marker-gpios of /zephyr,user (snippet hil). Never enable this in
+	  a release image.
+
+if HIL
+
+config HIL_SHELL
+	bool "hil shell commands"
+	depends on SHELL
+	default y
+	help
+	  Shell group "hil": "hil info", "hil mark <n> <0|1|t>" and
+	  "hil panic" (a kernel panic, to test fatal-error recovery).
+	  Every command prints exactly one "OK ..." or "ERR -<errno> <text>"
+	  line, like the stimulus protocol.
+
+endif # HIL

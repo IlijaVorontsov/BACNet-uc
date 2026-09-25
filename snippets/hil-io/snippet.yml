@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# HIL catalog extension (docs/HIL.md Appendix A, D5): four extra uc,io-channels entries
+# (di3, di4, do5, do6) appended after the 17 catalog channels, so ids 0-16 do not change.
+# BACnet firmware only: the overlay extends &uc_io, which apps/mqtt_tls does not have.
+# Used together with the hil snippet: -S hil -S hil-io.
+name: hil-io
+boards:
+  # Zephyr 4.4 matches the full board target: BOARD/BOARD_QUALIFIERS is
+  # nucleo_f767zi/stm32f767xx, so a bare 'nucleo_f767zi' key never applies.
+  nucleo_f767zi/stm32f767xx:
+    append:
+      EXTRA_DTC_OVERLAY_FILE: boards/nucleo_f767zi.overlay

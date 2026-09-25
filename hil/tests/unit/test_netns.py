@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import socket
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -164,3 +165,24 @@ def test_wrapper_installer_stages_root_owned_copies_and_a_narrow_sudoers_rule(tm
     assert "ip netns" not in commands and str(HIL) not in commands
     assert "/usr/local/sbin/hil-net-up" in commands and "/usr/local/sbin/hil-net-down" in commands
     assert subprocess.run(["visudo", "-cq", "-f", str(rule)], timeout=30, check=False).returncode == 0
+
+
+@needs_root
+@needs_tools("ip")
+def test_ping_carrier_and_link_control() -> None:
+    """In-process ICMP ping (no iputils) and the link control of R-06/NET-03."""
+    topo = Topology(prefix=PREFIX, sil=True)
+    topo.down()
+    topo.up()
+    try:
+        svc, sim1 = topo.ns("svc"), topo.ns("sim1")
+        result = netns.ping(svc, HOSTS["sim1"].ip, count=3, interval=0.05)
+        assert (result.sent, result.received, result.loss) == (3, 3, 0.0) and max(result.rtts) < 1.0
+        assert netns.carrier(sim1, "sim10")
+        t_down = netns.set_link(sim1, "sim10", up=False)
+        assert not netns.carrier(sim1, "sim10") and abs(t_down - time.time()) < 5
+        assert netns.ping(svc, HOSTS["sim1"].ip, count=2, interval=0.05, timeout=0.2).loss == 1.0
+        netns.set_link(sim1, "sim10", up=True)
+        assert netns.ping(svc, HOSTS["sim1"].ip, count=2, interval=0.05).received == 2
+    finally:
+        topo.down()

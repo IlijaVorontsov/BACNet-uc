@@ -1,0 +1,14 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * D24 site configuration, BACnet plain release on nucleo_f767zi: the WAMR application pool
+ * moves to the 128 KiB DTCM, because the default build overflows RAM by 29,564 B (FW-04).
+ * This is the workaround documented in the BACnet branch's docs/architecture.md 6.2, used
+ * with -DCONFIG_UC_APP_POOL_SIZE=98304 (96 KiB pool + 12.25 KiB Ethernet DMA buffers fit the
+ * DTCM). It goes away when FW-04 lands. See README.md.
+ */
+/ {
+	chosen {
+		uc,app-pool = &dtcm;
+	};
+};

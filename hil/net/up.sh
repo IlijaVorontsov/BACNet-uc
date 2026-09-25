@@ -3,6 +3,8 @@
 #
 #   subnet A 192.0.2.0/24, bridge br-a in netns lan-a
 #     svc   svc0  192.0.2.1    dnsmasq, mosquitto, chrony, test clients
+#                 192.0.2.2    TLS endpoints that take over broker.hil.lan (D33): s_server,
+#                              the TLS-1.2 front, refusing brokers
 #     sim1  sim10 192.0.2.11   simulated BACnet devices
 #     sim2  sim20 192.0.2.12
 #     rtr   rtra  192.0.2.254  plain IP router (ip_forward=1), no broadcast forwarding
@@ -34,7 +36,7 @@ while (($#)); do
 	--dut-iface) (($# >= 2)) || die "--dut-iface needs a value"; dut_iface=$2; shift 2 ;;
 	--sil) sil=1; shift ;;
 	--standin) standin=1; shift ;;
-	-h | --help) sed -n '2,26p' "$0"; exit 0 ;;
+	-h | --help) sed -n '2,28p' "$0"; exit 0 ;;
 	*) die "unknown argument '$1' (see --help)" ;;
 	esac
 done
@@ -86,6 +88,7 @@ ensure_bridge "$LAN_A" br-a
 ensure_bridge "$LAN_B" br-b
 
 attach "${prefix}svc" svc0 "$LAN_A" br-a 192.0.2.1/24 192.0.2.254
+ip -n "${prefix}svc" addr replace 192.0.2.2/24 dev svc0 # secondary: .1 stays the source address
 attach "${prefix}sim1" sim10 "$LAN_A" br-a 192.0.2.11/24 192.0.2.254
 attach "${prefix}sim2" sim20 "$LAN_A" br-a 192.0.2.12/24 192.0.2.254
 attach "$RTR" rtra "$LAN_A" br-a 192.0.2.254/24

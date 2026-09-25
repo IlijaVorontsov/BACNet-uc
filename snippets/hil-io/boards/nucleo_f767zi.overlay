@@ -1,0 +1,43 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * HIL catalog extension (-S hil-io), NUCLEO-F767ZI, BACnet firmware only
+ * (needs the &uc_io catalog of firmware/boards/io/nucleo_f767zi.dtsi).
+ * The new channels are appended after the 17 catalog channels, so the ids
+ * of di0..ao2 do not change. Release (black-box) images do not have them.
+ *
+ *   name  kind  MCU   connector           electrical
+ *   di3   di    PE10  Zio CN10-24 (D40)   internal pull-down, high = 1
+ *   di4   di    PE12  Zio CN10-26 (D39)   internal pull-down, high = 1
+ *   do5   do    PE14  Zio CN10-28 (D38)   push-pull, 1 = high
+ *   do6   do    PE15  Zio CN10-30 (D37)   push-pull, 1 = high
+ *   GND                Zio CN10-22, CN10-27
+ */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+&uc_io {
+	di3 {
+		kind = "di";
+		gpios = <&gpioe 10 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+		description = "HIL Zio CN10-24 (PE10, D40), high = 1";
+	};
+
+	di4 {
+		kind = "di";
+		gpios = <&gpioe 12 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+		description = "HIL Zio CN10-26 (PE12, D39), high = 1";
+	};
+
+	do5 {
+		kind = "do";
+		gpios = <&gpioe 14 GPIO_ACTIVE_HIGH>;
+		description = "HIL Zio CN10-28 (PE14, D38)";
+	};
+
+	do6 {
+		kind = "do";
+		gpios = <&gpioe 15 GPIO_ACTIVE_HIGH>;
+		description = "HIL Zio CN10-30 (PE15, D37)";
+	};
+};

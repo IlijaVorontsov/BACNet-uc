@@ -1,7 +1,9 @@
 """Rig services inside netns svc: dnsmasq, mosquitto, chrony and openssl s_server.
 
 - dnsmasq gives the DUT 192.0.2.10 by a reservation on its real MAC (bench.yml), answers
-  ``broker.hil.lan`` with 192.0.2.1 and hands out router, DNS and NTP servers.
+  ``broker.hil.lan`` from an ``--addn-hosts`` file (192.0.2.1, or 192.0.2.2 while a TLS
+  endpoint there takes over the broker name: :meth:`Dnsmasq.point_broker`, D33) and hands
+  out router, DNS and NTP servers. Its log gives the DHCP exchanges (:meth:`Dnsmasq.events`).
 - mosquitto listens with TLS on 192.0.2.1:8883 (test PKI, optional client certificates and
   CRL) and without TLS on 127.0.0.1:1883 for the rig's own observer. The broker writes the
   TLS key log (decision B10) when the binary supports ``--tls-keylog`` (mosquitto >= 2.1);
@@ -10,19 +12,30 @@
 - chronyd serves NTP from 192.0.2.1 without touching the host clock (skipped if missing).
 - :class:`TlsServer` is ``openssl s_server`` pinned to TLS 1.2 or 1.3 with a key log, for
   version-pinned handshake tests.
+- :class:`TlsFront` is a Python ``ssl`` terminator pinned to one TLS version with a key log,
+  optionally requiring a client certificate, that forwards each session to mosquitto's plain
+  observer listener: a full MQTT session over TLS 1.2 (mosquitto's ``tls_version`` is only a
+  minimum), and the refusing broker of the mutual-TLS tests.
 
 Each service logs into its run directory (inside the artifacts) and stops cleanly.
 """
 
 from __future__ import annotations
 
+import contextlib
+import re
+import selectors
 import shutil
 import signal
+import socket
+import ssl
+import struct
 import subprocess
+import threading
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Self
 
@@ -118,8 +131,48 @@ class Lease:
     hostname: str
 
 
+@dataclass(frozen=True)
+class DhcpEvent:
+    """One DHCP message dnsmasq logged: ``kind`` (DHCPDISCOVER, DHCPACK, ...), MAC, address.
+
+    ``t`` is the host's ``time.time()`` when the line was read (a functional timestamp;
+    wire timing comes from the capture).
+    """
+
+    t: float
+    kind: str
+    mac: str
+    ip: str | None
+
+
+_DHCP_LOG = re.compile(r"\b(DHCP[A-Z]+)\(\S+\) (?:(\d+\.\d+\.\d+\.\d+) )?([0-9a-f]{2}(?::[0-9a-f]{2}){5})")
+
+
+def dns_query(netns: str | None, server: str, name: str, timeout: float = 3.0) -> list[str]:
+    """Resolve the A records of ``name`` with one query to ``server`` from ``netns``."""
+    query = b"\x48\x49\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00"
+    query += b"".join(bytes([len(p)]) + p.encode() for p in name.split(".")) + b"\x00\x00\x01\x00\x01"
+    with nsmod.enter(netns) if netns else contextlib.nullcontext():
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    with sock:
+        sock.settimeout(timeout)
+        sock.sendto(query, (server, 53))
+        reply = sock.recv(512)
+    answers, offset, addresses = struct.unpack("!H", reply[6:8])[0], len(query), []
+    for _ in range(answers):
+        rtype, _, _, rdlen = struct.unpack("!HHIH", reply[offset + 2 : offset + 12])
+        if rtype == 1:
+            addresses.append(socket.inet_ntoa(reply[offset + 12 : offset + 12 + rdlen]))
+        offset += 12 + rdlen
+    return addresses
+
+
 class Dnsmasq(Service):
-    """DHCP (reservation for the DUT only) and DNS for subnet A."""
+    """DHCP (reservation for the DUT only) and DNS for subnet A.
+
+    ``any_mac`` also serves the DUT address to an unknown MAC (SIL only: a native_sim TAP
+    build may pick a random MAC); on a hardware bench only the reservation is served.
+    """
 
     name = "dnsmasq"
 
@@ -134,13 +187,17 @@ class Dnsmasq(Service):
         iface: str = "svc0",
         server_ip: str = nsmod.HOSTS["svc"].ip,
         router_ip: str = nsmod.ROUTER_A_IP,
+        any_mac: bool = False,
     ) -> None:
         super().__init__(netns, rundir)
         if lease_s < MIN_LEASE_S:
             raise ValueError(f"lease_s={lease_s}: dnsmasq needs at least {MIN_LEASE_S} s")
         self.dut_mac, self.dut_ip, self.lease_s = dut_mac, dut_ip, lease_s
         self.iface, self.server_ip, self.router_ip = iface, server_ip, router_ip
+        self.any_mac = any_mac
         self.leasefile = rundir / "dnsmasq.leases"
+        self.hostsfile = rundir / "dnsmasq.hosts"
+        self.broker_ip = server_ip
 
     def argv(self) -> list[str]:
         # "static": only reserved hosts get an address, so nothing else on br-a is served.
@@ -163,11 +220,65 @@ class Dnsmasq(Service):
             f"--dhcp-option=option:router,{self.router_ip}",
             f"--dhcp-option=option:dns-server,{self.server_ip}",
             f"--dhcp-option=option:ntp-server,{self.server_ip}",
-            f"--address=/{BROKER_NAME}/{self.server_ip}",
+            f"--addn-hosts={self.hostsfile}",  # re-read on SIGHUP: point_broker()
         ]
+        if self.any_mac:
+            argv.append(f"--dhcp-range={self.dut_ip},{self.dut_ip},255.255.255.0,{self.lease_s}")
         if self.dut_mac:
             argv.append(f"--dhcp-host={self.dut_mac},{self.dut_ip},{self.lease_s}")
         return argv
+
+    def _write_hosts(self) -> None:
+        self.rundir.mkdir(parents=True, exist_ok=True)
+        self.hostsfile.write_text(f"{self.broker_ip} {BROKER_NAME}\n")
+
+    def launch(self) -> subprocess.Popen[bytes]:
+        self._write_hosts()
+        return super().launch()
+
+    def point_broker(self, ip: str, timeout: float = 5.0) -> None:
+        """Answer ``broker.hil.lan`` with ``ip`` from now on (D33): rewrite, SIGHUP, verify.
+
+        The DUT resolves the name before every connection attempt, so its next attempt goes
+        to ``ip``. Local names have TTL 0, so nothing caches the old answer.
+        """
+        self.broker_ip = ip
+        self._write_hosts()
+        if self.proc is None or self.proc.poll() is not None:
+            raise ServiceError("dnsmasq is not running")
+        self.proc.send_signal(signal.SIGHUP)
+        deadline = time.monotonic() + timeout
+        while dns_query(self.netns, self.server_ip, BROKER_NAME) != [ip]:
+            if time.monotonic() > deadline:
+                raise ServiceError(f"dnsmasq still does not answer {BROKER_NAME} with {ip}")
+            time.sleep(0.05)
+        self.note(f"{BROKER_NAME} -> {ip}")
+
+    def mark(self) -> int:
+        """Return the current end of the log, for ``since`` in :meth:`events`."""
+        return self.log.stat().st_size if self.log.exists() else 0
+
+    def events(self, since: int = 0, mac: str | None = None) -> list[DhcpEvent]:
+        """Return the DHCP messages logged after offset ``since`` (for ``mac`` only if given)."""
+        if not self.log.exists():
+            return []
+        with self.log.open("rb") as f:
+            f.seek(since)
+            text = f.read().decode(errors="replace")
+        now = time.time()
+        found = [DhcpEvent(now, m[1], m[3], m[2]) for m in _DHCP_LOG.finditer(text)]
+        return [e for e in found if mac is None or e.mac == mac.lower()]
+
+    def wait_for(self, kind: str, mac: str, since: int, timeout: float) -> DhcpEvent:
+        """Wait until dnsmasq logs a ``kind`` message (DHCPACK, DHCPDISCOVER, ...) for ``mac``."""
+        deadline = time.monotonic() + timeout
+        while True:
+            hits = [e for e in self.events(since, mac) if e.kind == kind]
+            if hits:
+                return hits[0]
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"no {kind} for {mac} within {timeout} s (see {self.log})")
+            time.sleep(0.1)
 
     def test_config(self) -> None:
         """Check the command line with ``dnsmasq --test``; raise ServiceError if rejected."""
@@ -313,7 +424,9 @@ class Mosquitto(Service):
         return nsmod.spawn(None, [*docker, *mounts, *enter, *broker], log=self.log)
 
     def ready(self) -> bool:
-        return all(nsmod.listening(self.netns, "tcp", port) for port in (self.port, self.observer_port))
+        return nsmod.listening(self.netns, "tcp", self.port, self.bind_ip) and nsmod.listening(
+            self.netns, "tcp", self.observer_port, "127.0.0.1"
+        )
 
     def _docker_rm(self) -> None:
         """Remove this broker's container, whatever state a previous run left it in."""
@@ -357,7 +470,7 @@ class TlsServer(Service):
         return argv + (["-CAfile", str(self.ca), "-Verify", "1"] if self.ca else [])
 
     def ready(self) -> bool:
-        return nsmod.listening(self.netns, "tcp", self.port)
+        return nsmod.listening(self.netns, "tcp", self.port, self.bind_ip)
 
 
 class Chrony(Service):
@@ -391,6 +504,176 @@ class Chrony(Service):
 
     def ready(self) -> bool:
         return nsmod.listening(self.netns, "udp", 123)
+
+
+@dataclass
+class FrontSession:
+    """One connection the TLS front accepted: its outcome and the bytes forwarded each way."""
+
+    peer: str
+    version: str | None = None
+    cipher: str | None = None
+    error: str | None = None
+    up_bytes: int = 0
+    down_bytes: int = 0
+    closed: threading.Event = field(default_factory=threading.Event, repr=False)
+
+
+class TlsFront:
+    """A TLS terminator on ``bind_ip:port`` forwarding plain MQTT to ``upstream`` (D13 2b).
+
+    Every session is pinned to ``version`` and its secrets go to :attr:`keylog` (NSS format),
+    so the capture decrypts. With ``client_ca`` a client certificate signed by it is
+    required: under TLS 1.2 a rejected client fails the handshake, under TLS 1.3 the client
+    finishes first and gets the alert on its first read (TLS-03 accepts both).
+    :meth:`set_client_ca` changes the requirement for the next connections. Runs in-process:
+    its sockets and threads are created inside ``netns``.
+    """
+
+    def __init__(
+        self,
+        netns: str | None,
+        rundir: Path,
+        *,
+        cert: Path,
+        key: Path,
+        version: Literal["1.2", "1.3"] = "1.2",
+        bind_ip: str = nsmod.SVC2_IP,
+        port: int = 8883,
+        upstream: tuple[str, int] = ("127.0.0.1", 1883),
+        client_ca: Path | None = None,
+        name: str | None = None,
+        handshake_timeout: float = 20.0,
+    ) -> None:
+        self.name = name or f"tls-front-tls{version.replace('.', '')}"
+        self.netns, self.rundir = netns, rundir
+        self.cert, self.key, self.version = cert, key, version
+        self.bind_ip, self.port, self.upstream = bind_ip, port, upstream
+        self.handshake_timeout = handshake_timeout
+        self.log = rundir / f"{self.name}.log"
+        self.keylog = rundir / f"{self.name}-keys.log"
+        self.sessions: list[FrontSession] = []
+        self._ctx = self._context(client_ca)
+        self._listener: socket.socket | None = None
+        self._stop = threading.Event()
+        self._threads: list[threading.Thread] = []
+        self._lock = threading.Lock()
+
+    def _context(self, client_ca: Path | None) -> ssl.SSLContext:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        pinned = ssl.TLSVersion.TLSv1_2 if self.version == "1.2" else ssl.TLSVersion.TLSv1_3
+        ctx.minimum_version = ctx.maximum_version = pinned
+        ctx.load_cert_chain(str(self.cert), str(self.key))
+        ctx.keylog_filename = str(self.keylog)
+        if client_ca is not None:
+            ctx.verify_mode = ssl.CERT_REQUIRED
+            ctx.load_verify_locations(cafile=str(client_ca))
+        return ctx
+
+    def set_client_ca(self, client_ca: Path | None) -> None:
+        """Require (``client_ca``) or stop requiring (None) a client certificate from now on."""
+        self._ctx = self._context(client_ca)
+        self._note(f"client certificates: {client_ca or 'not requested'}")
+
+    def _note(self, text: str) -> None:
+        with self._lock, self.log.open("a") as f:
+            f.write(f"{time.time():.6f} {text}\n")
+
+    def start(self) -> Self:
+        """Listen and serve until :meth:`stop`."""
+        self.rundir.mkdir(parents=True, exist_ok=True)
+        self._stop.clear()
+        with nsmod.enter(self.netns) if self.netns else contextlib.nullcontext():
+            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind((self.bind_ip, self.port))
+            listener.listen(8)
+            listener.settimeout(0.2)
+            self._listener = listener
+            thread = threading.Thread(target=self._accept, name=self.name, daemon=True)
+            thread.start()  # created inside the netns: its children (upstream sockets) stay there
+        self._threads.append(thread)
+        self._note(f"listening on {self.bind_ip}:{self.port}, TLS {self.version}, upstream {self.upstream}")
+        return self
+
+    def stop(self) -> None:
+        """Stop accepting, close every session and wait for the threads (idempotent)."""
+        self._stop.set()
+        for thread in list(self._threads):
+            thread.join(timeout=5)
+        self._threads.clear()
+        if self._listener is not None:
+            self._listener.close()
+            self._listener = None
+
+    def __enter__(self) -> Self:
+        return self.start()
+
+    def __exit__(self, *exc: object) -> None:
+        self.stop()
+
+    def _accept(self) -> None:
+        assert self._listener is not None
+        while not self._stop.is_set():
+            try:
+                conn, (host, port) = self._listener.accept()
+            except TimeoutError:
+                continue
+            except OSError:
+                return
+            session = FrontSession(f"{host}:{port}")
+            self.sessions.append(session)
+            thread = threading.Thread(target=self._serve, args=(conn, session), daemon=True)
+            thread.start()
+            self._threads.append(thread)
+
+    def _serve(self, conn: socket.socket, session: FrontSession) -> None:
+        """Handshake, then pump bytes both ways until either side closes or the front stops."""
+        try:
+            conn.settimeout(self.handshake_timeout)
+            tls = self._ctx.wrap_socket(conn, server_side=True)
+            session.version, cipher = tls.version(), tls.cipher()
+            session.cipher = cipher[0] if cipher else None
+            self._note(f"{session.peer}: handshake {session.version} {session.cipher}")
+            with tls, socket.create_connection(self.upstream, timeout=5) as up:
+                self._pump(tls, up, session)
+        except (OSError, ssl.SSLError) as e:
+            session.error = f"{type(e).__name__}: {e}"
+            self._note(f"{session.peer}: {session.error}")
+            with contextlib.suppress(OSError):
+                conn.close()
+        finally:
+            session.closed.set()
+            self._note(f"{session.peer}: closed (up {session.up_bytes} B, down {session.down_bytes} B)")
+
+    def _pump(self, tls: ssl.SSLSocket, up: socket.socket, session: FrontSession) -> None:
+        tls.setblocking(False)
+        up.setblocking(False)
+        with selectors.DefaultSelector() as sel:
+            sel.register(tls, selectors.EVENT_READ)
+            sel.register(up, selectors.EVENT_READ)
+            while not self._stop.is_set():
+                for key, _ in sel.select(timeout=0.2):
+                    src = key.fileobj
+                    try:
+                        data = src.recv(16384)  # type: ignore[union-attr]
+                    except (ssl.SSLWantReadError, BlockingIOError):
+                        continue
+                    if not data:
+                        return
+                    dst = up if src is tls else tls
+                    dst.setblocking(True)
+                    dst.sendall(data)
+                    dst.setblocking(False)
+                    if src is tls:
+                        session.up_bytes += len(data)
+                    else:
+                        session.down_bytes += len(data)
+                # an SSL socket may hold decrypted bytes the selector cannot see
+                while tls.pending():
+                    data = tls.recv(16384)
+                    up.sendall(data)
+                    session.up_bytes += len(data)
 
 
 class RigServices:
