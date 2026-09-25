@@ -4,12 +4,13 @@
 
     uc-cc [options] -o app.wasm main.c [more.c ...]
 
-Compiles and links in one clang invocation (--target=wasm32, -nostdlib)
-with the BACnet-uc SDK include directory, then checks the module against
-the application ABI (sdk/tools/uc_check.py). Undefined symbols are only
-accepted for the "bacnet_uc" host functions (declared with import
-attributes in bacnet_uc.h) and for the WAMR libc-builtin functions listed
-in sdk/tools/uc_abi.py; anything else is a link error.
+Compiles every source with clang --target=wasm32 -nostdlib and the SDK
+include directory, links with wasm-ld (a second time with a larger stack
+when __heap_base is not page aligned, see PAGE_ALIGN_NOTE) and checks the
+module against the application ABI (sdk/tools/uc_check.py). Undefined
+symbols are only accepted for the "bacnet_uc" host functions (declared
+with import attributes in bacnet_uc.h) and for the WAMR libc-builtin
+functions listed in sdk/tools/uc_abi.py; anything else is a link error.
 
 Environment: UC_CLANG (clang binary, default "clang" from PATH).
 """
@@ -30,9 +31,19 @@ sys.path.insert(0, str(SDK / "tools"))
 
 import uc_abi  # noqa: E402
 import uc_check  # noqa: E402
+import wasmfile  # noqa: E402
 
 DEFAULT_STACK = 4096
 DEFAULT_MEMORY = uc_abi.WASM_PAGE
+PAGE = uc_abi.WAMR_OS_PAGE
+
+# PAGE_ALIGN_NOTE: WAMR 2.4.5 (wasm_allocate_linear_memory) rounds the
+# linear memory size used for bounds checks up to os_getpagesize() (4096 on
+# Zephyr without MMU) but, without hardware bounds checks, allocates only
+# the unrounded size from its pool (os_mmap -> BH_MALLOC). With __heap_base
+# page aligned and an app heap that is a multiple of 4 KiB (heap_kb % 4 ==
+# 0) both sizes agree. uc-cc therefore enlarges the aux stack by the gap
+# (the stack is placed first, so data and __heap_base move up).
 PASSTHROUGH_PREFIXES = ("-W", "-f", "-std=", "-pedantic")
 
 
@@ -72,17 +83,21 @@ def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     p.add_argument("-I", dest="includes", action="append", default=[], metavar="DIR")
     p.add_argument("-D", dest="defines", action="append", default=[], metavar="NAME[=VAL]")
     p.add_argument("-U", dest="undefs", action="append", default=[], metavar="NAME")
-    p.add_argument("-O", dest="opt", default="s", choices=["0", "1", "2", "3", "s", "z"],
-                   help="optimisation level (default: s)")
+    p.add_argument("-O", dest="opt", default="z", choices=["0", "1", "2", "3", "s", "z"],
+                   help="optimisation level (default: z, the smallest code: the fast "
+                        "interpreter keeps a translated copy of the code in RAM)")
     p.add_argument("-g", dest="debug", action="store_true",
                    help="keep debug information and names (larger module)")
     p.add_argument("--stack-size", type=int, default=DEFAULT_STACK, metavar="BYTES",
-                   help=f"auxiliary (C) stack in linear memory (default {DEFAULT_STACK})")
+                   help=f"minimum auxiliary (C) stack in linear memory (default "
+                        f"{DEFAULT_STACK}; grown to page-align __heap_base)")
     p.add_argument("--memory", type=int, default=DEFAULT_MEMORY, metavar="BYTES",
                    help="declared initial = maximum linear memory, multiple of 65536 "
                         f"(default {DEFAULT_MEMORY}); WAMR shrinks it to __heap_base")
     p.add_argument("--export", dest="exports", action="append", default=[], metavar="SYM",
                    help="export an additional symbol")
+    p.add_argument("--no-page-align", action="store_true",
+                   help="do not pad the stack to page-align __heap_base (see README)")
     p.add_argument("--allow-grow", action="store_true",
                    help="accept memory.grow/memory.size (the memory is then not shrunk)")
     p.add_argument("--heap-kb", type=int, default=8,
@@ -114,6 +129,19 @@ def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     return args, extra
 
 
+def run(cmd: list[str], verbose: bool) -> int:
+    if verbose:
+        print(shlex.join(cmd), file=sys.stderr)
+    return subprocess.run(cmd, check=False).returncode
+
+
+def heap_base(path: Path) -> int | None:
+    try:
+        return wasmfile.parse_file(str(path)).exported_const_global("__heap_base")
+    except (OSError, wasmfile.WasmError):
+        return None
+
+
 def main(argv: list[str]) -> int:
     args, extra = parse_args(argv)
     cflags = compile_flags(args.opt, args.debug) + extra
@@ -124,9 +152,10 @@ def main(argv: list[str]) -> int:
         allow_file = os.path.join(tmp, "libc-builtin.syms")
         with open(allow_file, "w", encoding="ascii") as f:
             f.write("\n".join(sorted(uc_abi.LIBC_BUILTIN)) + "\n")
-        lflags = link_flags(args.stack_size, args.memory, args.exports, args.debug, allow_file)
 
         if args.print_flags:
+            lflags = link_flags(args.stack_size, args.memory, args.exports, args.debug,
+                                allow_file)
             print("CFLAGS  =", shlex.join(cflags))
             print("LDFLAGS =", shlex.join(lflags).replace(allow_file, "<libc-builtin.syms>"))
             print("SYMS    =", " ".join(sorted(uc_abi.LIBC_BUILTIN)))
@@ -134,19 +163,34 @@ def main(argv: list[str]) -> int:
 
         out = Path(args.output)
         out.parent.mkdir(parents=True, exist_ok=True)
-        cmd = [args.clang, *cflags, *lflags, "-o", str(out), *args.sources]
-        if args.verbose:
-            print(shlex.join(cmd), file=sys.stderr)
+        objs = []
         try:
-            rc = subprocess.run(cmd, check=False).returncode
+            for i, src in enumerate(args.sources):
+                obj = os.path.join(tmp, f"{i}.o")
+                if run([args.clang, *cflags, "-c", "-o", obj, src], args.verbose) != 0:
+                    print(f"uc-cc: error: {src}: compilation failed", file=sys.stderr)
+                    return 1
+                objs.append(obj)
+            stack = args.stack_size
+            for attempt in range(2):
+                lflags = link_flags(stack, args.memory, args.exports, args.debug, allow_file)
+                if run([args.clang, "--target=wasm32", "-nostdlib", *lflags, "-o", str(out),
+                        *objs], args.verbose) != 0:
+                    print("uc-cc: error: link failed (an 'undefined symbol' is a function "
+                          "that neither bacnet_uc.h nor uc_libc.h provides)", file=sys.stderr)
+                    return 1
+                base = heap_base(out)
+                if args.no_page_align or base is None or base % PAGE == 0 or attempt:
+                    break
+                # Grow the (stack-first) aux stack so that __heap_base is page
+                # aligned: see PAGE_ALIGN_NOTE.
+                stack += (-base) % PAGE
+                if stack + (base - args.stack_size) > args.memory:
+                    break
         except FileNotFoundError:
             print(f"uc-cc: error: {args.clang} not found (install clang >= 16 with the "
                   "wasm32 target and wasm-ld, or set UC_CLANG)", file=sys.stderr)
             return 1
-        if rc != 0:
-            print("uc-cc: error: compilation failed (an 'undefined symbol' error means a "
-                  "function that neither bacnet_uc.h nor uc_libc.h provides)", file=sys.stderr)
-            return rc
 
     if args.no_check:
         return 0

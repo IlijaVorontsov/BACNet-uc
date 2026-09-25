@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+"""uc-wasm-info - check BACnet-uc WebAssembly modules and show what they need.
+
+    uc-wasm-info [--json] [--heap-kb N] app.wasm [...]
+
+Prints imports (host functions, libc-builtin), exports, WebAssembly
+features, the permissions the imports call for, and the linear memory
+WAMR 2.4.5 allocates for an instance (after shrinking to __heap_base,
+plus the app heap). Exit status 1 when a module violates the ABI.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
+
+import uc_check  # noqa: E402
+
+
+def main(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(prog="uc-wasm-info", description=__doc__.splitlines()[0])
+    p.add_argument("modules", nargs="+")
+    p.add_argument("--json", action="store_true", help="machine-readable output")
+    p.add_argument("--heap-kb", type=int, default=8,
+                   help="app heap (apps.json heap_kb) for the memory figure (default 8)")
+    p.add_argument("--allow-grow", action="store_true",
+                   help="memory.grow/memory.size is a warning, not an error")
+    args = p.parse_args(argv)
+
+    reports = [uc_check.check_file(m, allow_grow=args.allow_grow,
+                                   heap_bytes=args.heap_kb * 1024) for m in args.modules]
+    if args.json:
+        out = [{"file": r.path, "ok": r.ok, "errors": r.errors, "warnings": r.warnings,
+                **r.info} for r in reports]
+        print(json.dumps(out if len(out) > 1 else out[0], indent=2))
+    else:
+        for r in reports:
+            print(uc_check.summary_line(r))
+            i = r.info
+            if i:
+                perms = ", ".join(i["permissions"]) or "-"
+                if i["permissions_any_of"]:
+                    perms += f" (+ {' or '.join(i['permissions_any_of'])} by device)"
+                print(f"  exports     : {', '.join(i['exports']) or '-'}")
+                print(f"  bacnet_uc   : {', '.join(i['imports_bacnet_uc']) or '-'}")
+                print(f"  env (libc)  : {', '.join(i['imports_env']) or '-'}")
+                print(f"  features    : {', '.join(i['features']) or 'mvp'}")
+                print(f"  permissions : {perms}")
+                print(f"  memory      : declared {i['memory_declared_bytes']} B, heap_base "
+                      f"{i['heap_base']}, data_end {i['data_end']}, aux stack top "
+                      f"{i['aux_stack_top']}, shrinkable {i['memory_shrinkable']}")
+            for w in r.warnings:
+                print(f"  warning: {w}")
+            for e in r.errors:
+                print(f"  error: {e}")
+    return 0 if all(r.ok for r in reports) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

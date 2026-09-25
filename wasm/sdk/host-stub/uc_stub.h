@@ -36,6 +36,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include "bacnet_uc.h"
 
@@ -43,18 +44,18 @@
 extern "C" {
 #endif
 
-#define UC_STUB_MAX_OBJECTS 64
-#define UC_STUB_MAX_PROPS   8  /* non-PV numeric properties per object */
-#define UC_STUB_MAX_REMOTE  32
-#define UC_STUB_MAX_SUBS    16 /* CONFIG_UC_BACNET_COV_SUBS_MAX */
-#define UC_STUB_MAX_PARAMS  16 /* CONFIG_UC_APP_PARAMS_MAX */
-#define UC_STUB_MAX_KV      16
+#define UC_STUB_MAX_OBJECTS  64
+#define UC_STUB_MAX_PROPS    8 /* non-PV numeric properties per object */
+#define UC_STUB_MAX_REMOTE   32
+#define UC_STUB_MAX_SUBS     16 /* CONFIG_UC_BACNET_COV_SUBS_MAX */
+#define UC_STUB_MAX_PARAMS   16 /* CONFIG_UC_APP_PARAMS_MAX */
+#define UC_STUB_MAX_KV       16
 #define UC_STUB_KV_VALUE_MAX 256 /* CONFIG_UC_APP_KV_VALUE_MAX */
-#define UC_STUB_MAX_IO      16
-#define UC_STUB_MAX_LOG     1024
+#define UC_STUB_MAX_IO       16
+#define UC_STUB_MAX_LOG      1024
 #define UC_STUB_LOG_LINE_MAX 120 /* host truncates longer app log lines */
-#define UC_STUB_QUEUE_LEN   16 /* CONFIG_UC_APP_EVENT_QUEUE_LEN */
-#define UC_STUB_NAME_MAX    64
+#define UC_STUB_QUEUE_LEN    16  /* CONFIG_UC_APP_EVENT_QUEUE_LEN */
+#define UC_STUB_NAME_MAX     64
 
 /* Permission bits (apps.json "perms"). */
 #define UC_STUB_PERM_LOCAL  0x1u /* bacnet.local */
@@ -247,6 +248,11 @@ size_t uc_stub_log_matches(int32_t level, const char *substr);
 size_t uc_stub_log_excess(void);
 void uc_stub_log_clear(void);
 void uc_stub_log_dump(void);
+
+/** Canonical dump of the whole state (objects with priority arrays,
+ *  remote points, subscriptions, key/value store, IO, counters, log) for
+ *  comparing a native and a WebAssembly run of the same scenario. */
+void uc_stub_dump(FILE *f);
 
 #ifdef __cplusplus
 }

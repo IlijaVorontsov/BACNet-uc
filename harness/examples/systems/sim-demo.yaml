@@ -1,0 +1,90 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Simulation demo: two native_sim nodes in network namespaces (10.47.0.1,
+# 10.47.0.2; the host is 10.47.0.254 on bridge bnuc0).
+#
+#   sim-a  simulated inputs:  ai0 room temperature (10 mV/K), di0 switch
+#   sim-b  simulated outputs: ao0 valve, do0 lamp; runs the thermostat (P
+#          control, local output, remote sensor on sim-a) and the uc-link
+#          instance for the two links
+#
+#   bacnet-uc firmware build native_sim/native/64
+#   sudo bacnet-uc sim up harness/examples/systems/sim-demo.yaml      # netns, root
+#   bacnet-uc system apply harness/examples/systems/sim-demo.yaml --no-dry-run --reboot
+#   bacnet-uc system test harness/examples/systems/sim-demo.yaml
+#   sudo bacnet-uc sim down harness/examples/systems/sim-demo.yaml
+apiVersion: bacnet-uc/v1
+kind: System
+metadata:
+  name: sim-demo
+  description: Two simulated nodes linked over BACnet/IP
+
+nodes:
+  - name: sim-a
+    board: native_sim/native/64
+    transport: {kind: sim}
+    device: {instance: 2001, name: sim-a}
+    io:
+      - {channel: ai0, type: analog-input, instance: 1, name: Room Temperature,
+         units: degrees-celsius, scale: 0.01, cov_increment: 0.1, sample_ms: 100}
+      - {channel: di0, type: binary-input, instance: 1, name: Switch, debounce_ms: 0}
+
+  - name: sim-b
+    board: native_sim/native/64
+    transport: {kind: sim}
+    device: {instance: 2002, name: sim-b}
+    io:
+      - {channel: ao0, type: analog-output, instance: 1, name: Valve, units: percent,
+         min: 0, max: 100}
+      - {channel: do0, type: binary-output, instance: 1, name: Lamp}
+
+apps:
+  - name: thermostat
+    node: sim-b
+    source: ../../../wasm/examples/thermostat/thermostat.c
+    period_ms: 500
+    perms: [bacnet.local, bacnet.remote]   # no kv: the setpoint is not persisted
+    params:
+      sensor_device: "{{ nodes.sim-a.device.instance }}"
+      sensor_instance: 1
+      out_instance: 1           # local analog-output:1 (valve)
+      setpoint: 21
+      kp: 20
+      ti_s: 0                   # P only: deterministic output for the tests
+      out_deadband: 0
+      poll_ms: 1000
+
+links:
+  - from: sim-a/binary-input:1
+    to: sim-b/binary-output:1
+    mode: cov
+    period_ms: 500
+  - from: sim-a/analog-input:1
+    to: sim-b/analog-value:20
+    mode: poll
+    period_ms: 500
+
+tests:
+  - name: switch-drives-lamp
+    steps:
+      - force: {node: sim-a, channel: di0, value: 1}
+      - expect: {point: sim-b/binary-output:1, op: eq, value: 1, within_ms: 5000}
+      - force: {node: sim-a, channel: di0, value: 0}
+      - expect: {point: sim-b/binary-output:1, op: eq, value: 0, within_ms: 5000}
+      - release: {node: sim-a, channel: di0}
+
+  - name: temperature-is-mirrored
+    steps:
+      - force: {node: sim-a, channel: ai0, value: 2500}     # 25.0 degC
+      - expect: {point: sim-a/analog-input:1, op: approx, value: 25.0, within_ms: 2000}
+      - expect: {point: sim-b/analog-value:20, op: approx, value: 25.0, tolerance: 0.05,
+                 within_ms: 5000}
+      - release: {node: sim-a, channel: ai0}
+
+  - name: thermostat-heats-when-cold
+    steps:
+      - force: {node: sim-a, channel: ai0, value: 1500}     # 15 degC: e = 6 K, P = 120 %
+      - expect: {point: sim-b/analog-output:1, op: ge, value: 99, within_ms: 10000}
+      - force: {node: sim-a, channel: ai0, value: 2500}     # 25 degC: e = -4 K, P < 0
+      - expect: {point: sim-b/analog-output:1, op: le, value: 1, within_ms: 10000}
+      - release: {node: sim-a, channel: ai0}

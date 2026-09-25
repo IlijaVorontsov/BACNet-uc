@@ -78,21 +78,6 @@ config WAMR_THREAD_MGR
 	  only when it was compiled with thread manager support
 	  (wamrc --enable-multi-thread).
 
-config WAMR_OS_THREAD_STACKS
-	int "Stacks reserved for threads created by WAMR"
-	range 1 16
-	default 1
-	help
-	  WAMR's Zephyr platform layer (zephyr_thread.c) reserves this many
-	  stacks statically for threads it creates itself with
-	  os_thread_create() (wasm threads, debug engine; WAMR's default is
-	  4 x 4 KiB). Neither is built by this glue, and an embedder that calls
-	  into instances from its own threads needs none; 1 is the minimum.
-
-config WAMR_OS_THREAD_STACK_SIZE
-	int "Size of each stack reserved for WAMR threads"
-	default 1024
-
 config WAMR_LOG
 	bool "Runtime diagnostics"
 	default y

@@ -1,0 +1,112 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# HVAC demo: three real boards on one Ethernet segment (192.168.10.0/24).
+#
+#   sensor      NUCLEO-F767ZI  ai0 room temperature (10 mV/K sensor on A0),
+#                              di0 occupancy (B1 user button stands in)
+#   actuator    FRDM-MCXN947   ao0 heating valve (PWM 0..100 %), do0 fan relay
+#   supervisor  NUCLEO-F767ZI  thermostat app (PI control of the remote valve
+#                              from the remote temperature) + uc-link instance
+#
+# Validate / plan / apply / test with the harness:
+#   bacnet-uc system validate harness/examples/systems/hvac-demo.yaml
+#   bacnet-uc system apply    harness/examples/systems/hvac-demo.yaml --no-dry-run
+#   bacnet-uc system test     harness/examples/systems/hvac-demo.yaml
+apiVersion: bacnet-uc/v1
+kind: System
+metadata:
+  name: hvac-demo
+  description: Room temperature control across a sensor, an actuator and a supervisor node
+
+nodes:
+  - name: sensor
+    board: nucleo_f767zi
+    transport: {kind: udp, host: 192.168.10.51}
+    device: {instance: 1001, name: uc-sensor, location: Lab 1}
+    network: {dhcp: false, ipv4: 192.168.10.51, netmask: 255.255.255.0, gateway: 192.168.10.1}
+    io:
+      - channel: ai0
+        type: analog-input
+        instance: 1
+        name: Room Temperature
+        units: degrees-celsius
+        scale: 0.1            # 10 mV per K: 215 mV -> 21.5 degC
+        cov_increment: 0.2
+        sample_ms: 500
+      - channel: di0
+        type: binary-input
+        instance: 1
+        name: Occupancy
+        debounce_ms: 50
+
+  - name: actuator
+    board: frdm_mcxn947/mcxn947/cpu0
+    transport: {kind: udp, host: 192.168.10.52}
+    device: {instance: 1002, name: uc-actuator, location: Lab 1}
+    network: {dhcp: false, ipv4: 192.168.10.52, netmask: 255.255.255.0, gateway: 192.168.10.1}
+    io:
+      - {channel: ao0, type: analog-output, instance: 1, name: Heating Valve, units: percent,
+         min: 0, max: 100}
+      - {channel: do0, type: binary-output, instance: 1, name: Fan}
+
+  - name: supervisor
+    board: nucleo_f767zi
+    transport: {kind: udp, host: 192.168.10.53}
+    device: {instance: 1003, name: uc-supervisor, location: Lab 1}
+    network: {dhcp: false, ipv4: 192.168.10.53, netmask: 255.255.255.0, gateway: 192.168.10.1}
+
+apps:
+  - name: thermostat
+    node: supervisor
+    source: ../../../wasm/examples/thermostat/thermostat.c
+    period_ms: 1000
+    params:
+      sensor_device: "{{ nodes.sensor.device.instance }}"
+      sensor_type: 0            # analog-input
+      sensor_instance: 1
+      out_device: "{{ nodes.actuator.device.instance }}"
+      out_type: 1               # analog-output
+      out_instance: 1
+      out_priority: 10
+      setpoint: 21.5
+      sp_instance: 1            # analog-value:1 on the supervisor
+      kp: 20
+      ti_s: 600
+      poll_ms: 5000
+
+links:
+  # the fan follows the occupancy input
+  - from: sensor/binary-input:1
+    to: actuator/binary-output:1
+    mode: cov
+    priority: 8
+  # mirror of the room temperature on the supervisor (analog-value:10)
+  - from: sensor/analog-input:1
+    to: supervisor/analog-value:10
+    mode: poll
+    period_ms: 5000
+
+tests:
+  - name: occupancy-switches-fan
+    steps:
+      - force: {node: sensor, channel: di0, value: 1}
+      - expect: {point: actuator/binary-output:1, op: eq, value: 1, within_ms: 5000}
+      - force: {node: sensor, channel: di0, value: 0}
+      - expect: {point: actuator/binary-output:1, op: eq, value: 0, within_ms: 5000}
+      - release: {node: sensor, channel: di0}
+
+  - name: cold-room-opens-valve
+    steps:
+      - force: {node: sensor, channel: ai0, value: 150}     # 15.0 degC
+      - expect: {point: supervisor/analog-value:10, op: approx, value: 15.0, tolerance: 0.2,
+                 within_ms: 12000}
+      - expect: {point: actuator/analog-output:1, op: ge, value: 90, within_ms: 15000}
+      - force: {node: sensor, channel: ai0, value: 300}     # 30.0 degC
+      - expect: {point: actuator/analog-output:1, op: le, value: 1, within_ms: 15000}
+      - release: {node: sensor, channel: ai0}
+
+  - name: setpoint-is-writable
+    steps:
+      - write: {point: supervisor/analog-value:1, value: 23.0, priority: 8}
+      - expect: {point: supervisor/analog-value:1, op: approx, value: 23.0, within_ms: 2000}
+      - write: {point: supervisor/analog-value:1, value: null, priority: 8}

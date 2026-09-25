@@ -49,10 +49,6 @@ endif()
 # os_printf()/os_vprintf() as one printk() per call (wamr_zephyr_glue.c).
 add_definitions(-DBH_VPRINTF=wamr_zephyr_vprintf)
 
-# Static stacks of the platform layer for threads WAMR creates itself.
-add_definitions(-DBH_ZEPHYR_MPU_STACK_COUNT=${CONFIG_WAMR_OS_THREAD_STACKS}
-                -DBH_ZEPHYR_MPU_STACK_SIZE=${CONFIG_WAMR_OS_THREAD_STACK_SIZE})
-
 include(${WAMR_ROOT_DIR}/build-scripts/runtime_lib.cmake)
 
 zephyr_library_named(wamr)

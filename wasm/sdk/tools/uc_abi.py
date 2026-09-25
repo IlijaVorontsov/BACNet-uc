@@ -164,14 +164,16 @@ def libc_signatures() -> dict[str, Signature]:
 # GC, memory64 or multi-memory (modules/wasm-micro-runtime/CMakeLists.txt).
 #
 # uc-cc starts from -mcpu=mvp and enables what the runtime always supports
-# (sign-ext, nontrapping-fptoint, mutable-globals) plus bulk-memory
-# (memcpy/memset become memory.copy/memory.fill instead of imports).
+# (sign-ext, nontrapping-fptoint) plus bulk-memory (memcpy/memset become
+# memory.copy/memory.fill instead of imports). mutable-globals (part of
+# clang's "generic" CPU) is left off: modules neither import nor export
+# mutable globals, and WAMR lists import/export of mutable globals as
+# unsupported.
 # reference-types is left off: C does not need it and it changes the
 # call_indirect encoding, so modules also load on a firmware built with
 # CONFIG_WAMR_REF_TYPES=n.
 CLANG_FEATURE_FLAGS = (
     "-mcpu=mvp",
-    "-mmutable-globals",
     "-msign-ext",
     "-mnontrapping-fptoint",
     "-mbulk-memory",
@@ -197,3 +199,7 @@ FEATURES: dict[str, tuple[str, str]] = {
 }
 
 WASM_PAGE = 65536
+
+# os_getpagesize() of WAMR's Zephyr platform layer without MMU. WAMR rounds
+# the bounds-checked linear memory size up to this (see uc-cc).
+WAMR_OS_PAGE = 4096

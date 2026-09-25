@@ -137,9 +137,16 @@ def check_module(mod: Module, path: str = "", *, allow_grow: bool = False,
                                     "memory (link with --export=" + name + ")")
         if lay["heap_base"] is not None and not lay["shrinkable"]:
             rep.warnings.append("linear memory is not shrinkable (no aux stack pointer global?)")
+    linear = wasmfile.wamr_linear_memory(mod, heap_bytes)
+    page = uc_abi.WAMR_OS_PAGE
+    bounds = None if linear is None else (linear + page - 1) // page * page
+    if linear is not None and bounds != linear:
+        rep.warnings.append(
+            f"linear memory {linear} B is not a multiple of {page} B: WAMR 2.4.5 without "
+            f"hardware bounds checks bounds-checks up to {bounds} B but allocates {linear} B "
+            "(build with uc-cc page alignment and use heap_kb % 4 == 0)")
 
     # -- info -----------------------------------------------------------------
-    linear = wasmfile.wamr_linear_memory(mod, heap_bytes)
     stack_top = lay["stack_top"]
     data_end = lay["data_end"]
     rep.info = {
@@ -162,6 +169,7 @@ def check_module(mod: Module, path: str = "", *, allow_grow: bool = False,
         "memory_base_bytes": lay["base_bytes"],
         "app_heap_bytes": heap_bytes,
         "linear_memory_bytes": linear,
+        "linear_memory_bounds_bytes": bounds,
         "custom_sections": mod.custom_sections,
     }
     return rep

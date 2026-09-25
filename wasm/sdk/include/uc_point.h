@@ -36,13 +36,13 @@
 extern "C" {
 #endif
 
-#define UC_POINT_LIFETIME_S       300u
-#define UC_POINT_RETRY_MS         30000u
-#define UC_POINT_READ_TIMEOUT_MS  2000u
+#define UC_POINT_LIFETIME_S      300u
+#define UC_POINT_RETRY_MS        30000u
+#define UC_POINT_READ_TIMEOUT_MS 2000u
 
 struct uc_point {
 	/* configuration (uc_point_setup, may be changed before start) */
-	uint32_t device;     /**< UC_DEVICE_LOCAL or a device instance */
+	uint32_t device; /**< UC_DEVICE_LOCAL or a device instance */
 	uint32_t type;
 	uint32_t instance;
 	uint32_t poll_ms;    /**< poll after this long without a value, 0 = never */
@@ -50,16 +50,16 @@ struct uc_point {
 	uint32_t timeout_ms; /**< remote read timeout */
 	uint32_t lifetime_s; /**< subscription lifetime */
 	/* state */
-	int32_t sub_id;      /**< >= 0 while subscribed */
-	int32_t sub_err;     /**< last subscribe error, 0 = ok */
-	int32_t read_err;    /**< last poll error, 0 = ok */
-	bool valid;          /**< value holds a good value */
+	int32_t sub_id;   /**< >= 0 while subscribed */
+	int32_t sub_err;  /**< last subscribe error, 0 = ok */
+	int32_t read_err; /**< last poll error, 0 = ok */
+	bool valid;       /**< value holds a good value */
 	double value;
 	uint64_t updated_ms; /**< time of the last good value */
 	uint64_t next_poll_ms;
 	uint64_t next_sub_ms;
-	uint32_t covs;       /**< notifications received */
-	uint32_t polls;      /**< successful polls */
+	uint32_t covs;  /**< notifications received */
+	uint32_t polls; /**< successful polls */
 };
 
 static inline void uc_point_setup(struct uc_point *p, uint32_t device, uint32_t type,

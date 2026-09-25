@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bacnet-uc-harness"
+version = "0.1.0"
+description = "Development harness and MCP server for BACnet-uc nodes (Zephyr, SMP management, BACnet/IP, WebAssembly apps)"
+readme = { text = "See docs/ in the BACnet-uc repository.", content-type = "text/plain" }
+license = "Apache-2.0"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.2",
+    "cbor2>=5.6",
+    "pyyaml>=6",
+    "jsonschema>=4.21",
+]
+
+[project.optional-dependencies]
+serial = ["pyserial>=3.5"]
+sim = ["pyroute2>=0.7"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff"]
+
+[project.scripts]
+bacnet-uc = "bacnet_uc_harness.cli:main"
+bacnet-uc-mcp = "bacnet_uc_harness.mcp_server:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["bacnet_uc_harness*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]

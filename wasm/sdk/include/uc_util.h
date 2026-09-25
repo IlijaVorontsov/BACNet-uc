@@ -142,8 +142,10 @@ static inline double uc_pow10(uint32_t n)
 /**
  * Parse a finite decimal floating point number:
  *   [+-] digits [ . [digits] ] [ (e|E) [+-] digits ]   or   [+-] . digits ...
- * No hex floats, no inf/nan. Up to 19 significant digits are used exactly;
- * the result is within a few ulp of the correctly rounded value. On
+ * No hex floats, no inf/nan. Up to 19 significant digits are used. With
+ * at most 15 significant digits and a decimal exponent within +-22 the
+ * result is correctly rounded (one exact multiplication or division);
+ * otherwise it is within a few ulp. Values that overflow are rejected. On
  * success *end points behind the number.
  */
 static inline bool uc_parse_double(const char *s, const char **end, double *out)
@@ -438,6 +440,16 @@ static inline const char *uc_obj_type_abbr(uint32_t type)
 	}
 }
 
+/** "local" or the device instance as text, for log lines (size >= 11). */
+static inline const char *uc_device_str(uint32_t device, char *buf, uint32_t size)
+{
+	if (device == UC_DEVICE_LOCAL) {
+		return "local";
+	}
+	(void)snprintf(buf, size, "%u", (unsigned int)device);
+	return buf;
+}
+
 static inline bool uc_obj_is_binary(uint32_t type)
 {
 	return (type == UC_OBJ_BINARY_INPUT) || (type == UC_OBJ_BINARY_OUTPUT) ||
@@ -453,7 +465,7 @@ static inline bool uc_obj_is_creatable(uint32_t type)
 
 /** Write a Present_Value locally (device == UC_DEVICE_LOCAL) or remotely. */
 static inline int32_t uc_pv_write_dev(uint32_t device, uint32_t type, uint32_t instance,
-					double value, uint32_t priority, uint32_t timeout_ms)
+				      double value, uint32_t priority, uint32_t timeout_ms)
 {
 	if (device == UC_DEVICE_LOCAL) {
 		return uc_pv_write(type, instance, value, priority);
@@ -464,7 +476,7 @@ static inline int32_t uc_pv_write_dev(uint32_t device, uint32_t type, uint32_t i
 
 /** Relinquish a Present_Value priority locally or remotely. */
 static inline int32_t uc_pv_relinquish_dev(uint32_t device, uint32_t type, uint32_t instance,
-					     uint32_t priority, uint32_t timeout_ms)
+					   uint32_t priority, uint32_t timeout_ms)
 {
 	if (device == UC_DEVICE_LOCAL) {
 		return uc_prop_write_null(type, instance, UC_PROP_PRESENT_VALUE, priority);
@@ -474,8 +486,8 @@ static inline int32_t uc_pv_relinquish_dev(uint32_t device, uint32_t type, uint3
 }
 
 /** Read a Present_Value locally or remotely. */
-static inline int32_t uc_pv_read_dev(uint32_t device, uint32_t type, uint32_t instance,
-				       double *out, uint32_t timeout_ms)
+static inline int32_t uc_pv_read_dev(uint32_t device, uint32_t type, uint32_t instance, double *out,
+				     uint32_t timeout_ms)
 {
 	if (device == UC_DEVICE_LOCAL) {
 		return uc_pv_read(type, instance, out);

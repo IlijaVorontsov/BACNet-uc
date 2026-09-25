@@ -1,0 +1,271 @@
+# Security
+
+This document states what a BACnet-uc node and the development harness
+protect against today, what they do not, and which controls are recommended
+or planned. It distinguishes three states for every control:
+
+| Marker | Meaning |
+|--------|---------|
+| **Implemented** | present in this repository's firmware or harness and active in the default build |
+| **Available** | supported by Zephyr, MCUboot or bacnet-stack and selectable by configuration, but not configured or not wired up by BACnet-uc |
+| **Planned** | not implemented; described as the intended design |
+
+The default build is a **development configuration**: the management
+interface is unauthenticated and the MCUboot signing key is the public
+development key. Do not connect a default-build node to a network that
+untrusted parties can reach.
+
+## 1. Assets and trust boundaries
+
+| Asset | Why it matters |
+|-------|----------------|
+| Plant outputs (digital/analog outputs, their BACnet objects) | physical effect: heating, fans, valves |
+| Control logic (WebAssembly apps, links, parameters) | wrong logic = wrong plant behaviour |
+| Node configuration (`/lfs/cfg/*.json`) | identity, addressing, IO mapping |
+| Firmware image | full control of the node |
+| Credentials (planned: DTLS PSKs/keys, app signing keys) | authority over nodes |
+| Availability of the node and of the BACnet network | supervision, alarms |
+| Logs | diagnosis; may reveal topology |
+
+```mermaid
+flowchart LR
+    subgraph bacnet["BACnet/IP LAN (building network)"]
+        bms["BMS / third-party devices"]
+        node["BACnet-uc node<br/>UDP 47808 BACnet/IP<br/>UDP 1337 SMP"]
+    end
+    subgraph mgmt["management network (recommended separate VLAN)"]
+        hh["harness host<br/>MCP server, toolchains,<br/>.bacnet-uc/ inventory"]
+    end
+    agent["AI agent<br/>(MCP client)"]
+    human["operator"]
+    ci["CI / build system"]
+    up["upstream sources:<br/>Zephyr, bacnet-stack, WAMR,<br/>MCUboot, PyPI, SDK"]
+    bench["bench access:<br/>console UART, SWD"]
+
+    bms -- "BACnet/IP (no security)" --> node
+    hh -- "SMP (unauthenticated by default)" --> node
+    hh -- "BACnet/IP (verification)" --> node
+    agent -- "MCP stdio / HTTP 127.0.0.1" --> hh
+    human -- "approves tool calls" --> agent
+    ci -- "firmware images, modules" --> hh
+    up --> ci
+    bench -- "full control" --> node
+```
+
+Trust boundaries: (1) the BACnet/IP network, (2) the SMP management
+interface, (3) the WebAssembly sandbox inside the node, (4) the MCP boundary
+between agent and harness, (5) the build inputs.
+
+## 2. Threat model
+
+| ID | Actor | Capability assumed | Goal |
+|----|-------|--------------------|------|
+| T1 | network attacker on the BACnet/IP LAN | send and receive UDP on the building subnet, spoof source addresses | manipulate outputs, disrupt supervision, reboot or silence nodes |
+| T2 | rogue management client | reach UDP 1337 of a node (same network or routed), or the console UART | install code, change configuration, read files, replace firmware |
+| T3 | malicious or buggy WebAssembly application | arbitrary module code installed through SMP | escape the sandbox, starve other functions, corrupt state |
+| T4 | supply chain | modify an upstream dependency, a toolchain, a prebuilt module or a signing key | persistent compromise of all nodes |
+| T5 | misled or compromised agent | issue any MCP tool call the client allows; read attacker-controlled data (object names, logs, app output) | destructive calls, prompt injection through node data |
+| T6 | physical attacker | console UART, SWD, external flash | extract data, reflash |
+
+### 2.1 Current exposure (default build)
+
+| Threat | Attack | Result today |
+|--------|--------|--------------|
+| T1 | WriteProperty to an output at priority 1 | accepted: BACnet/IP has no authentication |
+| T1 | ReinitializeDevice (cold/warm start) | accepted without password: the bacnet-stack device object has no ReinitializeDevice password unless one is set, and the firmware sets none; the node reboots after `CONFIG_BACNET_REINIT_REBOOT_DELAY` (3 s). Verified on `native_sim` (SimpleACK, then `sys_reboot()`) |
+| T1 | DeviceCommunicationControl | protected only by the bacnet-stack **default** DCC password `filister` (`h_dcc.c`, public source); the firmware does not change it. Verified on `native_sim`: DISABLE_INITIATION with this password returns SimpleACK, a wrong password returns security/password-failure; DISABLE is rejected as deprecated (protocol revision ≥ 20) |
+| T1 | CreateObject / DeleteObject | accepted: the bacnet-stack basic server registers both handlers and the firmware does not remove them. Verified on `native_sim`: DeleteObject of an IO-bound `analog-input:1` returns SimpleACK, the object disappears and the IO scan logs `Present_Value update failed: -2` until the next `reload io`; CreateObject of `analog-value:77` succeeds and the object is listed with owner `system` (open issue, [section 10](#10-open-issues)) |
+| T1 | Register-Foreign-Device, broadcast flooding | the stack's BVLC layer is built with BBMD support and accepts up to 5 foreign-device registrations ([bacnet.md](bacnet.md#6-bacnetip-datalink)) |
+| T2 | any SMP command over UDP 1337 | accepted: no authentication, no encryption. This includes file upload/download on `/lfs`, app install, IO force, `os reset`, and the **shell group** (remote shell commands, `CONFIG_MCUMGR_GRP_SHELL=y`) |
+| T2 | firmware upload (sysbuild builds) | MCUboot verifies an ECDSA P-256 signature, but the default key is MCUboot's public development key (`root-ec-p256.pem`): anyone can sign an image that boots |
+| T3 | out-of-bounds access, bad pointers | contained (section 5) |
+| T3 | writing any local object | allowed with `bacnet.local` (no per-object ACL) |
+| T5 | `apply_system(dry_run=false)`, `bacnet_write`, `io_force` | executed if the MCP client allows the call; `flash_firmware`/`update_firmware` need `confirm=true`; `node_shell` is disabled unless enabled at server start |
+| T6 | console UART | shell (`uc` commands, `kernel`, `fs`, `net`) and SMP over the shell transport, no login |
+
+## 3. Network architecture (recommended)
+
+The most effective control available today is network separation.
+
+| Zone | Contains | Allowed traffic |
+|------|----------|-----------------|
+| BACnet VLAN | nodes' BACnet/IP interface, BMS, other BACnet devices, BBMDs | UDP 47808 within the VLAN; BBMD-to-BBMD only between listed BBMDs |
+| management VLAN | harness host(s), syslog server | from the harness host to nodes: UDP 1337 (SMP), UDP 47808 (verification); from nodes: UDP 514 (syslog) |
+| everything else | office, Internet | nothing to or from nodes |
+
+A node has one Ethernet interface and one IPv4 address, in the BACnet VLAN.
+The management VLAN reaches it through a router/firewall that forwards only
+UDP 1337 (and UDP 47808 for verification) from the harness hosts; switch ACLs
+inside the BACnet VLAN drop UDP 1337 from all other devices. A node never
+needs outbound Internet access.
+
+## 4. Management plane
+
+### 4.1 SMP over UDP
+
+| Control | Status | Notes |
+|---------|--------|-------|
+| Network ACL for UDP 1337 | recommended | section 3 |
+| DTLS for the SMP UDP transport (`CONFIG_MCUMGR_TRANSPORT_UDP_DTLS`) | **Available** in Zephyr v4.4.2; **Planned** in BACnet-uc | the option selects mbedTLS, TLS credentials and DTLS sockets, and disables automatic transport start: the application must add its credentials under `CONFIG_MCUMGR_TRANSPORT_UDP_DTLS_TLS_TAG` and call `smp_udp_open()`. The firmware does neither yet, and the harness's SMP UDP transport has no DTLS client, so enabling the option today makes UDP management unavailable |
+| Disable the shell group in production (`CONFIG_MCUMGR_GRP_SHELL=n`) | **Available** | removes remote shell execution. The harness keeps working: `read_logs` falls back from `fs ls` (shell) to probing log files with the FS group; only `node_shell` becomes unavailable |
+| Restrict FS group paths (`CONFIG_MCUMGR_GRP_FS_FILE_ACCESS_HOOK` + an MCUmgr callback) | **Available**; not used | allow writes only to `/lfs/cfg/*.json` and `/lfs/apps/*`, reads of `/lfs/log/*` and `/lfs/cfg/*`; deny everything else (e.g. future key files) |
+| Serial management (shell transport on the console UART) | **Implemented** | physical access required; see T6 |
+
+Planned DTLS design:
+
+1. **Credentials**: one PSK per node (TLS-PSK with AES-GCM cipher suites of
+   mbedTLS) as the first step; X.509 device certificates later (shared with
+   BACnet/SC, [roadmap.md](roadmap.md)).
+2. **Provisioning**: over the console UART at commissioning (physical
+   presence), a `uc cred set` shell command writing the key to Zephyr settings
+   (not to a file readable through the FS group); never logged.
+3. **Firmware**: at boot, add the credential with `tls_credential_add()` and
+   call `smp_udp_open()`; refuse to start UDP management without a credential
+   (serial management stays available for recovery).
+4. **Harness**: a DTLS client for `smp/transport.py` (candidate:
+   `python-mbedtls`, not evaluated); PSKs referenced from the inventory by
+   name and read from the environment or an OS secret store, never stored in
+   `inventory.yaml` or manifests.
+
+### 4.2 Harness host
+
+| Control | Status |
+|---------|--------|
+| MCP over stdio (no network listener) by default; HTTP binds `127.0.0.1` by default | **Implemented** |
+| The HTTP endpoint has no authentication; do not bind it to other addresses | recommendation |
+| Run the harness as an unprivileged user; root only for `sim_start(mode="netns")` (or use `mode="compose"`) | recommendation |
+| Inventory and manifests contain no secrets | **Implemented** (nothing to store yet); must stay true when DTLS arrives |
+
+## 5. Applications (WebAssembly)
+
+| Control | Status | Detail |
+|---------|--------|--------|
+| Sandbox: linear memory with bounds checks, no access to firmware memory or peripherals except through host functions | **Implemented** | WAMR fast interpreter; AOT is disabled (`CONFIG_WAMR_AOT=n`), so no native code from modules runs |
+| Import whitelist | **Implemented** | only `bacnet_uc` host functions and the libc-builtin subset link; unknown imports fail the load |
+| Pointer validation in every host function | **Implemented** | the full range `[ptr, ptr+len)` must lie in linear memory, offset 0 rejected; failures return `UC_ERR_INVALID` instead of trapping |
+| Permissions per app (`bacnet.local`, `bacnet.remote`, `io`, `kv`) checked per host call | **Implemented** | `UC_ERR_PERM` otherwise |
+| Object ownership | **Implemented** | an app deletes only its own objects; its objects disappear when it stops |
+| Watchdog per callback | **Implemented** | `CONFIG_UC_APP_WATCHDOG_MS` (2 s) of execution time; `wasm_runtime_terminate()` |
+| Resource quotas | **Implemented** | WAMR pool per board, `heap_kb`, `stack_kb`, module ≤ 256 KiB, 16 queued events, 20 log lines/s, 16 COV subscriptions and 8 client slots shared per node, kv values ≤ 256 bytes |
+| kv store confinement | **Implemented** | keys `[A-Za-z0-9_.-]{1,31}` except `.` and `..`, stored under `/lfs/data/<app>/` |
+| API version check | **Implemented** | the host refuses a module whose `UC_API_VERSION` major differs |
+| Integrity (`sha256` in the app manifest, checked at install and at every start) | **Implemented** | protects against corrupted transfers, **not** against a malicious uploader |
+| Per-object write ACL (`bacnet.local` currently allows writing any writable local property) | **Planned** | |
+| Signed applications | **Planned** | below |
+
+Known limits: an app with `bacnet.local` can command any local output; the
+WAMR pool is shared, so one large app can prevent another from starting; an
+app may use up to 2 s of CPU per callback, starving only lower-priority
+threads (shell, logging). Details: [wasm-runtime.md](wasm-runtime.md#7-sandboxing).
+
+### 5.1 Planned: signed application manifests
+
+Signing binds the module, its name and the permissions it may receive, so
+that an SMP client cannot grant itself more than the signer allowed.
+
+| Element | Design |
+|---------|--------|
+| Signed statement | `{name, sha256(module), perms, api_major, not_before?}` in canonical CBOR |
+| Signature | ECDSA P-256 (the algorithm MCUboot already uses), detached file `/lfs/apps/<file>.sig` |
+| Keys | trusted public keys compiled into the firmware (or provisioned like DTLS credentials); each key carries the set of permissions it may grant |
+| Verification | PSA Crypto at `uc_app install` and at every start; `CONFIG_UC_APP_REQUIRE_SIGNATURE=y` rejects unsigned modules with rc `VERIFY` |
+| Signing | in CI with the private key in the CI secret store; the harness uploads the `.sig` next to the module in `deploy_app`/`apply_system`; the agent never holds the key |
+
+See also [wasm-runtime.md](wasm-runtime.md#10-versioning-and-signing).
+
+## 6. Firmware integrity
+
+| Control | Status | Detail |
+|---------|--------|--------|
+| Signed images with MCUboot (`west build --sysbuild`) | **Implemented** (sysbuild builds) | `SB_CONFIG_BOOT_SIGNATURE_TYPE_ECDSA_P256=y` in `firmware/sysbuild.conf` |
+| Production signing key | **Required action** | the default `SB_CONFIG_BOOT_SIGNATURE_KEY_FILE` is MCUboot's public `root-ec-p256.pem`. Generate a key (`imgtool keygen -t ecdsa-p256`), keep it offline or in the CI secret store, and set `SB_CONFIG_BOOT_SIGNATURE_KEY_FILE` |
+| Test boot and revert | **Implemented** | `update_firmware` marks the new image for a test boot and confirms it only when the node answers; MCUboot reverts otherwise |
+| Downgrade prevention | **Available** | `CONFIG_MCUBOOT_DOWNGRADE_PREVENTION` (software, version numbers) or `CONFIG_MCUBOOT_HW_DOWNGRADE_PREVENTION` (security counter) in the MCUboot image configuration; requires increasing image versions at signing (not set today) |
+| Plain builds (no sysbuild) | – | no bootloader, no signature check; flashed over SWD only |
+| Debug port lock (STM32 readout protection option bytes; MCXN947 debug authentication / lifecycle) | recommendation | not configured by the repository; prevents T6 from reading or reflashing through SWD |
+| Encrypted images (`SB_CONFIG_BOOT_ENCRYPTION`) | **Available** | confidentiality of the image in transit and in the secondary slot; not needed while the image holds no secrets |
+
+## 7. BACnet
+
+BACnet/IP (ASHRAE 135 Annex J) has no authentication, integrity protection or
+encryption. Every device on the network segment can read and command every
+writable property of every device.
+
+| Control | Status | Detail |
+|---------|--------|--------|
+| Network segmentation (BACnet VLAN, ACLs on UDP 47808) | recommendation | section 3 |
+| BBMD hygiene: Broadcast Distribution Tables only with known BBMDs, foreign-device registrations only from known hosts, no BACnet/IP port forwarding from other networks | recommendation | the node's own BBMD support (5 FDT entries) should be firewalled from outside the BACnet VLAN |
+| Set a DCC password | **Planned** | `handler_dcc_password_set()` exists in bacnet-stack; needs a `device.json` field (schema change) |
+| Set a ReinitializeDevice password | **Planned** | `Device_Reinitialize_Password_Set()` exists; same |
+| Remove or restrict CreateObject/DeleteObject | **Planned** | open issue (section 10) |
+| Priority discipline: operator at 8, applications at 10..14 | convention | [bacnet.md](bacnet.md#34-priority-array-use-convention) |
+| BACnet Secure Connect (TLS 1.3 over WebSockets, device certificates) | **Planned** | bacnet-stack contains the BACnet/SC datalink; see [roadmap.md](roadmap.md) |
+
+## 8. Logs
+
+| Rule | Status |
+|------|--------|
+| No secrets in logs: no credentials exist today; the planned DTLS and signing code must not log key material, PSK identities are logged at most as a fingerprint | **Implemented** by absence; rule for new code |
+| Logs are readable by every SMP client (`/lfs/log/log.NNNN` through the FS group) and sent in clear text with the syslog option (`overlay-syslog.conf`, UDP 514) | fact; keep syslog on the management VLAN |
+| Application log lines are application-controlled text (max 120 characters, 20 lines/s per app) | **Implemented** limits; treat content as untrusted |
+| Log level is configurable at run time (`device.json` `log.level`); `dbg` reveals request details | **Implemented**; use `inf` in production |
+
+## 9. Harness and AI agent
+
+The MCP boundary is where an agent's mistakes or manipulated inputs turn into
+actions on the plant.
+
+| Control | Status |
+|---------|--------|
+| MCP tool annotations on all 36 tools (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) so that clients can gate destructive calls | **Implemented** |
+| `apply_system` dry run by default; `plan_system` read-only | **Implemented** |
+| `flash_firmware` / `update_firmware` require `confirm=true` | **Implemented** |
+| `node_shell` disabled unless `BACNET_UC_ALLOW_SHELL=1` / `--allow-shell` | **Implemented** |
+| Validation before any upload (schemas, IO catalog, ABI) | **Implemented** |
+| Least privilege in the MCP client: allow read-only tools, prompt for the rest, deny flashing/OTA | recommendation; example rules in [harness-mcp.md](harness-mcp.md#7-safety-model) |
+| Treat node data as untrusted input: object names, descriptions, log lines, app `last_error` and BACnet strings are controlled by whoever can write them (T1, T3) and are returned to the agent verbatim | recommendation for agent prompts and clients; the harness does not sanitise |
+| Audit log of tool calls | **Planned** ([harness-mcp.md](harness-mcp.md#7-safety-model)) |
+| Rate limits for write tools | **Planned** |
+| Per-node protection flag requiring confirmation for destructive tools | **Planned** |
+
+## 10. Open issues
+
+| Issue | Where | Proposed fix |
+|-------|-------|--------------|
+| CreateObject and DeleteObject handlers of the bacnet-stack basic server are active: any BACnet client can delete IO- and app-owned objects and create objects that the firmware reports with owner `system` | `firmware/src/bacnet/uc_bn_node.c` after `bacnet_basic_init()` | unregister both services (the PICS in [bacnet.md](bacnet.md#10-pics-skeleton) does not claim them) or check the owner table in a wrapper handler |
+| ReinitializeDevice has no password; DCC uses the bacnet-stack default password | `uc_bn_node.c` | set both from new `device.json` fields; refuse ReinitializeDevice when no password is configured (build option) |
+| SMP shell group enabled in the default configuration | `firmware/prj.conf` | production overlay (`overlay-production.conf`, **Planned**) with `CONFIG_MCUMGR_GRP_SHELL=n` |
+| MCUboot development key | `firmware/sysbuild.conf` | document and enforce a site key (CI fails when the default key is used for a release build) |
+| No DTLS | firmware + harness | section 4.1 |
+
+## 11. Supply chain
+
+| Input | Current pinning | Recommendation |
+|-------|-----------------|----------------|
+| Zephyr | tag `v4.4.2` in [`west.yml`](../west.yml) | pin the commit SHA for release builds |
+| bacnet-stack-zephyr, bacnet-stack | commit SHAs | keep; review diffs when bumping |
+| WAMR | tag `WAMR-2.4.5` | pin the commit SHA |
+| Zephyr modules (hal_stm32, hal_nxp, mbedtls, mcuboot, littlefs, ...) | revisions from Zephyr's `west.yml` at the pinned Zephyr revision | – |
+| Zephyr SDK | release download | verify the published checksums |
+| Python packages of the harness | lower bounds in `harness/pyproject.toml`, no lock file | lock with hashes for CI (`pip-compile --generate-hashes` or equivalent) |
+| clang / wasm-ld, wamrc | distribution packages / release binary | record versions in CI logs; build modules only in CI for releases |
+| Application modules | built from source by the harness, SHA-256 recorded in `apps.json` | signed modules (section 5.1) |
+| SBOM | – | Zephyr's `west spdx` produces SPDX documents for a build directory (`west spdx --init` before the build) |
+
+bacnet-stack licensing (GPL-2.0-or-later WITH GCC-exception-2.0 for the core
+files, MIT and others for examples) is summarised in the top-level
+[README](../README.md#license).
+
+## 12. Production checklist
+
+| # | Action | Addresses |
+|---|--------|-----------|
+| 1 | Separate BACnet and management traffic; ACLs for UDP 1337 and 47808 | T1, T2 |
+| 2 | Build with sysbuild and a site signing key; enable downgrade prevention with versioned images | T2, T4 |
+| 3 | Disable the SMP shell group; consider the FS access hook | T2 |
+| 4 | Lock the debug port | T6 |
+| 5 | Set DCC and ReinitializeDevice passwords (once supported) or block these services at the firewall | T1 |
+| 6 | Run the MCP server without `--allow-shell`; allow only read-only tools without prompting | T5 |
+| 7 | Log level `inf`; syslog only on the management network | information exposure |
+| 8 | Keep manifests and app sources in git with review; build modules in CI | T4, T5 |
+| 9 | Once available: DTLS for SMP, signed applications, BACnet/SC | T1, T2, T3 |

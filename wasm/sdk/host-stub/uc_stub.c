@@ -359,8 +359,7 @@ static void queue_event(const struct stub_event *ev)
 	st.q_len++;
 }
 
-static void notify_subs(bool local, uint32_t device, uint32_t type, uint32_t instance,
-			double value)
+static void notify_subs(bool local, uint32_t device, uint32_t type, uint32_t instance, double value)
 {
 	for (size_t i = 0; i < UC_STUB_MAX_SUBS; i++) {
 		struct stub_sub *s = &st.subs[i];
@@ -917,8 +916,7 @@ int32_t uc_remote_write(uint32_t device, uint32_t type, uint32_t instance, uint3
 int32_t uc_remote_write_null(uint32_t device, uint32_t type, uint32_t instance, uint32_t prop,
 			     uint32_t priority, uint32_t timeout_ms)
 {
-	return remote_write(device, type, instance, prop, UC_ARRAY_ALL, NULL, priority,
-			    timeout_ms);
+	return remote_write(device, type, instance, prop, UC_ARRAY_ALL, NULL, priority, timeout_ms);
 }
 
 int32_t uc_cov_subscribe(uint32_t device, uint32_t type, uint32_t instance, uint32_t lifetime_s)
@@ -1086,7 +1084,6 @@ int32_t uc_kv_get(const char *key, uint32_t key_len, void *buf, uint32_t buf_len
 int32_t uc_kv_set(const char *key, uint32_t key_len, const void *val, uint32_t val_len)
 {
 	char k[KV_KEY_MAX + 1];
-	struct stub_kv *e;
 	int32_t err;
 
 	if (!has_perm(UC_STUB_PERM_KV)) {
@@ -1203,8 +1200,9 @@ int32_t uc_stub_start(void)
 	if ((st.app == NULL) || (st.app->api_version == NULL)) {
 		return START_BAD_VERSION;
 	}
-	st.period = (st.cfg_period == 0u) ? 0u
-		    : (st.cfg_period < PERIOD_MIN_MS) ? PERIOD_MIN_MS : st.cfg_period;
+	st.period = (st.cfg_period == 0u)             ? 0u
+		    : (st.cfg_period < PERIOD_MIN_MS) ? PERIOD_MIN_MS
+						      : st.cfg_period;
 	st.period_changed = true;
 	st.log_window = 0;
 	st.log_count = 0;
@@ -1271,8 +1269,7 @@ static void deliver(const struct stub_event *ev)
 		if ((st.app->on_cov == NULL) || !sub_live(ev)) {
 			return;
 		}
-		st.app->on_cov(ev->sub_id, ev->device, ev->type, ev->instance, ev->prop,
-			       ev->value);
+		st.app->on_cov(ev->sub_id, ev->device, ev->type, ev->instance, ev->prop, ev->value);
 	} else {
 		if (st.app->on_write == NULL) {
 			return;
@@ -1527,8 +1524,7 @@ int uc_stub_remote_add(uint32_t device, uint32_t type, uint32_t instance, double
 	return 0;
 }
 
-int uc_stub_remote_set(uint32_t device, uint32_t type, uint32_t instance, double value,
-		       bool notify)
+int uc_stub_remote_set(uint32_t device, uint32_t type, uint32_t instance, double value, bool notify)
 {
 	struct stub_remote *r = remote_find(device, type, instance);
 
@@ -1764,5 +1760,75 @@ void uc_stub_log_dump(void)
 		int32_t l = st.log[i].level;
 
 		fprintf(stderr, "  %s %s\n", lv[(l >= 1 && l <= 4) ? l : 0], st.log[i].text);
+	}
+}
+
+void uc_stub_dump(FILE *f)
+{
+	static const char *const lv[] = {"???", "ERR", "WRN", "INF", "DBG"};
+
+	for (size_t i = 0; i < UC_STUB_MAX_OBJECTS; i++) {
+		const struct stub_obj *o = &st.objs[i];
+
+		if (!o->used) {
+			continue;
+		}
+		fprintf(f, "obj %s:%u %s \"%s\" pv=%.17g writes=%u", type_abbr(o->type),
+			(unsigned int)o->instance, (o->owner == UC_STUB_OWNER_APP) ? "app" : "io",
+			o->name, obj_pv(o), (unsigned int)o->writes);
+		for (size_t p = 0; p < PRIORITY_MAX; p++) {
+			if (o->commandable && o->prio_set[p]) {
+				fprintf(f, " p%u=%.17g", (unsigned int)(p + 1u), o->prio[p]);
+			}
+		}
+		for (uint32_t p = 0; p < o->n_props; p++) {
+			fprintf(f, " prop%u=%.17g", (unsigned int)o->prop_id[p], o->prop_val[p]);
+		}
+		fputc('\n', f);
+	}
+	for (size_t i = 0; i < UC_STUB_MAX_REMOTE; i++) {
+		const struct stub_remote *r = &st.remote[i];
+
+		if (r->used) {
+			fprintf(f, "remote %u %s:%u value=%.17g reads=%u writes=%u prio=%u%s\n",
+				(unsigned int)r->device, type_abbr(r->type),
+				(unsigned int)r->instance, r->value, (unsigned int)r->reads,
+				(unsigned int)r->writes, (unsigned int)r->last_priority,
+				r->relinquished ? " relinquished" : "");
+		}
+	}
+	for (size_t i = 0; i < UC_STUB_MAX_SUBS; i++) {
+		const struct stub_sub *s = &st.subs[i];
+
+		if (s->used) {
+			fprintf(f, "sub %d %s %u %s:%u\n", (int)s->id,
+				s->local ? "local" : "remote", (unsigned int)s->device,
+				type_abbr(s->type), (unsigned int)s->instance);
+		}
+	}
+	for (size_t i = 0; i < UC_STUB_MAX_KV; i++) {
+		const struct stub_kv *e = &st.kv[i];
+
+		if (e->used) {
+			fprintf(f, "kv %s len=%u", e->key, (unsigned int)e->len);
+			for (uint32_t b = 0; b < e->len; b++) {
+				fprintf(f, "%s%02x", (b == 0u) ? " " : "", e->val[b]);
+			}
+			fputc('\n', f);
+		}
+	}
+	for (size_t i = 0; i < st.n_io; i++) {
+		fprintf(f, "io %s=%.17g\n", st.io[i].name, st.io[i].value);
+	}
+	fprintf(f,
+		"stats now=%llu running=%d period=%u ticks=%u events=%u errors=%u dropped=%u "
+		"log_excess=%u\n",
+		(unsigned long long)st.now, st.running ? 1 : 0, (unsigned int)st.period,
+		(unsigned int)st.ticks, (unsigned int)st.events, (unsigned int)st.errors,
+		(unsigned int)st.dropped, (unsigned int)st.log_excess);
+	for (size_t i = 0; i < st.n_log; i++) {
+		int32_t l = st.log[i].level;
+
+		fprintf(f, "log %s %s\n", lv[(l >= 1 && l <= 4) ? l : 0], st.log[i].text);
 	}
 }

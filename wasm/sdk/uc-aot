@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+"""uc-aot - compile a BACnet-uc WebAssembly module ahead of time with wamrc.
+
+    uc-aot --board nucleo_f767zi [-o app.aot] app.wasm
+    uc-aot --list [--json]
+
+The board selects the wamrc target matching CONFIG_WAMR_BUILD_TARGET of the
+firmware (modules/wasm-micro-runtime/Kconfig). Options are chosen for
+MCUs and for the firmware's WAMR configuration:
+  --size-level=3        small code model on the MCUs (x86-64: 1, the
+                        medium model, as the code may be loaded anywhere)
+  --opt-level=2         (-O LEVEL) smaller code than 3 at a small speed cost
+  --enable-indirect-mode (MCUs) calls through the runtime's symbol table:
+                        in direct mode LLVM turns memset(p, 0, n) into
+                        __aeabi_memclr, which WAMR 2.4.5's thumb symbol map
+                        (aot_reloc_thumb.c) lacks, so the file cannot load
+  --bounds-checks=1     software bounds checks; Zephyr has no hardware ones
+  --disable-simd        WAMR_BUILD_SIMD=0 in the firmware
+  --disable-ref-types   modules need none; loads with CONFIG_WAMR_REF_TYPES=n
+  --enable-multi-thread emits the suspend-flag checks that let the app
+                        watchdog stop an AOT callback (CONFIG_WAMR_THREAD_MGR=y,
+                        the default in prj.conf); --no-thread-mgr omits them
+The firmware only loads AOT files with CONFIG_WAMR_AOT=y (off by default).
+wamrc: --wamrc, $WAMRC, /opt/wamrc/wamrc or wamrc in PATH (WAMR 2.4.5).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
+
+import aotfile  # noqa: E402
+
+# board -> (wamrc target options, CONFIG_WAMR_BUILD_TARGET)
+BOARDS: dict[str, tuple[list[str], str]] = {
+    "nucleo_f767zi": (
+        ["--target=thumbv7em", "--target-abi=eabihf", "--cpu=cortex-m7", "--size-level=3",
+         "--enable-indirect-mode"], "THUMBV7EM_VFP"),
+    "frdm_mcxn947/mcxn947/cpu0": (
+        ["--target=thumbv8m.main", "--target-abi=eabihf", "--cpu=cortex-m33", "--size-level=3",
+         "--enable-indirect-mode"], "THUMBV8M.MAIN_VFP"),
+    "native_sim/native/64": (
+        # a fixed CPU (the default is the build host's CPU); indirect mode
+        # does not load on x86-64 ("relocation truncated to fit")
+        ["--target=x86_64", "--cpu=x86-64", "--size-level=1"], "X86_64"),
+}
+ALIASES = {
+    "f767": "nucleo_f767zi",
+    "nucleo": "nucleo_f767zi",
+    "frdm_mcxn947": "frdm_mcxn947/mcxn947/cpu0",
+    "mcxn947": "frdm_mcxn947/mcxn947/cpu0",
+    "native_sim": "native_sim/native/64",
+    "native_sim_native_64": "native_sim/native/64",
+    "frdm_mcxn947_mcxn947_cpu0": "frdm_mcxn947/mcxn947/cpu0",
+}
+COMMON = ["--bounds-checks=1", "--disable-simd", "--disable-ref-types"]
+TOOLS = Path(__file__).resolve().parent / "tools"
+DEFAULT_WAMR = Path(__file__).resolve().parents[3] / "modules" / "lib" / "wamr"
+
+
+def find_wamrc(explicit: str | None) -> str | None:
+    for cand in (explicit, os.environ.get("WAMRC"), "/opt/wamrc/wamrc"):
+        if cand and Path(cand).is_file() and os.access(cand, os.X_OK):
+            return cand
+    return shutil.which("wamrc")
+
+
+def board_key(name: str) -> str:
+    return name.replace("/", "_")
+
+
+def wamrc_args(board: str, opt: int, thread_mgr: bool, extra: list[str],
+               direct: bool = False) -> list[str]:
+    target, _ = BOARDS[board]
+    args = [a for a in target if not (direct and a == "--enable-indirect-mode")]
+    args += [f"--opt-level={opt}", *COMMON]
+    if thread_mgr:
+        args.append("--enable-multi-thread")
+    return args + extra
+
+
+def main(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(prog="uc-aot", description=__doc__.splitlines()[0])
+    p.add_argument("module", nargs="?", help="input .wasm (built with uc-cc)")
+    p.add_argument("-b", "--board", help="target board: " + ", ".join(BOARDS))
+    p.add_argument("-o", dest="output", help="output .aot (default: <module>.<board>.aot)")
+    p.add_argument("-O", dest="opt", type=int, default=2, choices=[0, 1, 2, 3],
+                   help="wamrc --opt-level (default 2)")
+    p.add_argument("--direct", action="store_true",
+                   help="direct calls also on the MCUs (see the symbol check)")
+    p.add_argument("--no-thread-mgr", action="store_true",
+                   help="for a firmware built without CONFIG_WAMR_THREAD_MGR")
+    p.add_argument("--wamrc", help="wamrc executable")
+    p.add_argument("--wamrc-arg", action="append", default=[], metavar="ARG",
+                   help="additional wamrc argument (repeatable)")
+    p.add_argument("--no-symbol-check", action="store_true",
+                   help="do not check the runtime symbols the file needs against WAMR's "
+                        "symbol map for the target ($WAMR_ROOT or the west workspace)")
+    p.add_argument("--list", action="store_true", help="list the boards and exit")
+    p.add_argument("--json", action="store_true", help="with --list: JSON")
+    p.add_argument("-v", "--verbose", action="store_true", help="print the wamrc command")
+    args = p.parse_args(argv)
+
+    if args.list:
+        table = {b: {"wamrc": wamrc_args(b, args.opt, not args.no_thread_mgr, []),
+                     "firmware_build_target": t} for b, (_, t) in BOARDS.items()}
+        if args.json:
+            print(json.dumps(table, indent=2))
+        else:
+            for b, info in table.items():
+                print(f"{b:28} {info['firmware_build_target']:18} {' '.join(info['wamrc'])}")
+        return 0
+
+    if not args.module or not args.board:
+        p.error("a module and --board are required")
+    board = ALIASES.get(args.board, args.board)
+    if board not in BOARDS:
+        p.error(f"unknown board {args.board!r} (known: {', '.join(BOARDS)})")
+    src = Path(args.module)
+    if src.read_bytes()[:4] != b"\0asm":
+        print(f"uc-aot: error: {src} is not a WebAssembly module", file=sys.stderr)
+        return 1
+    out = Path(args.output) if args.output else src.with_suffix(f".{board_key(board)}.aot")
+    wamrc = find_wamrc(args.wamrc)
+    if wamrc is None:
+        print("uc-aot: error: wamrc not found (WAMR 2.4.5 release asset "
+              "wamrc-2.4.5-x86_64-ubuntu-22.04.tar.gz, see wasm/README.md)", file=sys.stderr)
+        return 1
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [wamrc, *wamrc_args(board, args.opt, not args.no_thread_mgr, args.wamrc_arg,
+                              args.direct),
+           "-o", str(out), str(src)]
+    if args.verbose:
+        print(shlex.join(cmd), file=sys.stderr)
+    res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if res.returncode != 0 or not out.is_file():
+        sys.stderr.write(res.stdout + res.stderr)
+        print(f"uc-aot: error: wamrc failed ({res.returncode})", file=sys.stderr)
+        return 1
+    if args.verbose:
+        sys.stderr.write(res.stdout)
+    note = ""
+    if not args.no_symbol_check:
+        target = BOARDS[board][0][0].split("=", 1)[1]
+        wamr = Path(os.environ.get("WAMR_ROOT", DEFAULT_WAMR))
+        try:
+            needed, missing = aotfile.check(str(out), wamr, target)
+        except aotfile.AotError as exc:
+            print(f"uc-aot: error: {out}: {exc}", file=sys.stderr)
+            return 1
+        if missing is None:
+            note = ", symbol check skipped (no WAMR sources, set WAMR_ROOT)"
+        elif missing:
+            out.unlink(missing_ok=True)
+            print(f"uc-aot: error: {src}: the AOT code needs {', '.join(sorted(missing))}, "
+                  f"which WAMR's {target} symbol map lacks (load would fail)", file=sys.stderr)
+            return 1
+        else:
+            note = f", {len(needed)} runtime symbols ok"
+    print(f"{out}: {out.stat().st_size} B ({board}, {BOARDS[board][1]}{note})")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
