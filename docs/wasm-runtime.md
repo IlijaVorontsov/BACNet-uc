@@ -149,9 +149,9 @@ stateDiagram-v2
     [*] --> stopped: install (autostart false)
     stopped --> starting: start / install (autostart) / boot (autostart)
     starting --> running: uc_app_init() returned 0
-    starting --> failed: load, link, version or init error
+    starting --> failed: load, link, version, instantiation code or init error
     running --> stopped: stop (uc_app_deinit() called)
-    running --> failed: trap or watchdog (no uc_app_deinit())
+    running --> failed: trap or watchdog, also while stopping (no uc_app_deinit())
     failed --> starting: start
     stopped --> [*]: remove
     failed --> [*]: remove
@@ -168,14 +168,23 @@ Start sequence in the application's thread:
 4. `wasm_runtime_load()`; every function import must be resolved (`bacnet_uc`
    host functions or libc-builtin in `env`), otherwise "unresolved import
    module.name".
-5. `wasm_runtime_instantiate()` with `stack_kb` and `heap_kb`; create the
+5. Refuse a module whose instantiation would run module code: a start
+   function (start section) or an exported `__wasm_call_ctors`,
+   `__post_instantiate` or `_initialize` (any signature). WAMR would run that
+   code inside `wasm_runtime_instantiate()` on an execution environment of
+   its own, outside the watchdog, the instruction budget and the app context
+   of the host functions. The start fails with rc `VERIFY` and `last_error`
+   "`<what> not supported (runs at instantiation)`"
+   (`modules/wasm-micro-runtime/wamr_zephyr_module.c`); see section 8 for
+   the toolchain consequences.
+6. `wasm_runtime_instantiate()` with `stack_kb` and `heap_kb`; create the
    execution environment.
-6. Look up the exports and check their signatures; `uc_app_api_version` is
+7. Look up the exports and check their signatures; `uc_app_api_version` is
    mandatory.
-7. Call `uc_app_api_version()`; the major version must equal the host's
+8. Call `uc_app_api_version()`; the major version must equal the host's
    `UC_API_VERSION_MAJOR`.
-8. Call `uc_app_init()`; non-zero aborts the start (`failed`, "uc_app_init
-   returned N").
+9. Call `uc_app_init()`; non-zero aborts the start (`failed`, "uc_app_init
+   returned N"). Global setup of a module belongs here.
 
 Running: the first `uc_app_tick(now_ms)` comes one `period_ms` after the
 start, then at a fixed rate (missed ticks are skipped after an overrun).
@@ -184,9 +193,37 @@ Between ticks the thread waits for events and delivers them in arrival order
 events. `uc_set_tick_period(0)` or `period_ms: 0` gives an event-only
 application.
 
-Stop: the manager sets a stop flag; after the running callback returns,
-`uc_app_deinit()` is called (under the watchdog), then the slot is cleaned
-up. Failure (trap, watchdog, failed start) skips `uc_app_deinit()`.
+Stop (`uc_app stop`, `remove`, `install` with `restart`, `reload apps`):
+
+1. The manager sets the stop flag and cancels the application's blocking host
+   calls. A remote request in flight is abandoned within about 50 ms
+   (`UC_BN_CANCEL_POLL_MS`) and returns `UC_ERR_TIMEOUT`; a late
+   confirmation is dropped.
+2. From then on, blocking calls of the running callback fail at once
+   (`uc_remote_*` to another device: `UC_ERR_TIMEOUT`, `uc_kv_*`:
+   `UC_ERR_IO`) and no longer pause the watchdog, so the callback has to
+   return. If it does not, the watchdog terminates it; a callback that makes
+   100 more blocking calls after the cancellation is terminated at once
+   (on `native_sim` host calls do not consume the instruction budget). A
+   terminated callback ends in `failed`, without `uc_app_deinit()`.
+3. After the callback returned, `uc_app_deinit()` is called under the
+   watchdog. Its blocking calls work again (e.g. to relinquish a command on
+   another device), but their time counts against the watchdog, and an
+   expiry cancels them again: a relinquish to a device that does not answer
+   before the watchdog (2 s for the whole of `uc_app_deinit()`) expires is
+   cut off. A trap or watchdog expiry here is recorded in `last_error`; the
+   application still ends `stopped`.
+4. The slot is cleaned up (below) and the request returns.
+
+A stop normally completes in about 1 s and takes at most 2 ×
+`CONFIG_UC_APP_WATCHDOG_MS` (the rest of the running callback plus
+`uc_app_deinit()`) plus about 1 s for the cancellation and the cleanup,
+whatever the module does. The manager gives up after 2 × watchdog + 8 s
+(rc `BUSY`, the application keeps its `apps.json` entry,
+[management-protocol.md](management-protocol.md#group-64-uc_app---webassembly-applications));
+an application blocked in, or looping on, remote requests no longer runs
+into that limit. Failure (trap, watchdog, failed start) skips
+`uc_app_deinit()`.
 
 Cleanup in both cases: cancel COV subscriptions, delete the objects the
 application owns, drop queued events, destroy exec env, instance, module and
@@ -245,7 +282,7 @@ functions of section 4.3 trap on invalid pointers instead.)
 
 | Function | WAMR sig | Permission | Returns | Errors and notes |
 |----------|----------|------------|---------|------------------|
-| `void uc_log(int32_t level, const char *msg, uint32_t len)` | `(iii)` | - | - | Logs `"<app>: <msg>"` at level 1 ERR, 2 WRN, 3 INF, ≥4 DBG. Truncated to 120 characters, trailing CR/LF removed, control characters replaced by blanks. Rate limit 20 lines per second per application; excess lines are dropped and counted ("N log lines dropped"). Invalid pointer: counted as error, nothing logged |
+| `void uc_log(int32_t level, const char *msg, uint32_t len)` | `(iii)` | - | - | Logs `"<app>: <msg>"` at level 1 ERR, 2 WRN, 3 INF, ≥4 DBG. Truncated to 120 characters, trailing CR/LF removed, control characters replaced by blanks. Rate limit 20 lines per second per application, shared with `printf` output (section 4.3); excess lines are dropped and counted ("N log lines dropped"). Invalid pointer: counted as error, nothing logged |
 | `uint64_t uc_uptime_ms(void)` | `()I` | - | ms since boot | |
 | `int32_t uc_set_tick_period(uint32_t period_ms)` | `(i)i` | - | `UC_OK` | 0 disables ticks; otherwise 10..3 600 000 ms, else `INVALID`. Takes effect for the next tick (the period restarts) |
 | `int32_t uc_param_get(const char *key, uint32_t key_len, char *buf, uint32_t buf_len)` | `(iiii)i` | - | value length without NUL | `NOT_FOUND`; `INVALID` for a bad key (1..23 chars of `[A-Za-z0-9_.-]`), a bad buffer or `buf_len` < length. NUL-terminated only if it fits |
@@ -256,16 +293,16 @@ functions of section 4.3 trap on invalid pointers instead.)
 | `int32_t uc_prop_write(uint32_t type, uint32_t instance, uint32_t prop, int32_t array_index, double value, uint32_t priority)` | `(iiiiFi)i` | `bacnet.local` | `UC_OK` | WriteProperty semantics: priority 0 = none (16 for the Present_Value of AO, BO, MSO), 1..16; AV, BV, MSV and other properties ignore the priority (but priority 6 is `PERM` on AV); value converted to the property's datatype (`TYPE` if not numeric, `INVALID` if the datatype cannot hold it); `PERM` write access denied (e.g. input not Out_Of_Service, priority 6 on AO/BO/MSO/AV) |
 | `int32_t uc_prop_write_null(uint32_t type, uint32_t instance, uint32_t prop, uint32_t priority)` | `(iiii)i` | `bacnet.local` | `UC_OK` | AO, BO, MSO Present_Value: clears that priority slot (0 = 16). AV, BV, MSV Present_Value (no priority array): `UC_OK`, nothing changes. Present_Value of inputs and other properties: `TYPE` |
 | `int32_t uc_prop_write_string(uint32_t type, uint32_t instance, uint32_t prop, const char *str, uint32_t len)` | `(iiiii)i` | `bacnet.local` | `UC_OK` | CharacterString properties (Object_Name, Description); length ≤ 63 |
-| `int32_t uc_remote_read(uint32_t device, uint32_t type, uint32_t instance, uint32_t prop, int32_t array_index, double *out, uint32_t timeout_ms)` | `(iiiiiii)i` | `bacnet.remote` (`bacnet.local` for the own device) | `UC_OK` | blocks up to `timeout_ms` (0 = 5000, max 600 000); `NO_ROUTE`, `TIMEOUT`, `BACNET`, `BUSY`, `TYPE`. The own device instance or `UC_DEVICE_LOCAL` is served locally |
-| `int32_t uc_remote_write(uint32_t device, uint32_t type, uint32_t instance, uint32_t prop, int32_t array_index, double value, uint32_t priority, uint32_t timeout_ms)` | `(iiiiiFii)i` | `bacnet.remote` (`bacnet.local` for the own device) | `UC_OK` | as above; the value is converted like `uc_prop_write` (datatype from the stack's known property datatypes: REAL for analog, ENUMERATED for binary PV, UNSIGNED for multi-state PV) and rejected with `INVALID` before sending if it does not fit. A BACnet-uc peer's AV, BV, MSV ignore the priority |
-| `int32_t uc_remote_write_null(uint32_t device, uint32_t type, uint32_t instance, uint32_t prop, uint32_t priority, uint32_t timeout_ms)` | `(iiiiii)i` | `bacnet.remote` (`bacnet.local` for the own device) | `UC_OK` | WriteProperty NULL at `priority`; effect on a BACnet-uc node as for `uc_prop_write_null` |
+| `int32_t uc_remote_read(uint32_t device, uint32_t type, uint32_t instance, uint32_t prop, int32_t array_index, double *out, uint32_t timeout_ms)` | `(iiiiiii)i` | `bacnet.remote` (`bacnet.local` for the own device) | `UC_OK` | blocks up to `timeout_ms` (0 = 5000, max 600 000); `NO_ROUTE`, `TIMEOUT`, `BACNET`, `BUSY`, `TYPE`. `TIMEOUT` also when the application is being stopped: a request in flight is abandoned within about 50 ms, later calls of the stopping callback fail at once (section 3.1). The own device instance or `UC_DEVICE_LOCAL` is served locally |
+| `int32_t uc_remote_write(uint32_t device, uint32_t type, uint32_t instance, uint32_t prop, int32_t array_index, double value, uint32_t priority, uint32_t timeout_ms)` | `(iiiiiFii)i` | `bacnet.remote` (`bacnet.local` for the own device) | `UC_OK` | as above (blocking, `TIMEOUT` when stopped); the value is converted like `uc_prop_write` before sending and rejected with `INVALID` if it does not fit. The datatype comes from the host's table of standard numeric properties (`uc_value_from_double()` in `uc_common.c`), which covers AI, AO, AV, BI, BO, BV, MSI, MSO, MSV, Integer Value, Positive Integer Value, Large Analog Value, Accumulator, Loop, Pulse Converter, Lighting Output and Binary Lighting Output (see below); other properties return `TYPE` without a request. A BACnet-uc peer's AV, BV, MSV ignore the priority |
+| `int32_t uc_remote_write_null(uint32_t device, uint32_t type, uint32_t instance, uint32_t prop, uint32_t priority, uint32_t timeout_ms)` | `(iiiiii)i` | `bacnet.remote` (`bacnet.local` for the own device) | `UC_OK` | WriteProperty NULL at `priority`; blocking and cancellation as for `uc_remote_read`; effect on a BACnet-uc node as for `uc_prop_write_null` |
 | `int32_t uc_cov_subscribe(uint32_t device, uint32_t type, uint32_t instance, uint32_t lifetime_s)` | `(iiii)i` | `bacnet.local` for local, `bacnet.remote` for remote | subscription id ≥ 0 | Present_Value only; current value delivered once, then changes ([bacnet.md](bacnet.md#52-client-for-applications)); `NO_MEM` when the application's or the node's table (16) is full |
 | `int32_t uc_cov_unsubscribe(int32_t sub_id)` | `(i)i` | - | `UC_OK` | only this instance's subscriptions (`NOT_FOUND` otherwise); no event of that subscription is delivered afterwards |
 | `int32_t uc_io_find(const char *name, uint32_t len)` | `(ii)i` | `io` | channel id ≥ 0 | `NOT_FOUND` |
 | `int32_t uc_io_read(int32_t channel, double *out)` | `(ii)i` | `io` | `UC_OK` | di/do 0/1, ai mV, ao %; forced value while forced; `NOT_FOUND`, `IO` |
 | `int32_t uc_io_write(int32_t channel, double value)` | `(iF)i` | `io` | `UC_OK` | outputs only (`PERM` for inputs); `INVALID` for NaN/infinities; do: non-zero = 1; ao clamped to 0..100 |
-| `int32_t uc_kv_get(const char *key, uint32_t key_len, void *buf, uint32_t buf_len)` | `(iiii)i` | `kv` | stored length (may exceed `buf_len`; `min(len, buf_len)` bytes copied) | key 1..31 chars of `[A-Za-z0-9_.-]`; `NOT_FOUND`, `IO` (storage not ready or read error). `buf_len` 0 queries the length |
-| `int32_t uc_kv_set(const char *key, uint32_t key_len, const void *val, uint32_t val_len)` | `(iiii)i` | `kv` | `UC_OK` | ≤ `CONFIG_UC_APP_KV_VALUE_MAX` (256) bytes else `INVALID`; written atomically (`<key>~` then rename) to `/lfs/data/<app>/<key>`; `IO` |
+| `int32_t uc_kv_get(const char *key, uint32_t key_len, void *buf, uint32_t buf_len)` | `(iiii)i` | `kv` | stored length (may exceed `buf_len`; `min(len, buf_len)` bytes copied) | key 1..31 chars of `[A-Za-z0-9_.-]`; `NOT_FOUND`, `IO` (storage not ready, read error, or at once while the application is being stopped, except in `uc_app_deinit()`). `buf_len` 0 queries the length |
+| `int32_t uc_kv_set(const char *key, uint32_t key_len, const void *val, uint32_t val_len)` | `(iiii)i` | `kv` | `UC_OK` | ≤ `CONFIG_UC_APP_KV_VALUE_MAX` (256) bytes else `INVALID`; written atomically (`<key>~` then rename) to `/lfs/data/<app>/<key>`; `IO` (also at once while the application is being stopped, except in `uc_app_deinit()`) |
 
 Value conversions: REAL/DOUBLE ↔ value (REAL: finite, within the float
 range); UNSIGNED, SIGNED, ENUMERATED ↔ value (integral and within the
@@ -278,6 +315,27 @@ give `UC_ERR_TYPE`. The `Values` comment of `bacnet_uc.h` states these
 rules, and the host stub (`wasm/sdk/host-stub`) applies them, so an app's
 stub tests see the same `UC_ERR_INVALID` as the node.
 
+Datatypes for `uc_remote_write`: the host does not ask the remote device for
+the datatype; it encodes the value with the datatype from bacnet-stack's
+table of constructed properties (`bacapp_known_property_tag()`) or, for
+primitive properties, from its own table (`uc_value_from_double()` in
+[`uc_common.c`](../firmware/src/common/uc_common.c)):
+
+| Property | Datatype |
+|----------|----------|
+| Present_Value, Relinquish_Default, Priority_Array of AI, AO, AV, Loop, Pulse Converter, Lighting Output | REAL |
+| … of BI, BO, BV, Binary Lighting Output | ENUMERATED (BI/BO/BV: 0.0 or 1.0 only) |
+| … of MSI, MSO, MSV, Positive Integer Value, Accumulator | UNSIGNED |
+| … of Integer Value | SIGNED |
+| … of Large Analog Value | DOUBLE |
+| COV_Increment, High_Limit, Low_Limit, Deadband, Min_Pres_Value, Max_Pres_Value, Resolution | the Present_Value datatype for Large Analog Value, Integer Value (COV_Increment and Deadband: UNSIGNED) and Positive Integer Value; REAL otherwise |
+| Loop: Setpoint, Controlled_Variable_Value, Proportional/Integral/Derivative_Constant, Bias, Maximum_Output, Minimum_Output; Lighting Output: Tracking_Value, Default_Ramp_Rate, Default_Step_Increment, Min_Actual_Value, Max_Actual_Value | REAL |
+| Loop: Action; Units, Polarity, Event_State, Reliability, Notify_Type; Device: System_Status, Segmentation_Supported | ENUMERATED |
+| Out_Of_Service, Event_Detection_Enable; Device: Daylight_Savings_Status | BOOLEAN |
+| Number_Of_States, Time_Delay, Notification_Class, Minimum_On_Time, Minimum_Off_Time, Change_Of_State_Count, Elapsed_Active_Time, Update_Interval, Default_Fade_Time; Device: APDU_Timeout, APDU_Segment_Timeout, Number_Of_APDU_Retries, Max_APDU_Length_Accepted, Max_Segments_Accepted, Vendor_Identifier, Database_Revision, Protocol_Version, Protocol_Revision, Max_Info_Frames, Max_Master | UNSIGNED |
+| Device: UTC_Offset | SIGNED |
+| any other property, or Present_Value of any other object type | not written: `UC_ERR_TYPE` |
+
 Priorities: only AO, BO and MSO have a priority array on BACnet-uc nodes;
 the value objects AV, BV and MSV take every write whatever its priority, and a
 relinquish of them succeeds without effect ([bacnet.md](bacnet.md#31-object-types)).
@@ -288,16 +346,32 @@ return `UC_ERR_PERM`; BV and MSV ignore it. The host stub does the same.
 priority) also for value objects.
 
 Blocking: remote requests and kv file access block the calling application
-thread only. The watchdog is paused while they block. Local object access
-goes through the BACnet executor and takes at most one BACnet loop.
+thread only. The watchdog is paused while they block, except once a stop is
+pending: a stop cancels them (a remote request in flight returns
+`UC_ERR_TIMEOUT` within about 50 ms, further calls fail at once until
+`uc_app_deinit()`, whose blocking calls count against the watchdog; section
+3.1). A watchdog expiry cancels them the same way. Local object access goes
+through the BACnet executor and takes at most one BACnet loop.
 
 ### 4.3 C library (libc-builtin)
 
 Modules may import the libc-builtin functions listed in
 [`uc_libc.h`](../wasm/sdk/include/uc_libc.h) from module `env` (`printf`
 family, string functions, `malloc` family on the app heap, `strtol`,
-character classes). `printf` output goes to the console, not to the log; use
-`uc_log`. Any other import makes the load fail.
+character classes). Any other import makes the load fail.
+
+Output of `printf`, `vprintf`, `puts` and `putchar` is not written to the
+console: the firmware collects it per line (up to `\n`) and logs each line
+like `uc_log` at info level, from log source `uc_app` as
+`"<app>: <line>"` (`uc_app: <app>: ...` in the log), with the same rules:
+control characters replaced by blanks, cut to 120 characters, and the
+20 lines per second of the application's `uc_log` budget. An unfinished line
+is logged when the callback returns. Runtime diagnostics that WAMR prints in
+the application's thread are handled the same way, so a module cannot write
+untagged or unlimited text into the log
+([`uc_app_host_api.c`](../firmware/src/apps/uc_app_host_api.c),
+`modules/wasm-micro-runtime/wamr_zephyr_glue.c`). Prefer `uc_log` (or
+`uc_logf()` of `uc_util.h`), which also selects the level.
 
 ## 5. Memory model
 
