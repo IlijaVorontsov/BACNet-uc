@@ -147,6 +147,10 @@ A review in five areas (config, flash, MCUboot, logs, security) confirmed about 
 
 VERSION 0.4.0. All targets build without warnings (F767 plain, MCXN947, H563, native_sim, both sysbuild MCUboot variants, F767 `overlay-mcuboot.conf`). The e2e now also checks: SMP delete, bare `mqtt`, `mqtt/lkg`/`mqtt/trial`, other subtrees and invalid values are refused; an empty value persists; `logs 50` keeps the newest lines; old-root retained messages are cleared.
 
+A second review of these fixes found 8 more issues (LKG validation of unstored keys, a split write leaving no trial, trial re-check on LKG change, the revert after an SMP confirm, SMP load error logs, ghost retained messages after a factory reset, SMP buf_size vs MTU, log edge cases). They are fixed in 8f8c817. The full e2e passes on that commit.
+
+Relayed 2026-09-25 via one-shot Routines: to device-management (session_01KfM53M...): M4-M6 done, with the interface summary. To BACnet (session_017TmxUQ...): please keep the MCXN947 W25Q64 storage_partition below 0x7F0000.
+
 #### FW-06 announcement (made before the code landed)
 
 The user approved **M4, M5 and M6 now, M7 later**. Per HIL FW-06, these are the interface and layout changes *before* the code lands:
