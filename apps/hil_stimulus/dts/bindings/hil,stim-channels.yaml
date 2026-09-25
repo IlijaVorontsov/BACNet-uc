@@ -30,12 +30,12 @@ child-binding:
       type: string
       required: true
       enum:
-        - "di"          # stimulus drives a DUT digital input (0/1/z)
+        - "di"          # stimulus drives a DUT digital input (0/z; 1 only with drive-high)
         - "do"          # stimulus reads a DUT digital output (EXTI timestamps)
         - "ai"          # stimulus sources ("src") and/or senses ("sense") a DUT analog input
         - "ao"          # stimulus captures a DUT PWM output (pwms) and reads its level (gpios)
         - "nrst"        # 2N7002/BSS138 gate driving DUT NRST (1 = reset asserted)
-        - "nrst-sense"  # DUT NRST read back through 10 kOhm (1 = DUT in reset); no pull!
+        - "nrst-sense"  # DUT NRST read back (1 = DUT in reset): F767 through 10 kOhm, P1 through a BSS138 gate-sense inverter; no internal pull
         - "pwr"         # inverter gate driving the load-switch ON pin (1 = DUT powered)
         - "sync"        # SYNC output to the logic analyzer
         - "marker"      # DUT marker/trace output read by the stimulus (EXTI timestamps)
@@ -62,3 +62,9 @@ child-binding:
     dut-pin:
       type: string
       description: DUT pin and connector position (informational).
+    drive-high:
+      type: boolean
+      description: |
+        di only: level 1 drives the line push-pull high (needed for an
+        active-high DUT input such as the F767 B1 on PC13). Without it a di
+        channel is 0/z only and level 1 is refused with ERR -1 (HIL.md D40).

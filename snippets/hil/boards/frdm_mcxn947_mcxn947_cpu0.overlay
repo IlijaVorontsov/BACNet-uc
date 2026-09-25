@@ -1,0 +1,70 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * HIL snippet (-S hil), FRDM-MCXN947 cpu0 DUT (profile P1), Zephyr v4.4.2.
+ * Applies to both apps (firmware/ BACnet and apps/mqtt_tls): it references
+ * only SoC/board nodes, never &uc_io.
+ *
+ *   function     MCU     FRDM pin  Arduino  notes
+ *   MS/TP TX     P4_2    J1-4      D1       FC2_P2 = LPUART2 TXD (combined LPI2C+LPUART mode) -> DI
+ *   MS/TP RX     P4_3    J1-2      D0       FC2_P3 = LPUART2 RXD <- RO through 2.2 kOhm, pad pull-up
+ *   MS/TP DE     P0_24   J2-8      D11      GPIO push-pull, 1 = drive; DE and /RE tied;
+ *                                           10 kOhm pull-down on the DE net (pad is DIS after reset)
+ *   marker m0    P0_26   J2-10     D12      GPIO, 100 kOhm pull-down on the rig side
+ *   marker m1    P0_25   J2-12     D13
+ *   marker m2    P4_0    J2-18     SDA      FC2_P0 pad, never muxed while CONFIG_I2C=n
+ *   marker m3    P4_1    J2-20     SCL      FC2_P1 pad, never muxed while CONFIG_I2C=n
+ *   GND                  J2-14, J3-12, J3-14
+ *
+ * Not in devicetree (rig side only): RESET_B at J3-6 (Arduino RESET), the switched
+ * MCU rail VDD_ANA at J2-16 (Arduino AREF), the J24 load switch.
+ */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+/*
+ * LPUART2 TXD/RXD are on FC2_P2/FC2_P3 (P4_2/P4_3) only while LP_FLEXCOMM2 runs
+ * in the combined LPI2C+LPUART mode. mfd_nxp_lp_flexcomm.c selects that mode
+ * from the devicetree status of the children (lpuart2 okay AND lpi2c2 okay),
+ * not from Kconfig. Disabling lpi2c2 would switch FC2 to LPUART-only mode, in
+ * which the UART signals move to other FC2 pins. So lpi2c2 stays okay (board
+ * default); with CONFIG_I2C=n (both apps) its driver is not built and P4_0/P4_1
+ * stay free for the markers m2/m3.
+ */
+&flexcomm2_lpi2c2 {
+	status = "okay";
+};
+
+&flexcomm2_lpuart2 {
+	/* board pinctrl pinmux_flexcomm2_lpuart: P4_2 TX, P4_3 RX, bias-pull-up */
+	current-speed = <38400>;
+	status = "okay";
+};
+
+/* DAC0_OUT is P4_2 (board pinmux_dac0): it must never take the MS/TP TX pin. */
+&dac0 {
+	status = "disabled";
+};
+
+/*
+ * LPSPI1 (arduino_spi) would mux P0_24..P0_27 = DE, m1, m0 and the green LED
+ * (catalog do1) as soon as some build enables CONFIG_SPI.
+ */
+&flexcomm1_lpspi1 {
+	status = "disabled";
+};
+
+/ {
+	aliases {
+		mstp-uart0 = &flexcomm2_lpuart2;
+	};
+
+	zephyr,user {
+		hil-marker-gpios = <&gpio0 26 GPIO_ACTIVE_HIGH>,
+				   <&gpio0 25 GPIO_ACTIVE_HIGH>,
+				   <&gpio4 0 GPIO_ACTIVE_HIGH>,
+				   <&gpio4 1 GPIO_ACTIVE_HIGH>;
+		/* software driver enable for the MS/TP port (BACnet roadmap 3.1) */
+		mstp-de-gpios = <&gpio0 24 GPIO_ACTIVE_HIGH>;
+	};
+};

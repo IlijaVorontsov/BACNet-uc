@@ -4,6 +4,8 @@ Generated from design v2.1 (see [HIL.md](../HIL.md) §9). IDs are stable across 
 
 Tiers: **release** = unmodified release artifact (plus the D24 site allowlist); **instrumented** = `-S hil` images; **rig** = rig self-tests; **sil** = native_sim / stand-ins.
 
+> **v2.2 (P1 = FRDM-MCXN947):** the pass criteria that change for the MCXN947 DUT are listed in [HIL.md §9.1](../HIL.md). Where §9.1 and this table differ, §9.1 wins.
+
 ## IT1 (26 tests)
 
 | ID | Area | Test | Tier | Profiles | Instruments | Pass criterion | Needs firmware |

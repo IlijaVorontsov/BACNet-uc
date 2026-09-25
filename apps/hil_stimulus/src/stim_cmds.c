@@ -7,7 +7,12 @@
  *   OK [key=value ...]            or    ERR <negative code> <text>
  * Codes are fixed protocol numbers (newlib / Zephyr minimal-libc numbering).
  * Timestamps: ns since boot on the stimulus 64-bit cycle counter
- * (SysTick, 216 MHz -> 4.63 ns quantum).
+ * (SysTick: nucleo_f767zi 216 MHz -> 4.63 ns, frdm_mcxn236 150 MHz -> 6.67 ns).
+ *
+ * Board-specific code is confined to three blocks selected from devicetree:
+ * the STM32 on-chip DAC (EN=0 for Hi-Z), the RS-485 "transmission complete"
+ * flag (STM32 USART ISR.TC / NXP LPUART STAT.TC) and the NXP FlexPWM capture
+ * preparation (free-running 16-bit counter for a capture-only submodule).
  */
 #include <errno.h>
 #include <stdlib.h>
@@ -27,15 +32,36 @@
 #include <zephyr/sys/util.h>
 
 #include <soc.h>
-#if DT_NODE_HAS_STATUS(DT_NODELABEL(dac1), okay) && DT_NODE_HAS_COMPAT(DT_NODELABEL(dac1), st_stm32_dac)
-#include <stm32_ll_dac.h>
-#define STIM_STM32_DAC 1
-#endif
-#include <stm32_ll_usart.h>
 
 #include "stim.h"
 
 #define STIM_NODE DT_NODELABEL(stim)
+
+/* STM32 on-chip DAC (F7): src_off disables the channel (EN=0, output Hi-Z). */
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(dac1), okay) && DT_NODE_HAS_COMPAT(DT_NODELABEL(dac1), st_stm32_dac)
+#include <stm32_ll_dac.h>
+#define STIM_STM32_DAC 1
+#endif
+
+/* MS/TP injector UART: the "transmission complete" flag is read from the register block. */
+#if DT_NODE_HAS_PROP(STIM_NODE, rs485_uart)
+#define RS485_NODE DT_PHANDLE(STIM_NODE, rs485_uart)
+#if DT_NODE_HAS_COMPAT(RS485_NODE, st_stm32_usart) || DT_NODE_HAS_COMPAT(RS485_NODE, st_stm32_uart)
+#include <stm32_ll_usart.h>
+#define STIM_RS485_STM32 1
+#elif DT_NODE_HAS_COMPAT(RS485_NODE, nxp_lpuart)
+#include <fsl_lpuart.h>
+#define STIM_RS485_LPUART 1
+#else
+#error "rs485-uart: unsupported UART (need its transmission-complete flag)"
+#endif
+#endif
+
+/* NXP FlexPWM capture (pwm_mcux): see cap_prepare(). */
+#if DT_HAS_COMPAT_STATUS_OKAY(nxp_imx_pwm) && defined(CONFIG_PWM_CAPTURE)
+#include <fsl_pwm.h>
+#define STIM_NXP_FLEXPWM 1
+#endif
 /* DUT profile this channel map is wired for (D22); "stim info" reports it. */
 #define STIM_PROFILE DT_PROP(STIM_NODE, profile)
 
@@ -68,11 +94,28 @@ struct chan {
 	struct adc_dt_spec sense;
 	struct dac_dt_spec src;
 	struct pwm_dt_spec cap;
+#ifdef STIM_NXP_FLEXPWM
+	uintptr_t cap_base; /* FlexPWM register block of the capture submodule (0: none) */
+	uint8_t cap_sm;     /* submodule index */
+#endif
 	int16_t lo_mv, hi_mv;
 	uint8_t num, den;
+	bool drive_high; /* di: level 1 allowed (push-pull high) */
 	const char *stim_pin;
 	const char *dut_pin;
 };
+
+#ifdef STIM_NXP_FLEXPWM
+#define CAP_IS_FLEXPWM(n)                                                                        \
+	COND_CODE_1(DT_NODE_HAS_PROP(n, pwms),                                                   \
+		    (DT_NODE_HAS_COMPAT(DT_PWMS_CTLR(n), nxp_imx_pwm)), (0))
+#define CAP_NXP_INIT(n)                                                                          \
+	.cap_base = COND_CODE_1(CAP_IS_FLEXPWM(n),                                               \
+				(DT_REG_ADDR(DT_PARENT(DT_PWMS_CTLR(n)))), (0)),                 \
+	.cap_sm = COND_CODE_1(CAP_IS_FLEXPWM(n), (DT_PROP(DT_PWMS_CTLR(n), index)), (0)),
+#else
+#define CAP_NXP_INIT(n)
+#endif
 
 #define CHAN_INIT(n)                                                                             \
 	{                                                                                        \
@@ -82,12 +125,14 @@ struct chan {
 		.sense = ADC_DT_SPEC_GET_BY_NAME_OR(n, sense, {0}),                              \
 		.src = DAC_DT_SPEC_GET_BY_NAME_OR(n, src, {0}),                                  \
 		.cap = PWM_DT_SPEC_GET_OR(n, {0}),                                               \
+		CAP_NXP_INIT(n)                                                                  \
 		.lo_mv = COND_CODE_1(DT_NODE_HAS_PROP(n, range_mv),                              \
 				     (DT_PROP_BY_IDX(n, range_mv, 0)), (0)),                     \
 		.hi_mv = COND_CODE_1(DT_NODE_HAS_PROP(n, range_mv),                              \
 				     (DT_PROP_BY_IDX(n, range_mv, 1)), (3300)),                  \
 		.num = DT_PROP_BY_IDX(n, scale, 0),                                              \
 		.den = DT_PROP_BY_IDX(n, scale, 1),                                              \
+		.drive_high = DT_PROP(n, drive_high),                                            \
 		.stim_pin = DT_PROP_OR(n, stim_pin, "-"),                                        \
 		.dut_pin = DT_PROP_OR(n, dut_pin, "-"),                                          \
 	}
@@ -98,8 +143,14 @@ static const struct chan chans[] = {DT_FOREACH_CHILD_STATUS_OKAY_SEP(STIM_NODE, 
 enum { ST_Z = 0, ST_0, ST_1 };
 static uint8_t dstate[NCHAN]; /* di/sync/nrst: last commanded state */
 static bool src_on[NCHAN];    /* ai: source enabled */
+static bool src_nak[NCHAN];   /* ai: external source DAC did not answer at the last safe/init */
 static bool pwr_on = true;
 static int32_t vdda_mv = 3300;
+
+/* The analog sources also refuse while the sensed DUT MCU rail (channel "v3v3")
+ * is below this, which covers power cuts the stimulus did not command
+ * (usb_port, HIL.md D39). */
+#define DUT_ON_MV 3000
 
 static const struct chan *find(const char *name)
 {
@@ -166,6 +217,12 @@ static int level_arg(const char *s, bool allow_z)
 		return ST_Z;
 	}
 	return -EINVAL;
+}
+
+/* D40: a di line is 0/z unless its node sets drive-high. */
+static bool level_allowed(const struct chan *c, int st)
+{
+	return !(c->kind == K_DI && st == ST_1 && !c->drive_high);
 }
 
 /* --------------------------------------------------------- timebase ---- */
@@ -354,13 +411,29 @@ static void src_off(const struct chan *c)
 		return;
 	}
 #endif
-	(void)dac_write_value_dt(&c->src, 0); /* e.g. MCP4728: 0 V */
+	/* e.g. MCP4728: 0 V. Its driver reports "ready" without probing the bus,
+	 * so a missing AFE shows up here; "dac" then answers ERR -19 (hardware
+	 * absent) instead of -5, as for a missing on-chip DAC. */
+	src_nak[idx(c)] = dac_write_value_dt(&c->src, 0) != 0;
 	src_on[idx(c)] = false;
+}
+
+/* Reference (full scale) of a channel's source DAC in mV. The STM32 on-chip DAC
+ * is ratiometric to VDDA, measured from VREFINT; an external DAC (MCP4728)
+ * declares its reference as zephyr,vref-mv on its channel node. */
+static uint32_t src_ref_mv(const struct chan *c)
+{
+#ifdef STIM_STM32_DAC
+	if (c->src.dev == DEVICE_DT_GET(DT_NODELABEL(dac1))) {
+		return (uint32_t)vdda_mv;
+	}
+#endif
+	return c->src.vref_mv != 0U ? c->src.vref_mv : (uint32_t)vdda_mv;
 }
 
 static int adc_mean(const struct chan *c, uint32_t n, int32_t *raw_mean)
 {
-	int16_t sample;
+	uint16_t sample; /* single-ended; up to 16 bit (MCX LPADC) */
 	int64_t sum = 0;
 	struct adc_sequence seq = {.buffer = &sample, .buffer_size = sizeof(sample)};
 	int rc = adc_channel_setup_dt(&c->sense);
@@ -373,6 +446,18 @@ static int adc_mean(const struct chan *c, uint32_t n, int32_t *raw_mean)
 		sum += sample;
 	}
 	*raw_mean = (int32_t)((sum + n / 2) / n);
+	return rc;
+}
+
+/* Mean of n samples of a sense input in mV at the rig node (divider applied). */
+static int sense_mv(const struct chan *c, uint32_t n, int32_t *raw, int32_t *mv)
+{
+	/* full scale from the channel's zephyr,resolution (12 on F767, 16 on MCX) */
+	int32_t fs = (int32_t)BIT(c->sense.resolution ? c->sense.resolution : 12U) - 1;
+	int rc = adc_mean(c, n, raw);
+
+	*mv = (int32_t)(((int64_t)*raw * vdda_mv * c->num + (int64_t)(fs / 2) * c->den) /
+			((int64_t)fs * c->den));
 	return rc;
 }
 
@@ -513,12 +598,32 @@ static int cmd_dout(const struct shell *sh, size_t argc, char **argv)
 	if (st < 0) {
 		return err(sh, E_INVAL, "level");
 	}
+	if (!level_allowed(c, st)) {
+		return err(sh, E_PERM, "di is 0/z only");
+	}
 	if (drive(c, (uint8_t)st) != 0) {
 		return err(sh, E_IO, "gpio");
 	}
 	t = now_ns();
 	shell_print(sh, "OK t_ns=%llu", (unsigned long long)t);
 	return 0;
+}
+
+/* Level of a pin without reconfiguring it. ao pins stay in their timer function:
+ * STM32 IDR reads AF pins; on NXP FlexPWM the submodule's OCTRL.PWMx_IN bit is the
+ * level at the capture input (channel 0 = A, 1 = B, 2 = X in pwm_mcux). */
+static int pin_level(const struct chan *c)
+{
+#ifdef STIM_NXP_FLEXPWM
+	if (c->kind == K_AO && c->cap_base != 0U && c->cap.channel <= 2U) {
+		static const uint16_t in_mask[] = {PWM_OCTRL_PWMA_IN_MASK, PWM_OCTRL_PWMB_IN_MASK,
+						   PWM_OCTRL_PWMX_IN_MASK};
+		const PWM_Type *base = (const PWM_Type *)c->cap_base;
+
+		return (base->SM[c->cap_sm].OCTRL & in_mask[c->cap.channel]) != 0U ? 1 : 0;
+	}
+#endif
+	return c->gpio.port != NULL ? gpio_pin_get_dt(&c->gpio) : -1;
 }
 
 /* stim din <chan> */
@@ -534,7 +639,7 @@ static int cmd_din(const struct shell *sh, size_t argc, char **argv)
 	if (c == NULL || c->gpio.port == NULL) {
 		return err(sh, E_NOENT, "channel");
 	}
-	v = gpio_pin_get_dt(&c->gpio); /* works for inputs, outputs and AF pins (IDR) */
+	v = pin_level(c); /* inputs, outputs and ao pins in their timer function */
 	if (v < 0) {
 		return err(sh, E_IO, "gpio");
 	}
@@ -590,6 +695,9 @@ static int cmd_pulse(const struct shell *sh, size_t argc, char **argv)
 	}
 	if (act == idle) {
 		return err(sh, E_INVAL, "active level equals idle");
+	}
+	if (!level_allowed(c, (int)act) || !level_allowed(c, idle)) {
+		return err(sh, E_PERM, "di is 0/z only");
 	}
 	total = (uint64_t)count * period;
 	if (total > 600000000ULL) {
@@ -697,6 +805,9 @@ static int cmd_lat(const struct shell *sh, size_t argc, char **argv)
 	if (lo < 0 || li < 0 || u32_arg(argv[5], 1, 60000, &tmo)) {
 		return err(sh, E_INVAL, "level/timeout");
 	}
+	if (!level_allowed(out, lo)) {
+		return err(sh, E_PERM, "di is 0/z only");
+	}
 	li = (li == ST_1) ? 1 : 0;
 	if (gpio_pin_get_dt(&in->gpio) == li) {
 		return err(sh, E_ALREADY, "in already at level");
@@ -727,7 +838,7 @@ static int cmd_lat(const struct shell *sh, size_t argc, char **argv)
 static int cmd_dac(const struct shell *sh, size_t argc, char **argv)
 {
 	const struct chan *c;
-	uint32_t mv, code;
+	uint32_t mv, code, ref, fs;
 	int rc;
 
 	if (argc != 3) {
@@ -740,7 +851,7 @@ static int cmd_dac(const struct shell *sh, size_t argc, char **argv)
 	if (c->src.dev == NULL) {
 		return err(sh, E_NOTSUP, "channel has no source (fixed divider?)");
 	}
-	if (!device_is_ready(c->src.dev)) {
+	if (!device_is_ready(c->src.dev) || src_nak[idx(c)]) {
 		return err(sh, E_NODEV, "source device");
 	}
 	if (strcmp(argv[2], "z") == 0) {
@@ -758,7 +869,18 @@ static int cmd_dac(const struct shell *sh, size_t argc, char **argv)
 		return err(sh, E_PERM, "dut unpowered");
 	}
 	vdda_update();
-	code = MIN((mv * 4095U + (uint32_t)vdda_mv / 2U) / (uint32_t)vdda_mv, 4095U);
+	if (mv > 0) {
+		const struct chan *s = find("v3v3");
+		int32_t raw, smv;
+
+		if (s != NULL && s->sense.dev != NULL &&
+		    (sense_mv(s, 4, &raw, &smv) != 0 || smv < DUT_ON_MV)) {
+			return err(sh, E_PERM, "dut unpowered (v3v3 sense)");
+		}
+	}
+	ref = src_ref_mv(c);
+	fs = BIT(c->src.channel_cfg.resolution ? c->src.channel_cfg.resolution : 12U) - 1U;
+	code = MIN((mv * fs + ref / 2U) / ref, fs);
 	rc = dac_channel_setup_dt(&c->src);
 	if (rc == 0) {
 		rc = dac_write_value_dt(&c->src, code);
@@ -767,9 +889,8 @@ static int cmd_dac(const struct shell *sh, size_t argc, char **argv)
 		return err(sh, E_IO, "dac");
 	}
 	src_on[idx(c)] = true;
-	k_usleep(1000); /* >= 10 tau of the 1 kOhm / 100 nF node */
-	shell_print(sh, "OK mv=%u code=%u vdda_mv=%d", (code * (uint32_t)vdda_mv + 2047U) / 4095U,
-		    code, vdda_mv);
+	k_usleep(2500); /* >= 10 tau of the 2.2 kOhm / 100 nF node (tau 0.22 ms; 1 kOhm: 25 tau) */
+	shell_print(sh, "OK mv=%u code=%u vdda_mv=%d", (code * ref + fs / 2U) / fs, code, vdda_mv);
 	return 0;
 }
 
@@ -795,12 +916,11 @@ static int cmd_adc(const struct shell *sh, size_t argc, char **argv)
 	}
 	vdda_update();
 	cmd_begin(n);
-	if (adc_mean(c, n, &raw) != 0) {
+	if (sense_mv(c, n, &raw, &mv) != 0) {
 		cmd_end();
 		return err(sh, E_IO, "adc");
 	}
 	cmd_end();
-	mv = (int32_t)(((int64_t)raw * vdda_mv * c->num + 2047 * c->den) / (4095 * c->den));
 	shell_print(sh, "OK mv=%d raw=%d n=%u vdda_mv=%d", mv, raw, n, vdda_mv);
 	return 0;
 }
@@ -886,12 +1006,65 @@ static int cmd_rstmon(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+#ifdef STIM_NXP_FLEXPWM
+/*
+ * pwm_mcux (Zephyr 4.4.2) as a capture-only user:
+ *  - it never programs INIT/VAL1, so a submodule without a PWM output keeps the
+ *    reset values (modulo 0: the counter never advances and every capture reads
+ *    the same value); it computes the wrap from VAL1 - INIT;
+ *  - it starts the counter only when no submodule of the FlexPWM runs at all
+ *    (MCTRL.RUN == 0), so the second capture submodule would never be started.
+ * Make the submodule a free-running 16-bit counter (INIT 0, VAL1 0xFFFF) and
+ * run it. The stimulus never drives a PWM output, so nothing else owns it.
+ */
+static void cap_prepare(const struct chan *c)
+{
+	PWM_Type *base = (PWM_Type *)c->cap_base;
+	uint8_t sm = (uint8_t)BIT(c->cap_sm);
+
+	if (base == NULL) {
+		return;
+	}
+	if (base->SM[c->cap_sm].VAL1 != 0xFFFFU || base->SM[c->cap_sm].INIT != 0U) {
+		PWM_SetPwmLdok(base, sm, false);
+		base->SM[c->cap_sm].INIT = 0U;
+		base->SM[c->cap_sm].VAL1 = 0xFFFFU;
+		PWM_SetPwmLdok(base, sm, true); /* loaded at start, or at the next reload */
+	}
+	if ((base->MCTRL & PWM_MCTRL_RUN(sm)) == 0U) {
+		PWM_StartTimer(base, sm);
+	}
+}
+#else
+static inline void cap_prepare(const struct chan *c)
+{
+	ARG_UNUSED(c);
+}
+#endif
+
+/* One single-mode capture. The driver is disarmed afterwards in every case:
+ * pwm_mcux leaves capture_active set after a completed single capture, so the
+ * next capture on that submodule would return -EBUSY (pwm_stm32 disarms itself;
+ * a second disable is harmless). */
+static int cap_once(const struct chan *c, pwm_flags_t type, uint64_t *period, uint64_t *pulse,
+		    uint32_t tmo)
+{
+	int rc;
+
+	cap_prepare(c);
+	rc = pwm_capture_nsec(c->cap.dev, c->cap.channel,
+			      c->cap.flags | type | PWM_CAPTURE_MODE_SINGLE, period, pulse,
+			      K_MSEC(tmo));
+	(void)pwm_disable_capture(c->cap.dev, c->cap.channel);
+	return rc;
+}
+
 /* stim pwmcap <chan> [timeout_ms=200]  (It2 cap "pwmcap") */
 static int cmd_pwmcap(const struct shell *sh, size_t argc, char **argv)
 {
 	const struct chan *c;
 	uint32_t tmo = 200;
-	uint64_t period, pulse;
+	uint64_t period = 0, pulse = 0, unused;
 	int rc;
 
 	if (argc < 2 || argc > 3) {
@@ -907,13 +1080,18 @@ static int cmd_pwmcap(const struct shell *sh, size_t argc, char **argv)
 	if (argc == 3 && u32_arg(argv[2], 5, 60000, &tmo)) {
 		return err(sh, E_INVAL, "timeout");
 	}
-	cmd_begin(tmo);
-	rc = pwm_capture_nsec(c->cap.dev, c->cap.channel,
-			      c->cap.flags | PWM_CAPTURE_TYPE_BOTH | PWM_CAPTURE_MODE_SINGLE, &period,
-			      &pulse, K_MSEC(tmo));
+	cmd_begin(2U * tmo);
+	rc = cap_once(c, PWM_CAPTURE_TYPE_BOTH, &period, &pulse, tmo);
+	if (rc == -ENOTSUP) {
+		/* pwm_mcux captures one type per arm: period, then pulse (next cycle) */
+		rc = cap_once(c, PWM_CAPTURE_TYPE_PERIOD, &period, &unused, tmo);
+		if (rc == 0) {
+			rc = cap_once(c, PWM_CAPTURE_TYPE_PULSE, &unused, &pulse, tmo);
+		}
+	}
 	cmd_end();
 	if (rc == -EAGAIN) {
-		int lv = c->gpio.port ? gpio_pin_get_dt(&c->gpio) : -1;
+		int lv = pin_level(c);
 
 		/* no edges: static level = 0 % or 100 % duty */
 		shell_print(sh, "OK period_ns=0 pulse_ns=0 duty_ppm=%d static=1 lv=%d",
@@ -922,6 +1100,9 @@ static int cmd_pwmcap(const struct shell *sh, size_t argc, char **argv)
 	}
 	if (rc == -ERANGE) {
 		return err(sh, E_RANGE, "period exceeds timer range");
+	}
+	if (rc == -ENOTSUP) {
+		return err(sh, E_NOTSUP, "capture not supported on this channel");
 	}
 	if (rc != 0) {
 		return err(sh, E_IO, "capture");
@@ -941,11 +1122,22 @@ static uint8_t slot_buf[RS485_SLOTS][RS485_SLOT_SIZE];
 static uint16_t slot_len[RS485_SLOTS];
 
 #if DT_NODE_HAS_PROP(STIM_NODE, rs485_uart)
-#define RS485_NODE DT_PHANDLE(STIM_NODE, rs485_uart)
 static const struct device *const rs485 = DEVICE_DT_GET(RS485_NODE);
 #else
 static const struct device *const rs485;
 #endif
+
+/* Transmitter idle: last stop bit sent (hardware DE is released at this point). */
+static inline bool rs485_tx_done(void)
+{
+#if defined(STIM_RS485_STM32)
+	return LL_USART_IsActiveFlag_TC((USART_TypeDef *)DT_REG_ADDR(RS485_NODE)) != 0U;
+#elif defined(STIM_RS485_LPUART)
+	return (((LPUART_Type *)DT_REG_ADDR(RS485_NODE))->STAT & LPUART_STAT_TC_MASK) != 0U;
+#else
+	return true;
+#endif
+}
 
 static int hex_decode(const char *s, uint8_t *out, size_t max)
 {
@@ -1017,7 +1209,7 @@ static int cmd_rs485_baud(const struct shell *sh, size_t argc, char **argv)
 		return err(sh, E_NODEV, "rs485 uart");
 	}
 	cfg.baudrate = (uint32_t)(((int64_t)baud * (1000000 + skew)) / 1000000);
-	cfg.flow_ctrl = UART_CFG_FLOW_CTRL_RS485; /* keeps DEM set */
+	cfg.flow_ctrl = UART_CFG_FLOW_CTRL_RS485; /* keeps hardware DE (STM32 DEM, LPUART TXRTSE) */
 	if (uart_configure(rs485, &cfg) != 0) {
 		return err(sh, E_IO, "uart_configure");
 	}
@@ -1033,7 +1225,6 @@ static int cmd_rs485_tx(const struct shell *sh, size_t argc, char **argv)
 	size_t len;
 	uint32_t gap_idx[4], gap_us[4], ngap = 0, rep = 1, per_ms = 0;
 	uint64_t t0 = 0, t1 = 0, frame_ms;
-	USART_TypeDef *usart = (USART_TypeDef *)DT_REG_ADDR(RS485_NODE);
 
 	if (argc < 2) {
 		return err(sh, E_INVAL, "usage: stim rs485 tx <@slot|hex> [gap=i:us] [rep=n] [per_ms=p]");
@@ -1093,7 +1284,7 @@ static int cmd_rs485_tx(const struct shell *sh, size_t argc, char **argv)
 		for (size_t i = 0; i < len; i++) {
 			for (uint32_t g = 0; g < ngap; g++) {
 				if (gap_idx[g] == i) {
-					while (!LL_USART_IsActiveFlag_TC(usart)) {
+					while (!rs485_tx_done()) {
 					}
 					k_busy_wait(gap_us[g]);
 				}
@@ -1103,7 +1294,7 @@ static int cmd_rs485_tx(const struct shell *sh, size_t argc, char **argv)
 				t0 = k_cycle_get_64();
 			}
 		}
-		while (!LL_USART_IsActiveFlag_TC(usart)) {
+		while (!rs485_tx_done()) {
 		}
 		t1 = k_cycle_get_64();
 		if (per_ms && r + 1 < rep) {

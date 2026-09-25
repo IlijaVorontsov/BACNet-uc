@@ -1,55 +1,65 @@
-# HIL bill of materials
+# HIL bill of materials (v2.2)
 
-Prices are approximate (±30 %, EUR). It1 is the first purchase; It2/It3 are bought only when their tests are scheduled (see [HIL.md](../HIL.md) §11).
+Prices are approximate (±30 %, EUR). It1 is the first purchase. It2 and It3 items are bought only when their tests are scheduled (HIL.md §11).
 
-## IT1
+**v2.2 buys no boards.** The user owns every board the rig needs (D46).
 
-| Item | Qty | Purpose | ≈ € | Note |
-|---|---|---|---|---|
-| NUCLEO-F767ZI (MB1137) | 2 | P1 DUT and stimulus board (B3) | 60-70 | Confirm ownership with the user on day 0 before ordering; buy 1 if a DUT is already owned. DigiKey $34.39 (fetched this session, likely). Prefer silicon rev Z (IDCODE 0x10016451): check at commissioning. |
-| W25Q128JV SPI NOR breakout, 3.3 V, /WP and /HOLD tied high | 1-2 | /lfs storage required by the BACnet nucleo_f767zi overlay (SPI1 PA5/PA6/PB5, CS PD14) | 3-6 | Without it the BACnet image has no persistent storage, and PERS-01 cannot run. Buy from an EU-stock distributor (2-3 days); marketplace only for the spare. |
-| FX2 CY7C68013A 8-channel 24 MS/s logic analyzer clone (sigrok fx2lafw) | 1 | It1 LA map: nrst, m0, m1, di1, do3, do0, vcp_tx, sync | 8-15 | Connect to a host root port, not the switched hub. EU stock (2-3 days). |
-| Pololu 2810 Mini MOSFET Slide Switch with Reverse Voltage Protection, LV | 1 (+1 spare) | E5V power switch driven by the BSS138P inverter (fail-safe = DUT on) | 6-12 | Slide switch must be set to OFF so the ON pin controls it. EU Pololu distributor (2-3 days). |
-| 5 V regulated PSU, at least 2 A, with a terminal adapter (+5VA always-on rail) | 1 | Feeds the load switch (DUT E5V) and later the RS-485 bias | 10-15 | E5V must be 4.75-5.25 V and at most 500 mA (UM1974), including the ST-LINK share that flows from E5V while E5V is above VBUS. |
-| BSS138P (Nexperia) SOT-23 on SOT-23 adapters | 4 | NRST open-drain driver and power-switch inverter (plus spares) | 5 | VGS(th) 0.9-1.5 V. 2N7002 (1-2.5 V) is the fallback. |
-| Passive kit: 1 kOhm x30, 10k, 20k, 33k, 100k, 100R resistors; 100 nF x20, 1 uF capacitors | 1 set | Series resistors on every DUT line, AI nodes, dividers, senses, gate pull-downs | 8-12 | Bourns 4116R-1-102 networks are optional. |
-| Perfboards x2, 2.54 mm single male pins, a keyed 2-pin housing for the E5V/GND lead, DuPont jumper wires F-F and F-M (80) | 1 set | Hand-wired harness; single morpho pins soldered on the DUT: CN11-6, CN11-8, CN11-21, CN11-23, CN12-10, CN12-28 | 12-18 | Never populate CN11-5 (VDD) or CN11-7 (BOOT0). The stimulus needs no morpho pins. |
-| Powered USB hub from the uhubctl compatibility list | 1 | Per-port power recovery of the stimulus ST-LINK and the FTDI; enough ports | 40-60 | The DUT ST-LINK port is never switched in tests: its MCO is the DUT HSE, and it only powers down together with an E5V cut. |
-| Cat6 patch cables | 3 | DUT to host NIC, uplink | 6 |  |
-| USB3 GbE NIC, RTL8153 class | 0-1 | Dedicated DUT NIC if the host has only one | 0-15 | R-06 checks that link-down on this NIC is seen as carrier loss by the DUT. |
-| USB data cables matching the ports: ST-LINK V2-1 (micro-B, likely) x2 and the FX2 clone (mini-B or micro-B, check the unit) | 3 (+1 spare) | DUT ST-LINK, stimulus ST-LINK, FX2 | 6-10 | Data cables, not charge-only. |
-| HIL host: x86 N100 mini-PC, 16 GB, 512 GB SSD, 2x 2.5GbE (Intel i226), Ubuntu 24.04 | 0-1 | pytest/Twister, self-hosted runner, SDK 1.0.1 builds, netns services, tshark, sigrok | 180-250 | 0 if an existing Linux PC with 2 NICs is reused. |
-| Assumed owned (confirm with the user): DMM, soldering station, bench PSU with current limit | - | W1/W2 measurements (CN11 check, V_ON, NRST idle, DUT current), morpho soldering | 0 | If a bench PSU is missing, add a Korad KA3005P (It3 item) earlier. |
+## Owned: no purchase
 
-## IT2
+| Board | Qty | Role |
+|---|---|---|
+| FRDM-MCXN947 | 1 | P1 DUT (canonical) |
+| FRDM-MCXN236 | 1 | Stimulus (`apps/hil_stimulus`, profile P1) |
+| FRDM-MCXA156 | 1 | Fallback stimulus; otherwise MS/TP peer, MAC 4 (It2) |
+| FRDM-MCXA153 | 1 | MS/TP peer, MAC 3 (It2) |
+| nRF54L15 DK | several | #1: precision edge probe (It2, optional; set VDD to 3.3 V and disconnect the UART1 RTS/CTS group first). The rest are spares. |
+| nRF54LM20 DK | 1 | Alternative or bus-side edge probe (It3) |
 
-| Item | Qty | Purpose | ≈ € | Note |
-|---|---|---|---|---|
-| FRDM-MCXN947 | 1 | P2 DUT: network tests first, then the Arduino-header I/O subset | 30-40 | Keep the factory MCU-Link CMSIS-DAP firmware. Never fit J21. |
-| DreamSourceLab DSLogic Plus 16 ch (sigrok) | 1 | 16-channel LA map, MS/TP DE timing, stimulus latency calibration | 140 | Buy only after the seller confirms USB ID 2a0e:0020: the 2022 revisions 0x0030/0x0034 are DSView-only and sigrok-cli will not detect them. Otherwise buy the It3 Saleae now. Firmware and bitstreams are extracted from DSView (sigrok-fwextract-dreamsourcelab-dslogic). 256 Mbit buffer: every capture declares rate and length. |
-| FTDI USB-RS485-WE-1800-BT cable | 1 | mstpcap sniffer and host MS/TP node (MAC 7); built-in 120 R as bus end | 25-30 | Gated on FW-07 acceptance (D34). udev latency_timer=1 and ID_MM_DEVICE_IGNORE. |
-| TI THVD1450 on SOIC-8 adapters, with 10k DE pull-downs, 10k RO pull-ups and 100 nF | 4 | U1 DUT (VCC = DUT 3V3), U2 injector and U3 listen-only sniffer (VCC = stimulus 3V3), spare | 15-20 | Gated (D34). Each RO pull-up goes to its own VCC. Any module used must have its pull-ups, 120 R and bias removed. |
-| MS/TP bus kit: 3-6 m CAT5e, WAGO 221, 120 R 1% x2, 510 R 1% x2, 10k; tap dividers 100k 0.1% x4 + 100 nF x2 | 1 set | Daisy-chain bench bus; bias from +5VA at one point (278 mV idle); rs485_a/rs485_b taps on PC2/PA6 for MSTP-01 | 15-20 | Gated (D34). The tap dividers are mandatory (analog, non-FT stimulus pins). |
-| MCP4728 4-ch 12-bit I2C DAC module | 2 | #1 on I2C1 drives P1 ai1/ai2/ai4/ai5; #2 on I2C2 (PF1 SCL CN9-19, PF0 SDA CN9-21) drives the P2 ai0-ai2 sources via the shield (0.05-2.0 V) | 12-16 | VDD = stimulus 3V3, LDAC to GND, internal 2.048 V reference. Both keep address 0x60 on separate buses. |
-| ADS1115 16-bit ADC module | 2 | Independent reference at the DUT AI nodes, DUT AVDD, DUT 3V3 | 10 | PGA +-4.096 V for P1, +-2.048 V for P2. 10 kOhm in series with every input tied to a DUT net (limits back-feed into the stimulus 3V3 when the stimulus is off); the resulting gain error is calibrated once against a DMM and stored in bench.yml. |
-| INA226 current/voltage monitor, 0.1 Ohm shunt | 1 | DUT E5V current signature (PWR-03), off-state check | 5 | The signature includes the ST-LINK share from E5V; PWR-03 records VBUS and E5V. |
-| TI TPS22918DBV load switch on SOT-23-6 adapters, CT 1 nF, 100 R QOD resistor | 2 | Sharp, repeatable E5V cuts for PERS-02 and OTA-04 (quick output discharge) | 5 | Same BSS138P inverter; ON 100k to +5VA. tON ~1.95 ms, tR ~2.5 ms at 5 V with CT 1 nF. |
-| Arduino-R3 proto shield, stacking single-row headers, 2.2 kOhm networks, 2-pin shunts and 3-pin selectors, 2x20 IDC cable | 1 set | One harness for P1 and P2 with profile shunts (analog-source selectors on A2-A5, P2 A5 GPIO path, D5 open on P2, D10-D13 open on P1, D0/D1/D14/D15 always open) | 15-20 | Outer rows only. |
-| Managed switch with port mirroring (TP-Link TL-SG105E or Netgear GS305E) and a second USB3 NIC | 1 + 1 | Independent mirror capture, port-disable link flap | 40-55 | Storm control off on the DUT port. |
+## IT1 (buy now, from EU-stock distributors, 2-3 day delivery)
 
-## IT3
+| # | Item | Qty | Purpose | ≈ € | Note |
+|---|---|---|---|---|---|
+| 1 | FX2 CY7C68013A 8-channel 24 MS/s logic analyzer clone (sigrok fx2lafw) | 1 | It1 LA map: nrst, m0, m1, di2, do3, do0, vcp_tx, sync | 8-15 | Connect to a host root port, not to the switched hub. |
+| 2 | MCP4728 4-channel 12-bit I2C DAC module | 1 (+1 spare) | Sources for ai0-ai2, since the MCXN236 has no DAC (D41). Also needed for R-02a. | 6-12 | Wired to the stimulus mikroBUS J5-5/J5-6 (SCL/SDA, LPI2C2) and J5-8 (GND). **VDD 3.3 V from J6-7 (VDD_BOARD), never J5-7 (P5V0 = 5 V).** The module's I2C pull-ups must go to that 3.3 V or be removed. LDAC to GND, address 0x60. Internal 2.048 V reference at gain 2. |
+| 3 | TI TPS22918DBV load switch on SOT-23-6 adapters | 2 | Fail-safe MCU-rail switch in place of the J24 shunt (D39), plus a spare | 4-8 | QOD tied to VOUT, CT 1 nF, 1 µF at VIN. ON pulled up with 100 k to P3V3. |
+| 4 | BSS138P (Nexperia) SOT-23 on adapters; 2N7002 acceptable | 6 | Q1 PWR_CTL inverter, Q2 NRST open-drain driver, Q3 RESET_B gate sense (D50), 3 spares | 5 | VGS(th) 0.9-1.5 V (2N7002: 1-2.5 V) |
+| 5 | Passive kit | 1 set | Series resistors (D40), analog nodes, dividers, gate networks, the switch, the Q3 sense (1 kΩ gate, 10 kΩ drain pull-up); the 22 Ω is the W1 back-feed shunt | 10-15 | Resistors: 2.2 kΩ ×40 (or 8-way SIP networks), 10 kΩ ×20, 100 kΩ ×20, 4.7 kΩ ×10, 1 kΩ ×10, 100 Ω ×5, 22 Ω ×2. Capacitors: 100 nF ×20, 1 nF ×4, 1 µF ×4. |
+| 6 | Component-free Arduino-R3 proto shields with stacking headers | 2 | DUT shield and stimulus shield (pin tables §6) | 10-16 | No power LED, reset button or ICSP header. Clip the 5V (J3-10) and VIN (J3-16) stacking pins on both. Outer rows only, plus pigtails. |
+| 7 | 2×20 IDC ribbon (20-30 cm) with 2 box headers; DuPont F-F/F-M wires ×40; single-row male pins; one keyed 2-pin housing | 1 set | Shield-to-shield ribbon; pigtails to J3-13/J3-15, J3-3, J3-7, J2-1..7, J1-5..15; keyed flying leads to J24 | 8-12 | |
+| 8 | Powered USB hub (7+ ports) from the uhubctl compatibility list | 1 | `usb_port` power cuts of the DUT (J17), stimulus recovery; It2 probe, FTDI and peers | 40-60 | Port P1: the DUT MCU-Link. J11 is never connected. |
+| 9 | USB data cables to match the hub (A-to-C or C-to-C), plus the FX2's cable | 3 (+1) | DUT J17, stimulus MCU-Link, spare, FX2 | 8-15 | Data cables, not charge-only. FRDM MCU-Link ports are USB-C. |
+| 10 | Cat6 patch cables | 2-3 | DUT to host NIC, uplink | 6 | |
+| 11 | USB3 GbE NIC, RTL8153 class | 0-1 | Dedicated DUT NIC, only if the host has one NIC | 0-15 | |
+| 12 | HIL host: x86 N100 mini-PC, 16 GB, 2× i226, Ubuntu 24.04 | 0-1 | pytest/Twister, runner, builds, netns | 180-250 | 0 if an existing Linux PC with 2 NICs is reused |
+| – | Assumed owned (confirm on day 0): DMM, soldering station, bench PSU with current limit, oscilloscope (the FX2 can stand in during W1) | – | W1/W2 measurements: J24 continuity and back-feed, RESET_B, V_ON, VDD_ANA | 0 | |
 
-| Item | Qty | Purpose | ≈ € | Note |
-|---|---|---|---|---|
-| Saleae Logic Pro 16 | 1 | Hardware triggers, analog on every channel (RS-485 A/B levels, MSTP-02) | 1000-1450 | logic2-automation 1.0.11. Moves to It2 if no DSLogic with PID 0x0020 is available. |
-| Nordic PPK2 | 1 | Brown-out ramps on JP5 and current profiling | 95-110 |  |
-| Programmable PSU with serial control (Korad KA3005P class) | 1 | Slow E5V ramps and dips (PWR-04) | 100-150 |  |
-| Relay fault box: 6x reed relay, 1x DPDT, ULN2803A, perfboard | 1 | Termination, bias, open D+/D-, short, A/B swap under stimulus control (MSTP-26) | 30 | Driven from 7 of the listed free stimulus pins. NC contacts for the terminators K1/K2 and the bias K3, NO contacts for the faults K4-K7, so a de-energized box (stimulus in reset) is the normal bus. |
-| KiCad HIL interposer PCB, 5 pcs + connectors | 1 batch | Reproducible wiring once the board set is frozen | 30-40 | Only after the It2 shield has been proven. |
-| Spare NUCLEO-F767ZI | 1 | 24 h soak and destructive OTA/PERS tests without blocking the main bench | 30-35 | Own NIC, MAC, instance and client id. |
-| Raspberry Pi Pico 2 with bacnet-stack ports/pico (patched MAC and baud) | 1 | Functional token-ring peer only (never a timing reference) | 6 | Characterised first (R-10). |
-| Commercial BACnet MS/TP device or router (used) | 1 | Independent-stack interop peer | 50-500 |  |
-| NUCLEO-H563ZI | 0-1 | Optional P3 MQTT-only profile | 40 | Flash with stm32cubeprogrammer or pyocd. |
-| 4-channel oscilloscope (Rigol DHO804 class) | 0-1 | Differential drive level (MSTP-02), DE glitches, power ramps | 350-500 | Skip if already owned or if the Saleae analog channels suffice. |
-| Isolated RS-485 node (ADM2587E or ISO1410) + isolated supply; 100-300 m cable spool | 1 + 1 | Common-mode range and termination/reflection tests | 80-180 |  |
-| Yepkit YKUSH3 | 0-1 | Switch VBUS and data to hard-disconnect a wedged probe | 125 | Only if uhubctl recovery proves insufficient. |
+**Total without the host: about €105-180. With the host: about €285-430.**
+
+**Dropped from the v2.1 It1 list:**
+- 2× NUCLEO-F767ZI: P1-F767 is an optional purchase.
+- W25Q128JV breakout: the MCXN947 has an on-board W25Q64.
+- Pololu 2810, and the E5V keyed housing and morpho pins.
+- 5 V PSU: moves to It2, for the RS-485 bias only.
+
+## IT2 changes
+
+- **MS/TP parts, no longer gated for rig work (D47), about €65-90 in total:**
+  - 3.3 V RS-485 transceivers (THVD1450 on SOIC-8 adapters, or modules with their pull-ups, 120 Ω and bias removed), ×6: U1 (DUT), U2 (injector), U3 (sniffer), 2 peers, 1 spare. €15-25.
+  - Bus kit: 3-6 m CAT5e, 120 Ω ×2, 510 Ω ×2, WAGO, 100k 0.1 % dividers ×4 (with 100 nF at the midpoints). €15-20.
+  - 5 V ≥ 1 A PSU for the bias (+5VA). €10-15.
+  - FTDI USB-RS485-WE, 1 (host node MAC 7, mstpcap, R-08). €25-30. Insulate its red VCC (5 V) wire and the terminator wires.
+- **USB cables** for the two MCXA peers (USB-C) and the nRF DK, ×3. €8-12.
+- **Unchanged items:** DSLogic Plus (only as PID 0x0020, else a Saleae); managed switch with mirroring, plus a second NIC.
+- **Changed purpose:** INA226 now measures the MCU-rail current between the TPS22918 VOUT and J24 pin B. ADS1115 becomes an optional reference.
+- **Removed from It2:**
+  - FRDM-MCXN947 (owned);
+  - the second MCP4728 (one covers ai0-ai2);
+  - the TPS22918 and the R3 shield (bought in It1).
+
+## IT3 changes
+
+- **Spare FRDM-MCXN947** (≈ €30-40): replaces the spare F767, for soak and destructive OTA/PERS tests.
+- Optional stimulus-timed VBUS switch for PERS-02 (a TPS22918 in a USB-C VBUS pass-through) [proposed; D51].
+- The Pico 2 is dropped; the MCXA153/156 are the functional peers.
+- **Only if P1-F767 is needed:** NUCLEO-F767ZI, W25Q128JV breakout, an E5V switch (Pololu 2810 or TPS22918), and a 5 V PSU.
+- NUCLEO-H563ZI (P3): optional, unchanged.

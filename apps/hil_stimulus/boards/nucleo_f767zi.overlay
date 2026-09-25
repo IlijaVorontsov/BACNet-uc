@@ -36,6 +36,7 @@
 		di0 {
 			kind = "di";
 			gpios = <&gpioe 14 GPIO_ACTIVE_HIGH>;
+			drive-high;	/* B1 is active high (220k pull-down): 1 must be driven */
 			stim-pin = "PE14 CN10-28";
 			dut-pin = "PC13 CN11-23 (B1, 220k pull-down)";
 		};

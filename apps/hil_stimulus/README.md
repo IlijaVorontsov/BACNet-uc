@@ -95,3 +95,35 @@ an argument other than `clear` answers `ERR -22 usage`; `stim lat` takes `t0` wi
 locked right after driving the output, so a fast input edge (the `lb` loopback) can no longer
 be timestamped before `t0` (an unsigned underflow gave a huge `lat_ns`); and
 `stim rs485 <unknown>` answers `ERR -134 unknown command` instead of the shell's help text.
+
+## FRDM-MCXN236 stimulus for the FRDM-MCXN947 DUT (HIL v2.2)
+
+Same protocol v0 and the same `stim` commands; only the board files and three
+devicetree-selected code blocks differ.
+
+```sh
+west build -b frdm_mcxn236 $HIL/apps/hil_stimulus -d b/stim
+west flash -d b/stim -r linkserver --probe <MCU-Link serial>   # -i is ignored by linkserver
+```
+
+Measured (2026-09-25, SDK 1.0.1, v4.4.2, `CONFIG_COMPILER_WARNINGS_AS_ERRORS=y`):
+99,844 B flash, 42,976 B RAM, 0 warnings. nucleo_f767zi with the same sources:
+92,092 B / 42,688 B, 0 warnings.
+
+| STM32 part (F767) | FRDM-MCXN236 (Zephyr 4.4.2) |
+|---|---|
+| DAC1 + `LL_DAC_Disable` (EN=0 Hi-Z); code scaled by VREFINT-measured VDDA | no on-chip DAC: MCP4728 on LPI2C2 (P4_0/P4_1, 400 kHz), internal 2.048 V x2; code scaled by the DAC channel's `zephyr,vref-mv` (4096); `safe` writes 0 V; a NAK marks the source absent (`dac` answers ERR -19) |
+| TIM2/TIM5/TIM4 two-channel capture, `PWM_CAPTURE_TYPE_BOTH` | FlexPWM1 SM0 A/B and SM2 A, prescaler 16 (106.7 ns, 6.99 ms per 16-bit wrap). pwm_mcux rejects BOTH (-ENOTSUP): period then pulse. The app sets INIT=0/VAL1=0xFFFF and RUN for the capture submodule, and calls `pwm_disable_capture` after each capture (pwm_mcux keeps `capture_active` set after a single capture) |
+| `din`/static `pwmcap` level of an ao pin from GPIO IDR (AF mode) | FlexPWM `SMn OCTRL.PWMA_IN/PWMB_IN/PWMX_IN` (no mux change) |
+| SysTick 216 MHz, 64-bit | SysTick 150 MHz, 64-bit (6.67 ns); max reload 111.8 ms |
+| EXTI lines shared by pin number | GPIO ICR per pin, one IRQ per port: no sharing (ao still never armed, as protocol policy) |
+| pinctrl `bias-pull-down` on TIM AF pins | pinctrl groups with `input-enable; bias-pull-down` on PWM1_A0/B0/A2 |
+| `hwinfo` RCC_CSR decode | `hwinfo` CMC SSRS (`hwinfo_mcux_mcx_cmc.c`), same RESET_* bits in `rc=` |
+| IWDG 4 s (`WDT_OPT_PAUSE_HALTED_BY_DBG`) | WWDT0 (`watchdog0`), 4 s from the 1 MHz FRO / 4; the option is accepted and ignored |
+| USART2 hardware DE (DEM, assert/deassert 8/8) + `ISR.TC` | LP_FLEXCOMM3 LPUART on camera header J9 (P1_12 RX, P1_13 TX, P1_14 RTS = DE, `nxp,rs485-mode`) + `STAT.TC`; no programmable DE lead/lag |
+| VDDA from VREFINT sensor | fixed 3300 mV (LPADC reference = VDD_ANA, `voltage-ref = <2>`, `power-level = <3>`, 16 bit), `CONFIG_SENSOR=n`; measure VDD_ANA once per board |
+
+Channel map (`boards/frdm_mcxn236.overlay`): straight Arduino-to-Arduino except
+DUT D4 → J3-3 (P4_21), DUT A2/A3 senses → J2-7/J2-3, DUT ao0 J3-15 → J3-7,
+DUT AREF → J2-1, DUT 3V3 → J2-5. New read-only channels `mstp_rx`, `mstp_tx`,
+`mstp_de` (kind marker) watch the DUT's planned MS/TP UART (D0, D1, D11).

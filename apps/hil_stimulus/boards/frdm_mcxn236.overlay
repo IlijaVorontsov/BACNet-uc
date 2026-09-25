@@ -1,0 +1,514 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * apps/hil_stimulus on FRDM-MCXN236 (stimulus) for an FRDM-MCXN947 DUT
+ * (profile P1, DUT catalog of BACnet e62a095 = main, unchanged at 4ee098e),
+ * Zephyr v4.4.2.
+ *
+ * Wiring: one Arduino-R3 proto shield per board plus a 40-way IDC ribbon.
+ * Positions are wired straight (same Arduino position on both boards) except
+ * for the reroutes marked REROUTE. Every DUT-facing line has one 2.2 kOhm
+ * series resistor, mounted on the DUT shield; the DUT side of it is the probe
+ * point (LA, analog node). Analog senses add 10 kOhm at this stimulus input.
+ * Header facts: UM12041 Rev 3 Tables 19-22, 25.
+ *
+ * Never connect on the stimulus shield:
+ *   D4  (P0_21) = FXLS8974 INT1          A1 (P4_15) = CAN1 RXD (TJA1057 drives it)
+ *   A2  (P4_16) = CAN1 TXD               A3 (P4_17) = blue LED
+ *   D5  (P2_7)  = same pin as J3-13 (ao1 capture); the DUT's D5 is ENET MDIO
+ *   J3-15 (P3_12) = same pin as D3 (ao2 capture)
+ *   J1-3 (P2_0 via SJ3) = same pin as D2; J1-1 (P3_16) = same pin as J3-7
+ *   inner-row duplicates of used channels: J1-11 and J3-5 (P3_17 = D6, do2),
+ *   J2-9 (P0_22 = D7, do3), J3-1 (P4_13 = A5, di0), J3-11 (P3_14 = D9, do0)
+ *   mikroBUS J5-7 (P5V0, 5 V): the MCP4728 takes VDD from J6-7 (VDD_BOARD)
+ *   RESET, AREF, IOREF, 3V3; the 5V (J3-10) and VIN (J3-16) stacking pins are
+ *   clipped on the shield
+ * D10..D13 (P1_3..P1_0) are also wired to the MCU-Link USB-SPI bridge through
+ * R153..R156 (populated by default, UM12041 3.9). The bridge's SCK, host data
+ * and PCS0 are MCU-Link outputs on m1, m0 and do1, so R153..R156 are removed
+ * before the W2 wiring (the stimulus never uses USBSIO; recorded in bench.yml).
+ * D3 (P3_12, ao2) is shared with IO3 of the on-board QSPI flash U12 through a
+ * zero-ohm selection (UM12041 2.6): W2 checks the low level at P3_12 < 0.8 V
+ * with the DUT driving low; otherwise U12 is isolated.
+ *
+ * Interrupt inputs: GPIO ICR per pin (kinetis-gpio), so unlike the STM32 EXTI
+ * there is no line sharing between ports; the protocol rule "ao is never armed"
+ * is kept as policy.
+ *
+ * AFE: MCP4728 (0x60, LDAC to GND) on LP_FLEXCOMM2 LPI2C (P4_0 SDA =
+ * mikroBUS J5-6, P4_1 SCL = J5-5, GND J5-8; board pull-ups; FXLS8974 at 0x18
+ * shares the bus). VDD = 3.3 V from J6-7 (VDD_BOARD), never J5-7 (P5V0); any
+ * module I2C pull-ups go to that 3.3 V or are removed. Internal 2.048 V
+ * reference, gain 2: 0..4.096 V full scale, 1.0 mV LSB, output limited to the
+ * stimulus VDD (range-mv caps it at 3200).
+ *
+ * di channels have no drive-high property: they are 0/z only (D40); the
+ * firmware refuses level 1 with ERR -1.
+ */
+
+#include <zephyr/dt-bindings/adc/adc.h>
+#include <zephyr/dt-bindings/adc/mcux-lpadc.h>
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/i2c/i2c.h>
+#include <zephyr/dt-bindings/pwm/pwm.h>
+
+/ {
+	stim: hil-stim {
+		compatible = "hil,stim-channels";
+		profile = "P1";
+		rs485-uart = <&flexcomm3_lpuart3>;	/* It2 MS/TP injector, camera header J9 */
+
+		/* ---- stimulus -> DUT digital inputs (catalog di*); di1 = SW3/ISP is never wired ---- */
+		di0 {
+			kind = "di";
+			gpios = <&gpio4 13 GPIO_ACTIVE_HIGH>;
+			stim-pin = "P4_13 J4-12 A5";
+			dut-pin = "P0_23 J4-12 A5 (SW2 + 0.1 uF, pull-up, active low)";
+		};
+		di2 {
+			kind = "di";
+			gpios = <&gpio2 0 GPIO_ACTIVE_HIGH>;
+			stim-pin = "P2_0 J1-6 D2";
+			dut-pin = "P0_29 J1-6 D2 (pull-up, active low)";
+		};
+		di3 {
+			kind = "di";	/* REROUTE: stimulus D4 = accelerometer INT1 */
+			gpios = <&gpio4 21 GPIO_ACTIVE_HIGH>;
+			stim-pin = "P4_21 J3-3";
+			dut-pin = "P0_30 J1-10 D4 (pull-up, active low)";
+		};
+
+		/* ---- DUT digital outputs (catalog do*) -> stimulus inputs ---- */
+		do0 {
+			kind = "do";
+			gpios = <&gpio3 14 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+			stim-pin = "P3_14 J2-4 D9";
+			dut-pin = "P0_10 J2-4 D9 (red LED, active low)";
+		};
+		do1 {
+			kind = "do";
+			gpios = <&gpio1 3 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+			stim-pin = "P1_3 J2-6 D10";
+			dut-pin = "P0_27 J2-6 D10 (green LED, active low)";
+		};
+		do2 {
+			kind = "do";
+			gpios = <&gpio3 17 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+			stim-pin = "P3_17 J1-14 D6";
+			dut-pin = "P1_2 J1-14 D6 (blue LED, active low)";
+		};
+		do3 {
+			kind = "do";
+			gpios = <&gpio0 22 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+			stim-pin = "P0_22 J1-16 D7";
+			dut-pin = "P0_31 J1-16 D7";
+		};
+		do4 {
+			kind = "do";
+			gpios = <&gpio0 23 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+			stim-pin = "P0_23 J2-2 D8";
+			dut-pin = "P0_28 J2-2 D8";
+		};
+
+		/* ---- DUT analog inputs (catalog ai*, 0..1.8 V): MCP4728 source + LPADC sense ---- */
+		ai0 {
+			kind = "ai";	/* REROUTE: stimulus A2 = CAN TXD */
+			io-channels = <&stim_afe_dac 0>, <&lpadc0 0>;
+			io-channel-names = "src", "sense";
+			range-mv = <0 3200>;
+			stim-pin = "src MCP4728 A, sense P0_26 J2-7 (ADC0_B18)";
+			dut-pin = "P0_14 J4-6 A2 (ADC0_B14)";
+		};
+		ai1 {
+			kind = "ai";	/* REROUTE: stimulus A3 = blue LED */
+			io-channels = <&stim_afe_dac 1>, <&lpadc0 1>;
+			io-channel-names = "src", "sense";
+			range-mv = <0 3200>;
+			stim-pin = "src MCP4728 B, sense P0_28 J2-3 (ADC0_B20)";
+			dut-pin = "P0_22 J4-8 A3 (ADC0_A14)";
+		};
+		ai2 {
+			kind = "ai";
+			io-channels = <&stim_afe_dac 2>, <&lpadc0 2>;
+			io-channel-names = "src", "sense";
+			range-mv = <0 3200>;
+			stim-pin = "src MCP4728 C, sense P4_12 J4-10 A4 (ADC0_A5)";
+			dut-pin = "P0_15 J4-10 A4 (ADC0_B15)";
+		};
+
+		/* ---- DUT PWM outputs (catalog ao*) -> FlexPWM1 input capture ---- */
+		ao0 {
+			kind = "ao";	/* REROUTE: pigtail J3-15 (DUT) -> J3-7 (stimulus) */
+			pwms = <&flexpwm1_pwm2 0 PWM_MSEC(1) PWM_POLARITY_NORMAL>;
+			gpios = <&gpio3 16 GPIO_ACTIVE_HIGH>;	/* level read for 0 %/100 % */
+			stim-pin = "P3_16 J3-7 (PWM1_A2)";
+			dut-pin = "P2_6 J3-15 (PWM1_A0)";
+		};
+		ao1 {
+			kind = "ao";	/* inner row straight: J3-13 -> J3-13 */
+			pwms = <&flexpwm1_pwm0 1 PWM_MSEC(1) PWM_POLARITY_NORMAL>;
+			gpios = <&gpio2 7 GPIO_ACTIVE_HIGH>;
+			stim-pin = "P2_7 J3-13 (PWM1_B0; also D5, never wired)";
+			dut-pin = "P2_7 J3-13 (PWM1_B0)";
+		};
+		ao2 {
+			kind = "ao";
+			pwms = <&flexpwm1_pwm0 0 PWM_MSEC(1) PWM_POLARITY_NORMAL>;
+			gpios = <&gpio3 12 GPIO_ACTIVE_HIGH>;
+			stim-pin = "P3_12 J1-8 D3 (PWM1_A0)";
+			dut-pin = "P1_23 J1-8 D3 (SCT0_OUT5)";
+		};
+
+		/* ---- DUT MS/TP UART (planned: LPUART2 D1/D0, software DE on D11), read only ---- */
+		mstp_rx {
+			/* transceiver RO -> DUT RX; never driven here. No pull (v2.2 lead):
+			 * a stimulus pull-down against the DUT pad pull-up would hold D0
+			 * near mid-rail (a permanent break) whenever RO is not driving.
+			 */
+			kind = "marker";
+			gpios = <&gpio4 3 GPIO_ACTIVE_HIGH>;
+			stim-pin = "P4_3 J1-2 D0";
+			dut-pin = "P4_3 J1-2 D0 (LPUART2 RXD)";
+		};
+		mstp_tx {
+			kind = "marker";
+			gpios = <&gpio4 2 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+			stim-pin = "P4_2 J1-4 D1";
+			dut-pin = "P4_2 J1-4 D1 (LPUART2 TXD)";
+		};
+		mstp_de {
+			kind = "marker";	/* 10k pull-down on the DE net */
+			gpios = <&gpio1 0 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+			stim-pin = "P1_0 J2-8 D11";
+			dut-pin = "P0_24 J2-8 D11 (mstp-de-gpios)";
+		};
+
+		/* ---- DUT markers (snippet hil: hil-marker-gpios) ---- */
+		m0 {
+			kind = "marker";
+			gpios = <&gpio1 2 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+			stim-pin = "P1_2 J2-10 D12";
+			dut-pin = "P0_26 J2-10 D12";
+		};
+		m1 {
+			kind = "marker";
+			gpios = <&gpio1 1 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+			stim-pin = "P1_1 J2-12 D13";
+			dut-pin = "P0_25 J2-12 D13";
+		};
+		m2 {
+			kind = "marker";
+			gpios = <&gpio1 16 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+			stim-pin = "P1_16 J2-18 SDA";
+			dut-pin = "P4_0 J2-18 SDA";
+		};
+		m3 {
+			kind = "marker";
+			gpios = <&gpio1 17 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+			stim-pin = "P1_17 J2-20 SCL";
+			dut-pin = "P4_1 J2-20 SCL";
+		};
+
+		/* ---- rig channels (stimulus FRDM inner rows, free pins) ---- */
+		nrst {
+			kind = "nrst";	/* 1 = BSS138P on = DUT RESET_B low; 100k gate pull-down */
+			gpios = <&gpio2 8 GPIO_ACTIVE_HIGH>;
+			stim-pin = "P2_8 J1-5";
+			dut-pin = "RESET_B J3-6 via 100R + BSS138P (Q2)";
+		};
+		nrst_sense {
+			/*
+			 * Gate-sense inverter Q3 (BSS138P on the DUT shield): gate on RESET_B
+			 * through 1k, source GND, drain -> ribbon -> 10k pull-up to the
+			 * stimulus VDD_BOARD -> this pin. RESET_B low = Q3 off = pin high.
+			 * RESET_B sees only the FET gate, so an unpowered stimulus cannot
+			 * pull it into the undefined band. No internal pull.
+			 */
+			kind = "nrst-sense";	/* 1 = DUT in reset (pin high) */
+			gpios = <&gpio3 6 GPIO_ACTIVE_HIGH>;
+			stim-pin = "P3_6 J1-7 (10k pull-up to VDD_BOARD)";
+			dut-pin = "RESET_B J3-6 via 1k + BSS138P gate (Q3)";
+		};
+		pwr {
+			kind = "pwr";	/* logical 1 = DUT powered = P3_18 low (BSS138P off, ON pulled up) */
+			gpios = <&gpio3 18 GPIO_ACTIVE_LOW>;
+			stim-pin = "P3_18 J1-9";
+			dut-pin = "TPS22918 ON via BSS138P Q1 (PWR_CTL) -> DUT J24 P3V3_MCU";
+		};
+		sync {
+			kind = "sync";
+			gpios = <&gpio1 7 GPIO_ACTIVE_HIGH>;
+			stim-pin = "P1_7 J1-13";
+			dut-pin = "LA SYNC channel (100R)";
+		};
+		lb {
+			kind = "marker";	/* self-test loopback: jumper SYNC (J1-13) -> J1-15 */
+			gpios = <&gpio2 9 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+			stim-pin = "P2_9 J1-15";
+		};
+		v3v3 {
+			kind = "sense";	/* DUT MCU rail (switched P3V3_MCU = VDD_ANA at AREF) via 100k/100k, 100 nF */
+			io-channels = <&lpadc0 3>;
+			io-channel-names = "sense";
+			scale = <2 1>;
+			stim-pin = "P0_29 J2-1 (ADC0_B21)";
+			dut-pin = "VDD_ANA J2-16 AREF";
+		};
+		v3v3_brd {
+			kind = "sense";	/* DUT board rail P3V3 (always on) via 100k/100k, 100 nF */
+			io-channels = <&lpadc0 4>;
+			io-channel-names = "sense";
+			scale = <2 1>;
+			stim-pin = "P0_27 J2-5 (ADC0_B19)";
+			dut-pin = "P3V3 J3-8 3V3";
+		};
+	};
+};
+
+&pinctrl {
+	/* FlexPWM1 capture inputs: input buffer on, pull-down so an unpowered DUT reads 0. */
+	stim_cap_sm0: stim_cap_sm0 {
+		group0 {
+			pinmux = <PWM1_A0_PIO3_12>, <PWM1_B0_PIO2_7>;
+			input-enable;
+			bias-pull-down;
+			drive-strength = "low";
+			slew-rate = "fast";
+		};
+	};
+
+	stim_cap_sm2: stim_cap_sm2 {
+		group0 {
+			pinmux = <PWM1_A2_PIO3_16>;
+			input-enable;
+			bias-pull-down;
+			drive-strength = "low";
+			slew-rate = "fast";
+		};
+	};
+
+	/*
+	 * MS/TP injector (It2): LP_FLEXCOMM3 in LPUART-only mode on camera header J9
+	 * (UM12041 Table 26): P1_12 J9-28 = FC3_P0 RXD, P1_13 J9-27 = FC3_P1 TXD,
+	 * P1_14 J9-2 = FC3_P2 = RTS used as hardware DE (MODIR.TXRTSE, active high).
+	 * Transceiver: DE 10k pull-down, /RE to GND (hears its own frames), RO 10k pull-up.
+	 */
+	stim_fc3_uart: stim_fc3_uart {
+		group0 {
+			pinmux = <FC3_P0_PIO1_12>, <FC3_P1_PIO1_13>;
+			input-enable;
+			drive-strength = "low";
+			slew-rate = "fast";
+		};
+	};
+
+	stim_fc3_uart_de: stim_fc3_uart_de {
+		group0 {
+			pinmux = <FC3_P0_PIO1_12>, <FC3_P1_PIO1_13>, <FC3_P2_PIO1_14>;
+			input-enable;
+			drive-strength = "low";
+			slew-rate = "fast";
+		};
+	};
+
+	/* LPADC0 senses: ai0 P0_26 B18, ai1 P0_28 B20, ai2 P4_12 A5, v3v3 P0_29 B21, v3v3_brd P0_27 B19 */
+	stim_adc0: stim_adc0 {
+		group0 {
+			pinmux = <ADC0_B18_PIO0_26>, <ADC0_B20_PIO0_28>, <ADC0_A5_PIO4_12>,
+				 <ADC0_B21_PIO0_29>, <ADC0_B19_PIO0_27>;
+			drive-strength = "low";
+			slew-rate = "fast";
+		};
+	};
+};
+
+/* The board DTS enables only gpio0/1/4; D2, D3, D6, D9 and the rig pins are on ports 2/3. */
+&gpio2 {
+	status = "okay";
+};
+
+&gpio3 {
+	status = "okay";
+};
+
+/*
+ * FlexPWM1 (bus clock 150 MHz, prescaler 16 -> 9.375 MHz, 106.7 ns ticks).
+ * One capture period fits the 16-bit counter up to 6.99 ms, which keeps the
+ * driver's overflow bookkeeping out of the 1 kHz measurement (as TIM4 on F767).
+ */
+&flexpwm1_pwm0 {
+	pinctrl-0 = <&stim_cap_sm0>;
+	pinctrl-names = "default";
+	nxp,prescaler = <16>;
+	status = "okay";
+};
+
+&flexpwm1_pwm2 {
+	pinctrl-0 = <&stim_cap_sm2>;
+	pinctrl-names = "default";
+	nxp,prescaler = <16>;
+	status = "okay";
+};
+
+/*
+ * LPADC0: reference VDD_ANA (voltage-ref 2 = CFG[REFSEL] option 3; Zephyr's
+ * tests/drivers/regulator/voltage/boards/frdm_mcxn236.overlay uses the same
+ * setting "to switch the reference source to VDD_ANA"), highest power level
+ * for the 48 MHz FRO_HF ADC clock set by board.c (as NXP's frdmmcxn236 lpadc
+ * example), 16-bit, longest sample time (131 ADCK = 2.7 us).
+ * The app scales by vdda_mv = 3300 (no VREFINT); measure VDD_ANA once per board.
+ */
+&lpadc0 {
+	pinctrl-0 = <&stim_adc0>;
+	pinctrl-names = "default";
+	voltage-ref = <2>;
+	power-level = <3>;
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	channel@0 {
+		reg = <0>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_EXTERNAL0";
+		zephyr,vref-mv = <3300>;
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 131)>;
+		zephyr,resolution = <16>;
+		zephyr,input-positive = <MCUX_LPADC_CH18B>;
+	};
+
+	channel@1 {
+		reg = <1>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_EXTERNAL0";
+		zephyr,vref-mv = <3300>;
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 131)>;
+		zephyr,resolution = <16>;
+		zephyr,input-positive = <MCUX_LPADC_CH20B>;
+	};
+
+	channel@2 {
+		reg = <2>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_EXTERNAL0";
+		zephyr,vref-mv = <3300>;
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 131)>;
+		zephyr,resolution = <16>;
+		zephyr,input-positive = <MCUX_LPADC_CH5A>;
+	};
+
+	channel@3 {
+		reg = <3>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_EXTERNAL0";
+		zephyr,vref-mv = <3300>;
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 131)>;
+		zephyr,resolution = <16>;
+		zephyr,input-positive = <MCUX_LPADC_CH21B>;
+	};
+
+	channel@4 {
+		reg = <4>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_EXTERNAL0";
+		zephyr,vref-mv = <3300>;
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 131)>;
+		zephyr,resolution = <16>;
+		zephyr,input-positive = <MCUX_LPADC_CH19B>;
+	};
+};
+
+/*
+ * AFE bus: LP_FLEXCOMM2 stays okay in LPI2C-only mode (lpuart2 disabled below).
+ * 400 kHz keeps "stim safe" (three MCP4728 writes of 0 V) below 1 ms.
+ */
+&flexcomm2_lpi2c2 {
+	clock-frequency = <I2C_BITRATE_FAST>;
+
+	stim_afe_dac: dac@60 {
+		compatible = "microchip,mcp4728";
+		reg = <0x60>;
+		#io-channel-cells = <1>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		voltage-reference = <1 1 1 1>;	/* internal 2.048 V */
+		power-down-mode = <0 0 0 0>;
+		gain = <1 1 1 1>;		/* x2 -> 4.096 V full scale */
+
+		channel@0 {
+			reg = <0>;
+			zephyr,resolution = <12>;
+			zephyr,vref-mv = <4096>;
+		};
+
+		channel@1 {
+			reg = <1>;
+			zephyr,resolution = <12>;
+			zephyr,vref-mv = <4096>;
+		};
+
+		channel@2 {
+			reg = <2>;
+			zephyr,resolution = <12>;
+			zephyr,vref-mv = <4096>;
+		};
+
+		channel@3 {
+			reg = <3>;	/* spare */
+			zephyr,resolution = <12>;
+			zephyr,vref-mv = <4096>;
+		};
+	};
+};
+
+/*
+ * Board peripherals whose pins the stimulus uses as GPIO, or that it never uses:
+ * lpuart2 = D0/D1 (DUT MS/TP lines, read only here), lpspi3 = D10..D13,
+ * lpi2c5 and i3c1 = SDA/SCL (m2/m3), flexcan1 = A1/A2, SAI0/SAI1/MICFIL = the
+ * rig pins on J1 odd pins (codec DNP), flexio0 (LCD) = P0_21/P0_24/P2_x/P3_x.
+ */
+&flexcomm2_lpuart2 {
+	status = "disabled";
+};
+
+&flexcomm3_lpspi3 {
+	status = "disabled";
+};
+
+/* LP_FLEXCOMM3 runs LPUART-only (lpspi3 disabled); board.c clocks FC3 from FRO_HF_DIV. */
+&flexcomm3_lpuart3 {
+	pinctrl-0 = <&stim_fc3_uart>;
+	pinctrl-1 = <&stim_fc3_uart_de>;
+	pinctrl-names = "default", "flowcontrol";
+	nxp,rs485-mode;
+	current-speed = <38400>;
+	status = "okay";
+};
+
+&flexcomm5_lpi2c5 {
+	status = "disabled";
+};
+
+&i3c1 {
+	status = "disabled";
+};
+
+&flexcan1 {
+	status = "disabled";
+};
+
+&sai0 {
+	status = "disabled";
+};
+
+&sai1 {
+	status = "disabled";
+};
+
+&micfil {
+	status = "disabled";
+};
+
+&flexio0 {
+	status = "disabled";
+};
