@@ -29,14 +29,17 @@
 #     TLS 1.3 (RSA-PSS), and overlay-tls12-rsa.conf reaches a TLS-1.2-only RSA
 #     broker.
 # 10. Runtime configuration (M5): config_get/config_set/config_reset, secrets
-#     masked, immediate vs next-connect keys, topic root change + reconnect,
-#     persistence across restarts, fallback to the last known good after a
-#     broken broker setting.
+#     masked, immediate vs next-connect keys, topic root change + reconnect
+#     (retained status/info under the old root cleared), persistence across
+#     restarts (including an empty value), fallback to the last known good
+#     after a broken broker setting.
 # 11. Logs over MQTT (M6): WRN lines on <root>/<id>/log (including lines from
-#     before the connection), the logs command, and the log_level setting.
+#     before the connection), the logs command (keeps the newest lines), and
+#     the log_level setting.
 # 12. SMP on UDP 1337 (M4/M5): echo, settings read (secret masked), write +
-#     save + restart, factory reset; info announces mgmt/boot. (Image upload
-#     and MCUboot confirmation need real hardware.)
+#     save + restart, factory reset; deletes, other subtrees and the internal
+#     keys are refused; info announces mgmt/boot. (Image upload and MCUboot
+#     confirmation need real hardware.)
 #
 # Not covered: loss of the network interface (the NSOS target has no Zephyr-
 # managed interface) and the STM32 watchdog; both need the board.
@@ -474,6 +477,13 @@ ev_wait "$mo" "^${DEV}/event \{\"ok\":true,\"reconnect\":true\}" || fail "reconn
 online_after "$ma" "${ALT}" || fail "not online under the new topic root"
 cmd_to "${ALT}" ping
 ev_wait "$ma" "^${ALT}/event \{\"ok\":true,\"pong\":" || fail "no pong under the new topic root"
+[ -z "$(retained "${DEV}/status")" ] || fail "retained status under the old topic root not cleared"
+[ -z "$(retained "${DEV}/info")" ] || fail "retained info under the old topic root not cleared"
+# an empty value is stored too (not "deleted")
+cmd_to "${ALT}" "config_set username=someone"
+ev_wait "$ma" "^${ALT}/event \{\"ok\":true,\"key\":\"username\"" || fail "config_set username"
+cmd_to "${ALT}" "config_set username="
+ev_wait "$ma" "^${ALT}/event \{\"ok\":true,\"key\":\"username\"" || fail "clearing username"
 
 # persistence across a restart
 stop_device
@@ -483,6 +493,9 @@ online_after "$ma" "${ALT}" || fail "topic root not persisted across restart"
 cmd_to "${ALT}" "config_get publish_interval"
 ev_wait "$ma" "^${ALT}/event \{\"ok\":true,\"key\":\"publish_interval\",\"value\":\"1\"\}" ||
 	fail "publish_interval not persisted"
+cmd_to "${ALT}" "config_get username"
+ev_wait "$ma" "^${ALT}/event \{\"ok\":true,\"key\":\"username\",\"value\":\"\"\}" ||
+	fail "empty username not persisted"
 cmd_to "${ALT}" "config_set topic_root=${ROOT}"
 ev_wait "$ma" "^${ALT}/event \{\"ok\":true,\"key\":\"topic_root\"" || fail "restore topic root"
 mo=$(mark "${OBS}")
@@ -522,6 +535,11 @@ cmd_to "${DEV}" "config_set log_level=inf"
 ev_wait "$mo" "^${DEV}/event \{\"ok\":true,\"key\":\"log_level\",\"applies\":\"now\"\}" || fail "config_set log_level"
 wait_for "${OBS}" "$mo" "^${DEV}/log \{\"t\":[0-9]+,\"lvl\":\"inf\",\"src\":\"app\",\"msg\":\"Published telemetry #" 10 ||
 	fail "log_level=inf not applied"
+# 50 lines do not fit in one reply: the newest ones (ending with this very
+# command) must be kept.
+cmd_to "${DEV}" '{"id":"l3","cmd":"logs","arg":"50"}'
+ev_wait "$mo" "^${DEV}/event \{\"id\":\"l3\",\"ok\":true,\"logs\":\[.*Command: \{\\\\\"id\\\\\":\\\\\"l3\\\\\".*\]\}" ||
+	fail "logs command did not keep the newest lines"
 cmd_to "${DEV}" '{"id":"l2","cmd":"config_set","arg":"password=t0psecret"}'
 ev_wait "$mo" "^${DEV}/event \{\"id\":\"l2\",\"ok\":true" || fail "config_set password at log_level inf"
 sleep 2
@@ -538,6 +556,12 @@ ev_wait "$mo" "^${DEV}/event \{\"ok\":true,\"key\":\"password\"" || fail "config
 [ "$(smp read mqtt/password)" = "***" ] || fail "SMP read of a secret not masked"
 grep -Eq "^${DEV}/info .*\"mgmt\":\{\"smp\":\"udp:1337\"\},\"boot\":\"none\".*\"caps\":\{\"cmds\":\[\"ping\",\"led\",\"identify\",\"config\",\"reconnect\",\"logs\"\],\"config\":\[\"broker_host\"" "${OBS}" ||
 	fail "info lacks mgmt/boot or caps.config"
+[ -z "$(smp delete mqtt/publish_interval)" ] || fail "SMP delete not refused"
+[ -z "$(smp read mqtt)" ] || fail "SMP read of the bare subtree name not refused"
+[ -z "$(smp write mqtt/lkg x)" ] || fail "SMP write of mqtt/lkg not refused"
+[ -z "$(smp write mqtt/trial 0)" ] || fail "SMP write of mqtt/trial not refused"
+[ -z "$(smp write other/key 1)" ] || fail "SMP write outside mqtt/ not refused"
+[ -z "$(smp write mqtt/broker_port 99999)" ] || fail "SMP write of an invalid value not refused"
 [ "$(smp write mqtt/publish_interval 4)" = "ok" ] || fail "SMP settings write"
 [ "$(smp save)" = "ok" ] || fail "SMP settings save"
 cmd_to "${DEV}" "config_get publish_interval"

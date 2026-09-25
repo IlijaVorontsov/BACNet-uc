@@ -29,7 +29,10 @@ static struct app_log_line ring[CONFIG_APP_LOG_MQTT_RING_SIZE];
 static uint32_t written; /* total lines ever written; ring index = written % size */
 static struct k_spinlock ring_lock;
 static atomic_t threshold = ATOMIC_INIT(CONFIG_APP_LOG_MQTT_LEVEL);
+/* Messages the logging core dropped (buffer full) before they reached us. */
+static atomic_t core_dropped;
 
+#if defined(CONFIG_APP_LOG_MQTT)
 struct fmt_ctx {
 	char *buf;
 	size_t len;
@@ -94,7 +97,8 @@ static void panic(const struct log_backend *const backend)
 static void dropped(const struct log_backend *const backend, uint32_t cnt)
 {
 	ARG_UNUSED(backend);
-	ARG_UNUSED(cnt);
+
+	(void)atomic_add(&core_dropped, (atomic_val_t)cnt);
 }
 
 static const struct log_backend_api api = {
@@ -104,6 +108,7 @@ static const struct log_backend_api api = {
 };
 
 LOG_BACKEND_DEFINE(app_log_mqtt, api, true);
+#endif /* CONFIG_APP_LOG_MQTT */
 
 void app_log_set_level(uint8_t level)
 {
@@ -117,8 +122,12 @@ bool app_log_next(uint32_t *cursor, struct app_log_line *out, uint32_t *lost)
 	bool have = false;
 
 	*lost = 0U;
+	if (*cursor < written) {
+		/* Count core drops against the next line actually delivered. */
+		*lost = (uint32_t)atomic_clear(&core_dropped);
+	}
 	if (*cursor < oldest) {
-		*lost = oldest - *cursor;
+		*lost += oldest - *cursor;
 		*cursor = oldest;
 	}
 	if (*cursor < written) {
@@ -203,11 +212,13 @@ int app_log_line_json(const struct app_log_line *line, uint32_t lost, char *buf,
 	return (n < (int)len) ? n : -ENOMEM;
 }
 
-int app_log_last_json(size_t n, char *buf, size_t len)
+/* Format lines [from, written) into buf. Returns the line count, or -ENOMEM
+ * if they do not all fit.
+ */
+static int format_from(uint32_t from, char *buf, size_t len)
 {
 	struct app_log_line line;
-	uint32_t total = app_log_count();
-	uint32_t cursor = (total > n) ? total - (uint32_t)n : 0U;
+	uint32_t cursor = from;
 	uint32_t lost;
 	size_t off;
 	int count = 0;
@@ -219,15 +230,34 @@ int app_log_last_json(size_t n, char *buf, size_t len)
 	}
 	off = (size_t)w;
 
-	while (app_log_next(&cursor, &line, &lost)) {
-		/* Leave room for "," and the closing "]". */
-		if (off + 3 > len) {
+	while (true) {
+		k_spinlock_key_t key = k_spin_lock(&ring_lock);
+		uint32_t oldest = (written > ARRAY_SIZE(ring)) ? written - ARRAY_SIZE(ring) : 0U;
+		bool have = false;
+
+		/* Unlike app_log_next, do not touch the core drop counter. */
+		lost = 0U;
+		if (cursor < oldest) {
+			cursor = oldest;
+		}
+		if (cursor < written) {
+			line = ring[cursor % ARRAY_SIZE(ring)];
+			cursor++;
+			have = true;
+		}
+		k_spin_unlock(&ring_lock, key);
+		if (!have) {
 			break;
 		}
-		w = app_log_line_json(&line, 0U, &buf[off + (count ? 1 : 0)],
+
+		/* Leave room for "," and the closing "]". */
+		if (off + 3 > len) {
+			return -ENOMEM;
+		}
+		w = app_log_line_json(&line, lost, &buf[off + (count ? 1 : 0)],
 				      len - off - (count ? 1 : 0) - 1);
 		if (w < 0) {
-			break;
+			return -ENOMEM;
 		}
 		if (count) {
 			buf[off] = ',';
@@ -240,4 +270,21 @@ int app_log_last_json(size_t n, char *buf, size_t len)
 	buf[off] = '\0';
 
 	return count;
+}
+
+int app_log_last_json(size_t n, char *buf, size_t len)
+{
+	uint32_t total = app_log_count();
+	uint32_t from = (total > n) ? total - (uint32_t)n : 0U;
+	int count;
+
+	/* Keep the newest lines: drop the oldest until the rest fit. */
+	for (; from <= total; from++) {
+		count = format_from(from, buf, len);
+		if (count >= 0) {
+			return count;
+		}
+	}
+
+	return format_from(UINT32_MAX, buf, len);
 }

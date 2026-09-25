@@ -130,6 +130,23 @@ The client ID also changed since the hub design was written: it is now `z` + bas
 
 The e2e suite (`apps/mqtt_tls/scripts/e2e_native_sim.sh`) now covers M4 (SMP echo/settings/factory reset), M5 and M6 on native_sim. It passes (9 min).
 
+#### fw 0.4.0: fixes from the second adversarial review (M4-M6)
+
+A review in five areas (config, flash, MCUboot, logs, security) confirmed about 25 findings. All are fixed in 0.4.0. Interface and layout changes (FW-06):
+
+| Change | Detail |
+|---|---|
+| **MCXN947 settings partition moved** | Now `settings_partition` @**0x7F0000**, 64 KiB (the last 16 sectors of the W25Q64), in both variants. Before, it was @0x0. **Ask to BACnet:** keep the BACnet `storage_partition` on the W25Q64 below 0x7F0000 (for example `reg = <0x0 0x7F0000>`), so that alternating firmware (HIL) does not destroy each other's settings. |
+| SMP settings access | Limited to `mqtt/*`. **DELETE is refused** (`MGMT_ERR_EACCESSDENIED`; use `mqtt/factory_reset`). Writes to `mqtt/lkg` and `mqtt/trial` and to other subtrees are refused, and so are invalid values. This uses `MCUMGR_GRP_SETTINGS_ACCESS_HOOK`, which also removes the insecure-settings CMake warning. |
+| SMP MTU | `MCUMGR_TRANSPORT_UDP_MTU` 1024 -> **1472** (netbuf 1536). uc-hub and smpmgr read it from mcumgr params. |
+| MCUboot | The revert is a delayable work item (fires even if the MQTT thread hangs). `IMG_ERASE_PROGRESSIVELY=y`. The app-side `MCUBOOT_BOOTLOADER_MODE` defaults to swap-scratch on F767 (non-sysbuild `overlay-mcuboot.conf` path). `FILE_SUFFIX=mcuboot` without MCUboot is a CMake error. Plain F767 `FLASH_LOAD_SIZE` = 0x180000. |
+| F767 watchdog | `TASK_WDT_HW_FALLBACK_DELAY` 1000 -> 7000 ms: a 256 KiB sector erase stalls the CPU for up to 4 s. |
+| Config semantics | LKG = the snapshot the online session actually used (not the config at the time of "online"). A trial restarts only when a connection value really changed. Fallback resets only the connection keys. An empty value is stored as a single NUL byte, so it survives a reboot. Integers: digits only. Strings: printable ASCII without `"` and `\`. `log_level` accepts err/wrn/inf/dbg. `lkg` and `trial` are validated at load time. After a `topic_root` change the retained status/info under the old root are cleared. |
+| Logs | `logs n` keeps the newest lines. `lost` also counts core drops and survives a failed publish. New `APP_LOG_MQTT` (selects `LOG_OUTPUT`). |
+| **H563 (FW-06 note)** | Settings in the internal `storage_partition` (ECC flash). A power cut during a write can leave a double-bit ECC error that faults on read; recover with a full erase. HIL should not power-cycle an H563 during a settings write, or should expect this. |
+
+VERSION 0.4.0. All targets build without warnings (F767 plain, MCXN947, H563, native_sim, both sysbuild MCUboot variants, F767 `overlay-mcuboot.conf`). The e2e now also checks: SMP delete, bare `mqtt`, `mqtt/lkg`/`mqtt/trial`, other subtrees and invalid values are refused; an empty value persists; `logs 50` keeps the newest lines; old-root retained messages are cleared.
+
 #### FW-06 announcement (made before the code landed)
 
 The user approved **M4, M5 and M6 now, M7 later**. Per HIL FW-06, these are the interface and layout changes *before* the code lands:

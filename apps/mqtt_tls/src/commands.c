@@ -188,12 +188,6 @@ static void execute_config(const char *cmd, char *arg, struct result *r)
 			r->error = config_error(ret);
 			return;
 		}
-		if (strcmp(arg, "log_level") == 0) {
-			struct app_config c;
-
-			app_config_get(&c);
-			app_log_set_level(c.log_level);
-		}
 		r->ok = true;
 		snprintk(r->detail, r->detail_len, "\"key\":\"%s\",\"applies\":\"%s\"", arg,
 			 next_connect ? "next_connect" : "now");
@@ -201,11 +195,7 @@ static void execute_config(const char *cmd, char *arg, struct result *r)
 	}
 
 	if (strcmp(cmd, "config_reset") == 0 && arg == NULL) {
-		struct app_config c;
-
 		(void)app_config_reset();
-		app_config_get(&c);
-		app_log_set_level(c.log_level);
 		r->ok = true;
 		snprintk(r->detail, r->detail_len,
 			 "\"config\":\"defaults\",\"applies\":\"next_connect\"");

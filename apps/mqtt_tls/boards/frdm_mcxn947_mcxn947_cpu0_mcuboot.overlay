@@ -9,17 +9,20 @@
 	nxp,unique-mac;
 };
 
-/* Runtime settings: the first 64 KiB of the external W25Q64 NOR flash
+/* Runtime settings: the last 64 KiB of the external W25Q64 NOR flash
  * (4 KiB sectors), in both the plain and the MCUboot variant. The internal
- * flash is fully taken by MCUboot and its two slots.
+ * flash is fully taken by MCUboot and its two slots. The board's
+ * storage_partition spans the whole W25Q64 and is used by other firmware on
+ * this board (BACnet); keeping to the top 64 KiB means switching firmware
+ * does not wipe each other's settings, as long as they stay below 0x7F0000.
  */
 /delete-node/ &storage_partition;
 
 &w25q64jvssiq {
 	partitions {
-		settings_partition: partition@0 {
+		settings_partition: partition@7f0000 {
 			label = "settings";
-			reg = <0x0 DT_SIZE_K(64)>;
+			reg = <0x7f0000 DT_SIZE_K(64)>;
 		};
 	};
 };

@@ -8,16 +8,25 @@
  * settings write (+ save). config_reset, or writing "mqtt/factory_reset" over
  * SMP, deletes every stored key and returns to the Kconfig values.
  *
- * All values are stored as text so that SMP clients can write them directly.
+ * All values are stored as text so that SMP clients can write them directly
+ * (an empty string is stored as a single NUL byte, because a zero-length
+ * value means "deleted" to the settings subsystem).
  *
  * Last known good: when a key that affects the connection changes, the new
  * configuration is on trial. It becomes the last known good (LKG) once a
- * session reaches "online". If it fails APP_CONFIG_FALLBACK_ATTEMPTS
- * connection attempts in a row, the stored keys are rolled back to the LKG
- * (or to the Kconfig defaults if there is none), so a typo cannot strand a
- * remote device. The trial counter is persisted, so reboots do not reset it.
+ * session that used it reaches "online". If it fails
+ * APP_CONFIG_FALLBACK_ATTEMPTS connection attempts, the connection keys roll
+ * back to the LKG (or to the Kconfig defaults if none has worked yet), so a
+ * typo cannot strand a remote device. The trial counter is persisted, so
+ * reboots do not reset it.
+ *
+ * Locking: `lock` protects the RAM state and is always the innermost lock;
+ * no settings (flash) call is ever made while holding it, because the
+ * settings subsystem calls our handlers with its own lock held. `store_lock`
+ * serialises the application-side writers (MQTT thread, factory-reset work).
  */
 
+#include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,6 +43,7 @@ LOG_MODULE_DECLARE(app, CONFIG_APP_LOG_LEVEL);
 
 #define SUBTREE "mqtt"
 #define SECRET_MASK "***"
+#define KEY_LEN 48
 
 enum key_type {
 	TYPE_STR,
@@ -51,7 +61,7 @@ struct key_desc {
 	enum key_type type;
 	uint8_t flags;
 	size_t offset;
-	size_t size;     /* TYPE_STR: buffer size */
+	size_t size;     /* size of the field */
 	uint32_t min;    /* TYPE_UINT */
 	uint32_t max;
 };
@@ -88,6 +98,7 @@ struct lkg_blob {
 };
 
 static K_MUTEX_DEFINE(lock);
+static K_MUTEX_DEFINE(store_lock);
 static struct app_config defaults;
 static struct app_config current;  /* defaults overlaid with stored keys */
 static uint32_t explicit_mask;      /* keys that are stored */
@@ -106,9 +117,14 @@ static void *field(struct app_config *cfg, const struct key_desc *k)
 	return (uint8_t *)cfg + k->offset;
 }
 
+static const void *cfield(const struct app_config *cfg, const struct key_desc *k)
+{
+	return (const uint8_t *)cfg + k->offset;
+}
+
 static uint32_t get_uint(const struct app_config *cfg, const struct key_desc *k)
 {
-	const void *p = (const uint8_t *)cfg + k->offset;
+	const void *p = cfield(cfg, k);
 
 	switch (k->size) {
 	case sizeof(uint8_t):
@@ -139,6 +155,10 @@ static void put_uint(struct app_config *cfg, const struct key_desc *k, uint32_t 
 
 static const struct key_desc *find_key(const char *name, size_t *idx)
 {
+	if (name == NULL) {
+		return NULL;
+	}
+
 	for (size_t i = 0; i < ARRAY_SIZE(keys); i++) {
 		if (strcmp(keys[i].name, name) == 0) {
 			if (idx != NULL) {
@@ -168,12 +188,13 @@ static int parse_value(const struct key_desc *k, const char *text, struct app_co
 		    (strpbrk(text, "+#") != NULL || text[0] == '$')) {
 			return -EINVAL;
 		}
-		if (strpbrk(text, "\"\\") != NULL) {
-			/* Keep values safe to echo into JSON unescaped. */
-			return -EINVAL;
-		}
 		for (size_t i = 0; i < len; i++) {
-			if ((unsigned char)text[i] < 0x20) {
+			unsigned char c = (unsigned char)text[i];
+
+			/* Printable ASCII without '"' and '\': safe to echo
+			 * into JSON and to log.
+			 */
+			if (c < 0x20 || c >= 0x7f || c == '"' || c == '\\') {
 				return -EINVAL;
 			}
 		}
@@ -181,14 +202,18 @@ static int parse_value(const struct key_desc *k, const char *text, struct app_co
 		return 0;
 
 	case TYPE_UINT: {
-		char *end;
 		unsigned long v;
 
-		if (len == 0U) {
+		if (len == 0U || len > 10U) {
 			return -EINVAL;
 		}
-		v = strtoul(text, &end, 10);
-		if (*end != '\0' || v < k->min || v > k->max) {
+		for (size_t i = 0; i < len; i++) {
+			if (!isdigit((unsigned char)text[i])) {
+				return -EINVAL;
+			}
+		}
+		v = strtoul(text, NULL, 10);
+		if (v < k->min || v > k->max) {
 			return -EINVAL;
 		}
 		put_uint(cfg, k, (uint32_t)v);
@@ -196,7 +221,8 @@ static int parse_value(const struct key_desc *k, const char *text, struct app_co
 	}
 
 	case TYPE_LEVEL:
-		for (size_t i = 0; i < ARRAY_SIZE(level_names); i++) {
+		/* "off" is not offered: the log topic carries WRN+ at least. */
+		for (size_t i = 1; i < ARRAY_SIZE(level_names); i++) {
 			if (strcmp(text, level_names[i]) == 0) {
 				put_uint(cfg, k, (uint32_t)i);
 				return 0;
@@ -213,7 +239,7 @@ static void format_value(const struct key_desc *k, const struct app_config *cfg,
 {
 	if ((k->flags & F_SECRET) && !reveal) {
 		/* Write-only: say whether one is set, never what it is. */
-		const char *v = (const char *)((const uint8_t *)cfg + k->offset);
+		const char *v = cfield(cfg, k);
 
 		snprintk(buf, len, "%s", v[0] != '\0' ? SECRET_MASK : "");
 		return;
@@ -221,7 +247,7 @@ static void format_value(const struct key_desc *k, const struct app_config *cfg,
 
 	switch (k->type) {
 	case TYPE_STR:
-		snprintk(buf, len, "%s", (const char *)((const uint8_t *)cfg + k->offset));
+		snprintk(buf, len, "%s", (const char *)cfield(cfg, k));
 		break;
 	case TYPE_UINT:
 		snprintk(buf, len, "%u", get_uint(cfg, k));
@@ -236,14 +262,16 @@ static void format_value(const struct key_desc *k, const struct app_config *cfg,
 	}
 }
 
+static bool field_differs(const struct app_config *a, const struct app_config *b,
+			  const struct key_desc *k)
+{
+	return memcmp(cfield(a, k), cfield(b, k), k->size) != 0;
+}
+
 static bool connection_differs(const struct app_config *a, const struct app_config *b)
 {
 	for (size_t i = 0; i < ARRAY_SIZE(keys); i++) {
-		const struct key_desc *k = &keys[i];
-
-		if ((k->flags & F_CONNECTION) &&
-		    memcmp((const uint8_t *)a + k->offset, (const uint8_t *)b + k->offset,
-			   k->size) != 0) {
+		if ((keys[i].flags & F_CONNECTION) && field_differs(a, b, &keys[i])) {
 			return true;
 		}
 	}
@@ -251,32 +279,36 @@ static bool connection_differs(const struct app_config *a, const struct app_conf
 	return false;
 }
 
-static void persist_trial(void)
-{
-	char text[12];
-
-	if (trial_left > 0) {
-		snprintk(text, sizeof(text), "%d", trial_left);
-		(void)settings_save_one(SUBTREE "/trial", text, strlen(text));
-	} else {
-		(void)settings_delete(SUBTREE "/trial");
-	}
-}
-
-/* Start a trial if the connection settings now differ from what last
- * worked (the LKG, or the defaults before the first success).
+/* Under `lock`: (re)start or end the trial, comparing the connection
+ * settings with what last worked (the LKG, or the defaults before the first
+ * success). RAM only; the caller persists trial_left.
  */
-static void update_trial(void)
+static void update_trial_locked(void)
 {
 	const struct app_config *reference = have_lkg ? &lkg.cfg : &defaults;
 
-	if (connection_differs(&current, reference)) {
-		trial_left = CONFIG_APP_CONFIG_FALLBACK_ATTEMPTS + 1;
+	trial_left = connection_differs(&current, reference)
+			     ? CONFIG_APP_CONFIG_FALLBACK_ATTEMPTS + 1
+			     : 0;
+}
+
+/* --- flash writes (never called with `lock` held) ------------------------ */
+
+static int save_text(const char *name, const char *text)
+{
+	/* A zero-length value would mean "deleted": store "" as one NUL. */
+	return settings_save_one(name, text, text[0] != '\0' ? strlen(text) : 1);
+}
+
+static void persist_trial(int value)
+{
+	char text[12];
+
+	if (value > 0) {
+		snprintk(text, sizeof(text), "%d", value);
+		(void)settings_save_one(SUBTREE "/trial", text, strlen(text));
 	} else {
-		trial_left = 0;
-	}
-	if (!loading) {
-		persist_trial();
+		(void)settings_delete(SUBTREE "/trial");
 	}
 }
 
@@ -305,6 +337,47 @@ BUILD_ASSERT(sizeof(CONFIG_APP_MQTT_BROKER_HOSTNAME) <= APP_CFG_STR_LEN &&
 	     sizeof(CONFIG_APP_MQTT_PASSWORD) <= APP_CFG_STR_LEN,
 	     "a Kconfig default does not fit APP_CFG_STR_LEN");
 
+static void apply_log_level(void)
+{
+	uint8_t level;
+
+	k_mutex_lock(&lock, K_FOREVER);
+	level = current.log_level;
+	k_mutex_unlock(&lock);
+
+	app_log_set_level(level);
+}
+
+/* Check a stored LKG blob: every field must be a value parse_value accepts. */
+static bool lkg_valid(struct lkg_blob *blob)
+{
+	struct app_config tmp = defaults;
+	char text[APP_CFG_STR_LEN];
+
+	for (size_t i = 0; i < ARRAY_SIZE(keys); i++) {
+		const struct key_desc *k = &keys[i];
+
+		if (k->type == TYPE_STR) {
+			((char *)field(&blob->cfg, k))[k->size - 1] = '\0';
+		}
+		format_value(k, &blob->cfg, true, text, sizeof(text));
+		if (parse_value(k, text, &tmp) != 0) {
+			return false;
+		}
+		/* The text round trip must give back the stored value (an
+		 * out-of-range level would otherwise read back as "wrn").
+		 */
+		if (k->type == TYPE_STR
+			    ? strcmp(cfield(&tmp, k), cfield(&blob->cfg, k)) != 0
+			    : get_uint(&tmp, k) != get_uint(&blob->cfg, k)) {
+			return false;
+		}
+	}
+	blob->mask &= BIT_MASK(ARRAY_SIZE(keys));
+
+	return true;
+}
+
 /* --- settings handler -------------------------------------------------- */
 
 static struct k_work factory_reset_work;
@@ -312,20 +385,37 @@ static struct k_work factory_reset_work;
 static int h_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
 	const struct key_desc *k;
+	struct app_config tmp;
 	size_t idx;
 	char text[APP_CFG_STR_LEN];
-	int ret = 0;
+	bool changed;
+	int ret;
 	ssize_t n;
 
+	if (name == NULL) {
+		return -ENOENT;
+	}
+
+	/* Internal state: only read back from flash at boot, never written
+	 * from outside (the application stores it with settings_save_one,
+	 * which does not call this handler).
+	 */
 	if (settings_name_steq(name, "lkg", NULL)) {
-		if (len != sizeof(lkg)) {
-			return -EINVAL;
+		struct lkg_blob blob;
+
+		if (!loading) {
+			return -EACCES;
+		}
+		if (len != sizeof(blob) || read_cb(cb_arg, &blob, sizeof(blob)) != sizeof(blob) ||
+		    !lkg_valid(&blob)) {
+			LOG_WRN("Discarding invalid stored last-known-good configuration");
+			return 0;
 		}
 		k_mutex_lock(&lock, K_FOREVER);
-		n = read_cb(cb_arg, &lkg, sizeof(lkg));
-		have_lkg = (n == sizeof(lkg));
+		lkg = blob;
+		have_lkg = true;
 		k_mutex_unlock(&lock);
-		return have_lkg ? 0 : -EIO;
+		return 0;
 	}
 
 	if (len >= sizeof(text)) {
@@ -335,11 +425,21 @@ static int h_set(const char *name, size_t len, settings_read_cb read_cb, void *c
 	if (n < 0) {
 		return (int)n;
 	}
+	/* Strip the NUL an empty value is stored as; reject embedded NULs. */
+	while (n > 0 && text[n - 1] == '\0') {
+		n--;
+	}
 	text[n] = '\0';
+	if (memchr(text, '\0', n) != NULL) {
+		return -EINVAL;
+	}
 
 	if (settings_name_steq(name, "trial", NULL)) {
+		if (!loading) {
+			return -EACCES;
+		}
 		k_mutex_lock(&lock, K_FOREVER);
-		trial_left = atoi(text);
+		trial_left = CLAMP(atoi(text), 0, CONFIG_APP_CONFIG_FALLBACK_ATTEMPTS + 1);
 		k_mutex_unlock(&lock);
 		return 0;
 	}
@@ -358,18 +458,27 @@ static int h_set(const char *name, size_t len, settings_read_cb read_cb, void *c
 	}
 
 	k_mutex_lock(&lock, K_FOREVER);
-	ret = parse_value(k, text, &current);
+	tmp = current;
+	ret = parse_value(k, text, &tmp);
 	if (ret == 0) {
+		changed = field_differs(&tmp, &current, k);
+		memcpy(field(&current, k), cfield(&tmp, k), k->size);
 		explicit_mask |= BIT(idx);
-		if (k->flags & F_CONNECTION) {
-			if (!loading) {
-				update_trial();
-			}
+		/* A runtime (SMP) write of a new connection value starts a
+		 * trial; it is persisted by the next SMP save (h_export).
+		 * Re-loading identical values leaves a running trial alone.
+		 */
+		if (!loading && changed && (k->flags & F_CONNECTION)) {
+			update_trial_locked();
 		}
 	} else {
-		LOG_WRN("Ignoring invalid stored setting %s/%s", SUBTREE, name);
+		LOG_WRN("Ignoring invalid setting %s/%s", SUBTREE, name);
 	}
 	k_mutex_unlock(&lock);
+
+	if (ret == 0 && !loading && k->type == TYPE_LEVEL) {
+		apply_log_level();
+	}
 
 	return ret;
 }
@@ -394,22 +503,40 @@ static int h_get(const char *name, char *val, int val_len_max)
 
 static int h_export(int (*cb)(const char *name, const void *value, size_t val_len))
 {
-	char name[48];
-	char text[APP_CFG_STR_LEN];
+	char texts[ARRAY_SIZE(keys)][APP_CFG_STR_LEN];
+	char name[KEY_LEN];
+	char trial[12];
+	uint32_t mask;
+	struct lkg_blob blob;
+	bool with_lkg;
+	int trial_val;
 
+	/* Snapshot under the lock, write without it (settings_save holds the
+	 * settings lock while calling us).
+	 */
 	k_mutex_lock(&lock, K_FOREVER);
+	mask = explicit_mask;
 	for (size_t i = 0; i < ARRAY_SIZE(keys); i++) {
-		if (!(explicit_mask & BIT(i))) {
+		format_value(&keys[i], &current, true, texts[i], sizeof(texts[i]));
+	}
+	blob = lkg;
+	with_lkg = have_lkg;
+	trial_val = trial_left;
+	k_mutex_unlock(&lock);
+
+	for (size_t i = 0; i < ARRAY_SIZE(keys); i++) {
+		if (!(mask & BIT(i))) {
 			continue;
 		}
 		snprintk(name, sizeof(name), SUBTREE "/%s", keys[i].name);
-		format_value(&keys[i], &current, true, text, sizeof(text));
-		(void)cb(name, text, strlen(text));
+		(void)cb(name, texts[i], texts[i][0] != '\0' ? strlen(texts[i]) : 1);
 	}
-	if (have_lkg) {
-		(void)cb(SUBTREE "/lkg", &lkg, sizeof(lkg));
+	if (with_lkg) {
+		(void)cb(SUBTREE "/lkg", &blob, sizeof(blob));
 	}
-	k_mutex_unlock(&lock);
+	snprintk(trial, sizeof(trial), "%d", MAX(trial_val, 0));
+	(void)cb(SUBTREE "/trial", trial, strlen(trial));
+	memset(texts, 0, sizeof(texts)); /* the password was in here */
 
 	return 0;
 }
@@ -436,6 +563,7 @@ int app_config_init(void)
 	ret = settings_subsys_init();
 	if (ret < 0) {
 		LOG_ERR("Settings storage unavailable (%d): using Kconfig defaults only", ret);
+		apply_log_level();
 		return 0;
 	}
 
@@ -457,6 +585,8 @@ int app_config_init(void)
 	}
 	k_mutex_unlock(&lock);
 
+	apply_log_level();
+
 	return 0;
 }
 
@@ -467,38 +597,67 @@ void app_config_get(struct app_config *out)
 	k_mutex_unlock(&lock);
 }
 
+void app_config_snapshot(struct app_config *out, uint32_t *mask)
+{
+	k_mutex_lock(&lock, K_FOREVER);
+	*out = current;
+	*mask = explicit_mask;
+	k_mutex_unlock(&lock);
+}
+
 int app_config_set(const char *name, const char *value, bool *next_connect)
 {
 	const struct key_desc *k;
 	struct app_config tmp;
 	size_t idx;
-	char key[48];
+	char key[KEY_LEN];
+	bool changed = false;
+	int trial = -1;
 	int ret;
 
 	k = find_key(name, &idx);
 	if (k == NULL) {
 		return -ENOENT;
 	}
+	if (next_connect != NULL) {
+		*next_connect = (k->flags & F_CONNECTION) != 0U;
+	}
+
+	k_mutex_lock(&store_lock, K_FOREVER);
 
 	k_mutex_lock(&lock, K_FOREVER);
 	tmp = current;
 	ret = parse_value(k, value, &tmp);
-	if (ret == 0) {
-		snprintk(key, sizeof(key), SUBTREE "/%s", name);
-		ret = settings_save_one(key, value, strlen(value));
-		if (ret == 0) {
-			current = tmp;
-			explicit_mask |= BIT(idx);
-			if (k->flags & F_CONNECTION) {
-				update_trial();
-			}
-		}
+	k_mutex_unlock(&lock);
+	if (ret < 0) {
+		goto out;
+	}
+
+	snprintk(key, sizeof(key), SUBTREE "/%s", name);
+	if (save_text(key, value) != 0) {
+		ret = -EIO;
+		goto out;
+	}
+
+	k_mutex_lock(&lock, K_FOREVER);
+	changed = field_differs(&tmp, &current, k);
+	memcpy(field(&current, k), cfield(&tmp, k), k->size);
+	explicit_mask |= BIT(idx);
+	if (changed && (k->flags & F_CONNECTION)) {
+		update_trial_locked();
+		trial = trial_left;
 	}
 	k_mutex_unlock(&lock);
 
-	if (next_connect != NULL) {
-		*next_connect = (k->flags & F_CONNECTION) != 0U;
+	if (trial >= 0) {
+		persist_trial(trial);
 	}
+	if (k->type == TYPE_LEVEL) {
+		apply_log_level();
+	}
+
+out:
+	k_mutex_unlock(&store_lock);
 
 	return ret;
 }
@@ -520,9 +679,17 @@ int app_config_get_value(const char *name, char *buf, size_t len)
 
 int app_config_reset(void)
 {
-	char key[48];
+	char key[KEY_LEN];
+
+	k_mutex_lock(&store_lock, K_FOREVER);
 
 	k_mutex_lock(&lock, K_FOREVER);
+	current = defaults;
+	explicit_mask = 0U;
+	have_lkg = false;
+	trial_left = 0;
+	k_mutex_unlock(&lock);
+
 	for (size_t i = 0; i < ARRAY_SIZE(keys); i++) {
 		snprintk(key, sizeof(key), SUBTREE "/%s", keys[i].name);
 		(void)settings_delete(key);
@@ -530,12 +697,10 @@ int app_config_reset(void)
 	(void)settings_delete(SUBTREE "/lkg");
 	(void)settings_delete(SUBTREE "/trial");
 	(void)settings_delete(SUBTREE "/factory_reset");
-	current = defaults;
-	explicit_mask = 0U;
-	have_lkg = false;
-	trial_left = 0;
-	k_mutex_unlock(&lock);
 
+	k_mutex_unlock(&store_lock);
+
+	apply_log_level();
 	LOG_WRN("Configuration reset to the Kconfig defaults");
 
 	return 0;
@@ -543,24 +708,27 @@ int app_config_reset(void)
 
 int app_config_json(char *buf, size_t len)
 {
-	size_t off = 0;
+	size_t off;
 	char text[APP_CFG_STR_LEN];
 	int n;
 
-	n = snprintk(buf, len, "{");
-	off = MAX(n, 0);
+	if (len < 2) {
+		return -ENOMEM;
+	}
+	buf[0] = '{';
+	off = 1;
 
 	k_mutex_lock(&lock, K_FOREVER);
-	for (size_t i = 0; i < ARRAY_SIZE(keys) && off < len; i++) {
+	for (size_t i = 0; i < ARRAY_SIZE(keys); i++) {
 		format_value(&keys[i], &current, false, text, sizeof(text));
-		if (keys[i].type == TYPE_UINT) {
-			n = snprintk(&buf[off], len - off, "%s\"%s\":%s", i ? "," : "",
-				     keys[i].name, text);
-		} else {
-			n = snprintk(&buf[off], len - off, "%s\"%s\":\"%s\"", i ? "," : "",
-				     keys[i].name, text);
+		n = snprintk(&buf[off], len - off,
+			     keys[i].type == TYPE_UINT ? "%s\"%s\":%s" : "%s\"%s\":\"%s\"",
+			     i ? "," : "", keys[i].name, text);
+		if (n < 0 || (size_t)n >= len - off) {
+			k_mutex_unlock(&lock);
+			return -ENOMEM;
 		}
-		off += MAX(n, 0);
+		off += (size_t)n;
 	}
 	k_mutex_unlock(&lock);
 
@@ -578,81 +746,131 @@ void app_config_key_list(char *buf, size_t len)
 	size_t off = 0;
 	int n;
 
-	for (size_t i = 0; i < ARRAY_SIZE(keys) && off < len; i++) {
+	buf[0] = '\0';
+	for (size_t i = 0; i < ARRAY_SIZE(keys); i++) {
 		n = snprintk(&buf[off], len - off, "%s\"%s\"", i ? "," : "", keys[i].name);
-		off += MAX(n, 0);
+		if (n < 0 || (size_t)n >= len - off) {
+			break;
+		}
+		off += (size_t)n;
 	}
 }
 
 bool app_config_attempt(void)
 {
+	struct {
+		char key[KEY_LEN];
+		char text[APP_CFG_STR_LEN];
+		bool keep;
+	} writes[ARRAY_SIZE(keys)];
+	size_t n_writes = 0;
 	bool fell_back = false;
+	bool to_lkg = false;
+	int trial = -1;
+
+	k_mutex_lock(&store_lock, K_FOREVER);
 
 	k_mutex_lock(&lock, K_FOREVER);
 	if (trial_left > 0) {
 		trial_left--;
+		trial = trial_left;
 		if (trial_left == 0) {
-			/* Out of attempts: roll back to what last worked. */
-			char key[48];
-			char text[APP_CFG_STR_LEN];
-			struct app_config target = have_lkg ? lkg.cfg : defaults;
-			uint32_t mask = have_lkg ? lkg.mask : 0U;
+			/* Out of attempts: roll the connection keys back to
+			 * what last worked. Other keys stay as they are.
+			 */
+			to_lkg = have_lkg;
+			for (size_t i = 0; i < ARRAY_SIZE(keys); i++) {
+				const struct key_desc *k = &keys[i];
+				bool in_lkg = have_lkg && (lkg.mask & BIT(i));
 
-			for (size_t i = 0; i < ARRAY_SIZE(keys); i++) {
-				snprintk(key, sizeof(key), SUBTREE "/%s", keys[i].name);
-				if (mask & BIT(i)) {
-					format_value(&keys[i], &target, true, text, sizeof(text));
-					(void)settings_save_one(key, text, strlen(text));
+				if (!(k->flags & F_CONNECTION)) {
+					continue;
+				}
+				memcpy(field(&current, k),
+				       in_lkg ? cfield(&lkg.cfg, k) : cfield(&defaults, k), k->size);
+				if (in_lkg) {
+					explicit_mask |= BIT(i);
 				} else {
-					(void)settings_delete(key);
+					explicit_mask &= ~BIT(i);
 				}
+				snprintk(writes[n_writes].key, KEY_LEN, SUBTREE "/%s", k->name);
+				format_value(k, &current, true, writes[n_writes].text, APP_CFG_STR_LEN);
+				writes[n_writes].keep = in_lkg;
+				n_writes++;
 			}
-			/* Keep the current non-connection settings. */
-			for (size_t i = 0; i < ARRAY_SIZE(keys); i++) {
-				if (!(keys[i].flags & F_CONNECTION)) {
-					memcpy(field(&target, &keys[i]), field(&current, &keys[i]),
-					       keys[i].size);
-					if (explicit_mask & BIT(i)) {
-						mask |= BIT(i);
-						snprintk(key, sizeof(key), SUBTREE "/%s",
-							 keys[i].name);
-						format_value(&keys[i], &current, true, text,
-							     sizeof(text));
-						(void)settings_save_one(key, text, strlen(text));
-					}
-				}
-			}
-			current = target;
-			explicit_mask = mask;
 			fell_back = true;
 		}
-		persist_trial();
 	}
 	k_mutex_unlock(&lock);
+
+	for (size_t i = 0; i < n_writes; i++) {
+		if (writes[i].keep) {
+			(void)save_text(writes[i].key, writes[i].text);
+		} else {
+			(void)settings_delete(writes[i].key);
+		}
+	}
+	memset(writes, 0, sizeof(writes)); /* may hold the password */
+	if (trial >= 0) {
+		persist_trial(trial);
+	}
+
+	k_mutex_unlock(&store_lock);
 
 	if (fell_back) {
 		LOG_WRN("New connection settings failed %d times: fell back to the %s",
 			CONFIG_APP_CONFIG_FALLBACK_ATTEMPTS,
-			have_lkg ? "last known good configuration" : "Kconfig defaults");
+			to_lkg ? "last known good configuration" : "Kconfig defaults");
 	}
 
 	return fell_back;
 }
 
-void app_config_online(void)
+void app_config_lkg_topic_root(char *buf, size_t len)
 {
 	k_mutex_lock(&lock, K_FOREVER);
-	if (!have_lkg || trial_left > 0 || connection_differs(&current, &lkg.cfg) ||
-	    lkg.mask != explicit_mask) {
-		lkg.mask = explicit_mask;
-		lkg.cfg = current;
+	snprintk(buf, len, "%s", have_lkg ? lkg.cfg.topic_root : "");
+	k_mutex_unlock(&lock);
+}
+
+void app_config_online(const struct app_config *used, uint32_t used_mask)
+{
+	struct lkg_blob blob;
+	bool save_lkg = false;
+	bool confirmed = false;
+	int trial = -1;
+
+	k_mutex_lock(&store_lock, K_FOREVER);
+
+	k_mutex_lock(&lock, K_FOREVER);
+	/* The configuration this session actually used worked. */
+	if (!have_lkg || lkg.mask != used_mask || memcmp(&lkg.cfg, used, sizeof(*used)) != 0) {
+		lkg.mask = used_mask;
+		lkg.cfg = *used;
 		have_lkg = true;
-		(void)settings_save_one(SUBTREE "/lkg", &lkg, sizeof(lkg));
+		save_lkg = true;
 	}
+	blob = lkg;
 	if (trial_left > 0) {
-		trial_left = 0;
-		persist_trial();
-		LOG_INF("New connection settings confirmed");
+		/* If the connection settings changed again while this session
+		 * was connecting, the newer ones stay on trial.
+		 */
+		update_trial_locked();
+		trial = trial_left;
+		confirmed = (trial_left == 0);
 	}
 	k_mutex_unlock(&lock);
+
+	if (save_lkg) {
+		(void)settings_save_one(SUBTREE "/lkg", &blob, sizeof(blob));
+	}
+	if (trial >= 0) {
+		persist_trial(trial);
+	}
+
+	k_mutex_unlock(&store_lock);
+
+	if (confirmed) {
+		LOG_INF("New connection settings confirmed");
+	}
 }

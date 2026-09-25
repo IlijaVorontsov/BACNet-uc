@@ -35,17 +35,21 @@ int app_config_init(void);
 /** Snapshot of the current configuration. */
 void app_config_get(struct app_config *out);
 
+/** Snapshot plus the mask of keys that are stored (not Kconfig defaults). */
+void app_config_snapshot(struct app_config *out, uint32_t *mask);
+
 /**
  * Validate, store and apply one key. @p next_connect tells whether the change
  * takes effect only on the next connection. Returns 0, -ENOENT (unknown key),
- * -EINVAL or -ENAMETOOLONG (bad value) or a settings error.
+ * -EINVAL or -ENAMETOOLONG (bad value) or -EIO (storage failed). A new
+ * log_level is applied immediately.
  */
 int app_config_set(const char *name, const char *value, bool *next_connect);
 
 /** Current value of one key as text; secrets read as "***". */
 int app_config_get_value(const char *name, char *buf, size_t len);
 
-/** Delete all stored settings: back to the Kconfig defaults. */
+/** Delete all stored settings: back to the Kconfig defaults (applied now). */
 int app_config_reset(void);
 
 /** The whole configuration as a JSON object (secrets masked). Length or -ENOMEM. */
@@ -60,8 +64,15 @@ void app_config_key_list(char *buf, size_t len);
  */
 bool app_config_attempt(void);
 
-/** Call when a session reached "online": the configuration becomes the LKG. */
-void app_config_online(void);
+/** topic_root of the last known good configuration, or "" if there is none. */
+void app_config_lkg_topic_root(char *buf, size_t len);
+
+/**
+ * Call when a session reached "online". @p used (with its stored-key mask
+ * @p used_mask, both from app_config_snapshot) is the configuration that
+ * session connected with; it becomes the last known good.
+ */
+void app_config_online(const struct app_config *used, uint32_t used_mask);
 
 /* net_wait.c ---------------------------------------------------------------- */
 
@@ -160,14 +171,14 @@ size_t app_json_escape(char *dst, size_t len, const char *src);
 
 /* mgmt.c -------------------------------------------------------------------- */
 
-/** Note whether this is an unconfirmed MCUboot test image. */
+/**
+ * Note whether this is an unconfirmed MCUboot test image; if so, schedule the
+ * revert reboot (cancelled by app_mgmt_online).
+ */
 void app_mgmt_init(void);
 
 /** The device reached "online": confirm a test image. */
 void app_mgmt_online(void);
-
-/** Call periodically: reboots (reverting a test image) if it never got online. */
-void app_mgmt_poll(void);
 
 /** The "mgmt" and "boot" members of the info message (no braces). */
 int app_mgmt_info_json(char *buf, size_t len);

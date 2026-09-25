@@ -5,6 +5,15 @@ cmake_minimum_required(VERSION 3.20.0)
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(mqtt_tls)
 
+# boards/<board>_mcuboot.overlay moves the settings into a partition that is
+# only free when MCUboot owns the flash layout. Without the bootloader the
+# image would be linked over it.
+if(FILE_SUFFIX STREQUAL "mcuboot" AND NOT CONFIG_BOOTLOADER_MCUBOOT)
+  message(FATAL_ERROR
+    "FILE_SUFFIX=mcuboot needs CONFIG_BOOTLOADER_MCUBOOT: build with --sysbuild, "
+    "or add -DEXTRA_CONF_FILE=overlay-mcuboot.conf for an existing MCUboot.")
+endif()
+
 target_sources(app PRIVATE
   src/main.c
   src/net_wait.c

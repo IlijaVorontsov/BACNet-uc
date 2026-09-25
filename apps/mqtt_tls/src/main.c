@@ -42,7 +42,6 @@ static void sleep_fed(uint32_t ms)
 		uint32_t chunk = MIN(ms, 5000U);
 
 		app_wdt_feed();
-		app_mgmt_poll();
 		k_sleep(K_MSEC(chunk));
 		ms -= chunk;
 	}
@@ -60,13 +59,7 @@ int main(void)
 	app_mgmt_init();
 
 	/* Kconfig defaults overlaid with stored settings (runtime config). */
-	ret = app_config_init();
-	if (ret == 0) {
-		struct app_config cfg;
-
-		app_config_get(&cfg);
-		app_log_set_level(cfg.log_level);
-	}
+	(void)app_config_init();
 
 	ret = app_mqtt_init();
 	if (ret < 0) {
@@ -100,11 +93,9 @@ int main(void)
 			LOG_INF("Waiting for network...");
 			while (app_net_wait_up(K_SECONDS(5)) != 0) {
 				app_wdt_feed();
-				app_mgmt_poll();
 			}
 		}
 
-		app_mgmt_poll();
 		ret = app_mqtt_run_session(&healthy);
 		if (healthy) {
 			backoff_ms = CONFIG_APP_MQTT_RECONNECT_MIN_MS;

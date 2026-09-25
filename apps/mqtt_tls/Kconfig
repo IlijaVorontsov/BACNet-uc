@@ -218,6 +218,18 @@ config APP_CONFIG_FALLBACK_ATTEMPTS
 	  good configuration (or to the Kconfig defaults if none has worked
 	  yet). The counter survives reboots.
 
+config APP_LOG_MQTT
+	bool "Publish log lines over MQTT"
+	default y
+	depends on LOG
+	select LOG_OUTPUT
+	help
+	  Log backend that keeps recent lines in RAM for <root>/<id>/log and
+	  the "logs" command. Lines are only captured if their module was
+	  compiled in at that level (CONFIG_LOG_DEFAULT_LEVEL, CONFIG_APP_LOG_LEVEL):
+	  mqtt/log_level can lower the threshold at run time, but not raise it
+	  beyond what was compiled in.
+
 config APP_LOG_MQTT_LEVEL
 	int "Default level of the MQTT log topic (1=err 2=wrn 3=inf 4=dbg)"
 	default 2
@@ -254,6 +266,8 @@ config APP_SMP
 	imply MCUMGR_GRP_OS_INFO
 	imply MCUMGR_GRP_OS_MCUMGR_PARAMS
 	imply MCUMGR_GRP_SETTINGS
+	imply MCUMGR_MGMT_NOTIFICATION_HOOKS
+	imply MCUMGR_GRP_SETTINGS_ACCESS_HOOK
 	help
 	  SMP server on UDP port 1337 (CONFIG_MCUMGR_TRANSPORT_UDP_PORT), as
 	  in the BACnet firmware: OS group (echo, reset, info), settings group
@@ -263,11 +277,13 @@ config APP_SMP
 
 if APP_SMP && MCUMGR
 
+# A full Ethernet payload: image uploads need fewer round trips, and smpmgr
+# sizes its upload chunks from the MTU reported by mcumgr params.
 configdefault MCUMGR_TRANSPORT_UDP_MTU
-	default 1024
+	default 1472
 
 configdefault MCUMGR_TRANSPORT_NETBUF_SIZE
-	default 1152
+	default 1536
 
 configdefault MCUMGR_TRANSPORT_WORKQUEUE_STACK_SIZE
 	default 3072
@@ -285,6 +301,18 @@ config APP_MCUBOOT_CONFIRM_TIMEOUT_SEC
 	depends on BOOTLOADER_MCUBOOT
 	default 600
 	range 60 86400
+
+# Without sysbuild (overlay-mcuboot.conf with a separately built MCUboot) the
+# app has to match the bootloader's swap mode; same choice as Kconfig.sysbuild.
+choice MCUBOOT_BOOTLOADER_MODE
+	default MCUBOOT_BOOTLOADER_MODE_SWAP_SCRATCH if BOARD_NUCLEO_F767ZI
+endchoice
+
+# Plain NUCLEO-F767ZI build: the image is linked at the start of the flash and
+# must end below the settings partition at 0x180000 (nucleo_f767zi.overlay);
+# with this the linker, not the first settings write, reports an overflow.
+configdefault FLASH_LOAD_SIZE
+	default 0x180000 if BOARD_NUCLEO_F767ZI && !USE_DT_CODE_PARTITION
 
 config APP_DHCPV4
 	bool "Start DHCPv4 on the default interface"

@@ -85,6 +85,7 @@ static char topic_log[TOPIC_LEN];
 
 /* Configuration snapshot for the current session (see config.c). */
 static struct app_config cfg;
+static uint32_t cfg_mask; /* stored keys in cfg, for the last known good */
 
 static atomic_t reconnect_requested;
 
@@ -700,6 +701,8 @@ static int check_liveness(int64_t now)
 static int publish_logs(int64_t now)
 {
 	static char payload[320];
+	/* Lines lost before a line whose publish failed: reported with it. */
+	static uint32_t pending_lost;
 	struct app_log_line line;
 	uint32_t lost;
 	int ret;
@@ -710,6 +713,8 @@ static int publish_logs(int64_t now)
 	}
 
 	while (log_tokens > 0 && app_log_next(&log_cursor, &line, &lost)) {
+		lost += pending_lost;
+		pending_lost = 0U;
 		ret = app_log_line_json(&line, lost, payload, sizeof(payload));
 		if (ret < 0) {
 			continue;
@@ -718,6 +723,7 @@ static int publish_logs(int64_t now)
 		if (ret < 0) {
 			/* Re-read this line in the next session. */
 			log_cursor--;
+			pending_lost = lost;
 			return ret;
 		}
 		log_tokens--;
@@ -869,6 +875,28 @@ static int build_topics(void)
 	return 0;
 }
 
+/* After a topic_root change, remove the retained status and info that the
+ * previous (last known good) root still holds, so the old device entry does
+ * not linger as "offline" forever. Best effort.
+ */
+static void clear_old_root(void)
+{
+	char old_root[APP_CFG_STR_LEN];
+	char topic[sizeof(old_root) + sizeof(client_id) + sizeof("/status")];
+
+	app_config_lkg_topic_root(old_root, sizeof(old_root));
+	if (old_root[0] == '\0' || strcmp(old_root, cfg.topic_root) == 0) {
+		return;
+	}
+
+	LOG_INF("Topic root changed: clearing retained messages under %s/%s", old_root,
+		client_id);
+	(void)snprintf(topic, sizeof(topic), "%s/%s/status", old_root, client_id);
+	(void)publish(topic, "", 0, MQTT_QOS_1_AT_LEAST_ONCE, true);
+	(void)snprintf(topic, sizeof(topic), "%s/%s/info", old_root, client_id);
+	(void)publish(topic, "", 0, MQTT_QOS_1_AT_LEAST_ONCE, true);
+}
+
 void app_mqtt_request_reconnect(void)
 {
 	atomic_set(&reconnect_requested, 1);
@@ -886,7 +914,7 @@ int app_mqtt_run_session(bool *was_connected)
 	 * the last known good once it is used up.
 	 */
 	(void)app_config_attempt();
-	app_config_get(&cfg);
+	app_config_snapshot(&cfg, &cfg_mask);
 	atomic_clear(&reconnect_requested);
 
 	ret = build_topics();
@@ -967,7 +995,8 @@ int app_mqtt_run_session(bool *was_connected)
 	}
 
 	/* Online: this configuration works, and so does this image. */
-	app_config_online();
+	clear_old_root();
+	app_config_online(&cfg, cfg_mask);
 	app_mgmt_online();
 
 	ret = serve();

@@ -117,11 +117,16 @@ example `mqtt/broker_host`). Values are stored as text in flash (ZMS).
 - `password` is write-only: reads return `***` over both MQTT and SMP. Command
   payloads that contain a password are redacted in the device log.
 - "next connect" changes take effect on the next connection. Send `reconnect`
-  to apply them immediately.
+  to apply them immediately. After a `topic_root` change the device clears
+  its retained `status` and `info` under the old root once it is online under
+  the new one.
+- Values must be printable ASCII without `"` and `\`; numbers are plain
+  decimal digits. Invalid values are refused over both MQTT and SMP.
 - **Fallback.** After a "next connect" change, the new configuration is on
   trial for `APP_CONFIG_FALLBACK_ATTEMPTS` (5) connection attempts. If it does
-  not reach `online` in that time, the stored settings roll back to the last
-  configuration that worked, or to the Kconfig defaults if none has worked yet.
+  not reach `online` in that time, the connection settings roll back to the
+  last configuration that worked, or to the Kconfig defaults if none has worked
+  yet. Other keys such as `publish_interval` keep their values.
   The rollback is logged. The attempt counter survives reboots, so a typo in
   the broker name cannot strand a remote device.
 - The client certificate and key are fixed at build time.
@@ -136,9 +141,16 @@ unchanged. It offers:
 - the settings group, over the `mqtt/` subtree described above;
 - in the MCUboot variant, the image group.
 
+SMP settings access is limited to the `mqtt/` subtree. Deletes are refused
+(use `mqtt/factory_reset`), and so are writes to the internal keys
+`mqtt/lkg` and `mqtt/trial`. An SMP write is applied at once and becomes
+persistent with "save"; like `config_set`, a changed connection key starts the
+trial described above.
+
 SMP over UDP is not authenticated, so keep it on the management network.
 `CONFIG_APP_SMP=n` removes it. `scripts/smp_tool.py` is a minimal client
-(echo, settings read, write, save, factory-reset, reset).
+(echo, settings read, write, delete, save, factory-reset, reset). The SMP MTU
+is 1472 bytes (one Ethernet frame), which keeps image uploads fast.
 
 The plain `west build` below is the release artifact and has no bootloader.
 The **MCUboot variant** uses sysbuild:
@@ -151,7 +163,10 @@ west flash -d build-f767-mcuboot
 
 It reuses the BACnet firmware's settings: swap using scratch on F767ZI, swap
 using offset on MCXN947, and ECDSA-P256 signing with the MCUboot **development
-key**, which is not for production. To update, upload an image through the SMP
+key**, which is public and therefore not for production (set
+`SB_CONFIG_BOOT_SIGNATURE_KEY_FILE` to your own key). The image is erased
+progressively during an upload (`CONFIG_IMG_ERASE_PROGRESSIVELY`), so no
+multi-second erase blocks the device. To update, upload an image through the SMP
 image group ("image upload", "image test", "reset"). The new image then runs
 as a test image. It confirms itself once it reaches `online` (TLS up and
 SUBACK accepted). If it doesn't get there within
@@ -162,8 +177,13 @@ Where settings are stored:
 | Board | Plain build | MCUboot variant |
 |---|---|---|
 | `nucleo_f767zi` | last two 256 KiB sectors (0x180000). The plain image covers the board's `storage_partition`. | `storage_partition` (0x10000, 64 KiB) |
-| `frdm_mcxn947/mcxn947/cpu0` | first 64 KiB of the external W25Q64 NOR | same |
+| `frdm_mcxn947/mcxn947/cpu0` | last 64 KiB of the external W25Q64 NOR (0x7F0000) | same |
 | `nucleo_h563zi` | `storage_partition` (end of flash) | same |
+
+On the F767ZI the plain image is limited to 1.5 MiB (`CONFIG_FLASH_LOAD_SIZE`)
+so that the linker, not a settings write, reports an overflow. Building with
+`FILE_SUFFIX=mcuboot` but without MCUboot stops with an error, since the image
+would then overlap the settings.
 
 ## Logs over MQTT
 
@@ -171,9 +191,15 @@ A log backend copies lines at or above `log_level` (default `wrn`) into a RAM
 ring of 32 lines. It never publishes from the logging context. The MQTT thread
 publishes them on `<root>/<id>/log`, limited to 5 lines per second with bursts
 of up to 20, and starts with the lines from before the first connection.
-`logs [n]` returns the last n lines on the event topic. If lines fell out of
-the ring before they could be published, the next published line carries
-`"lost":N`.
+`logs [n]` returns the last n lines (at most 50) on the event topic; when they
+do not all fit in one reply, the oldest are left out. If lines fell out of
+the ring, or the logging core dropped some, before they could be published,
+the next published line carries `"lost":N`.
+
+`log_level` can only lower the threshold as far as the code was compiled:
+modules log at `CONFIG_LOG_DEFAULT_LEVEL` and the app at `CONFIG_APP_LOG_LEVEL`
+(both `inf` by default), so `dbg` shows nothing more unless those are raised.
+`CONFIG_APP_LOG_MQTT=n` removes the backend.
 
 ## Build
 
@@ -292,12 +318,15 @@ The test covers:
 - acceptance of an IP-address SAN;
 - SNI, and complete TLS 1.2 and TLS 1.3 handshakes;
 - runtime configuration: masked secrets, immediate and next-connect keys, a
-  topic-root change with reconnect, persistence across restarts, and fallback
-  to the last known good after 5 attempts with a broken broker port;
+  topic-root change with reconnect (old retained messages cleared),
+  persistence across restarts (including an empty value), and fallback to the
+  last known good after 5 attempts with a broken broker port;
 - logs on the log topic (including a warning from before the connection), the
-  `logs` command, `log_level`, and that no secret leaks into the log;
+  `logs` command (newest lines kept), `log_level`, and that no secret leaks
+  into the log;
 - SMP on UDP 1337: echo, settings read (secret masked), write, save and
-  restart, factory reset, and `mgmt`/`boot` in info.
+  restart, factory reset, refused deletes, subtrees other than `mqtt/`,
+  internal keys and invalid values, and `mgmt`/`boot` in info.
 - RSA: a PKCS#8 RSA client key over mutual TLS, an RSA broker certificate over
   TLS 1.3 (RSA-PSS), and a TLS-1.2-only RSA broker with the overlay.
 
@@ -344,8 +373,11 @@ explains each choice.
   reboots the board if the main loop makes no progress for 120 s
   (`CONFIG_APP_WATCHDOG_TIMEOUT_SEC`). It is armed only after the configuration
   and credentials have been checked, so a misconfigured device logs its error
-  instead of reboot-looping. The hardware window is 2 s, fed every second,
-  which tolerates the watchdog oscillator's inaccuracy.
+  instead of reboot-looping. The hardware window is 2 s (8 s on the F767ZI,
+  where a 256 KiB flash sector erase stalls the CPU for up to 4 s), fed every
+  second, which tolerates the watchdog oscillator's inaccuracy.
+- **Test images.** In the MCUboot variant the revert of an unconfirmed image
+  is a scheduled work item, so it fires even if the MQTT thread hangs.
 
 ## Board notes
 
@@ -360,6 +392,11 @@ explains each choice.
   the stable UID-based MAC (`nxp,unique-mac`). The ENET QoS RX ring is enlarged
   to 48 descriptors (`CONFIG_NET_BUF_RX_COUNT=128`), because the driver
   permanently reserves one network buffer per descriptor.
+- **NUCLEO-H563ZI:** settings live in the internal flash, which has ECC. A
+  write interrupted by a power loss can leave a double-bit ECC error that
+  raises an NMI when read; Zephyr 4.4 does not recover from it, so erase the
+  settings partition (`west flash --erase` or STM32CubeProgrammer) if a board
+  faults at boot right after a power cut during a settings write.
 - Both boards' Ethernet drivers follow the PHY's negotiated speed and duplex.
 
 ## Security notes
@@ -377,6 +414,12 @@ explains each choice.
 - Client keys and passwords are embedded in the firmware image. On production
   parts, enable flash read-out protection (STM32 RDP, MCX N debug/flash
   protection), or keep the key in a secure element.
+- Whoever can publish on `<root>/<id>/cmd` controls the device, including
+  `config_set broker_host=...`, which redirects it to another broker (it
+  still has to pass the CA and host-name check). Restrict the `cmd` topics
+  with a broker ACL, and use a CA that signs only your brokers.
+- The MCUboot variant's development signing key is public: anyone can sign an
+  image it accepts. Use your own key for real devices.
 - Each board's hardware TRNG feeds Mbed TLS. Do not enable
   `CONFIG_TEST_RANDOM_GENERATOR`: some upstream samples do, and it makes TLS
   keys predictable.
