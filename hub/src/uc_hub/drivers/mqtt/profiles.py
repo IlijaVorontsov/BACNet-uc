@@ -93,6 +93,9 @@ class PointSpec:
     periodic: bool = True
     #: The device's connection status, which stays valid while it is offline.
     status: bool = False
+    #: A retained sample is the current value (the device publishes this
+    #: point retained, on change only), not a stored copy of unknown age.
+    trust_retained: bool = False
     description: str = ""
     source: str = ""
     tags: tuple[str, ...] = ()
@@ -147,8 +150,8 @@ def coerce(value: Any, datatype: Datatype) -> Value:
         if not number.is_integer():
             raise ValueError(f"{number} is not an integer")
         number = int(number)
-    if datatype == "enum" and number < 0:
-        raise ValueError(f"{number} is not a state number")
+    if datatype == "enum" and number not in (0, 1):
+        raise ValueError(f"{number} is not 0 or 1 (an enum point is two-state)")
     return number
 
 
@@ -167,6 +170,9 @@ class Profile(abc.ABC):
         self.site = site
         self.record = record
         self.samples: dict[str, Sample] = {}
+        #: Objects whose sample came from a retained message the broker
+        #: replayed, with no live message since (the driver keeps this).
+        self.retained: set[str] = set()
         #: None until the device is heard from; False while it is offline or
         #: the broker link is down.
         self.online: bool | None = None
@@ -322,7 +328,7 @@ class MqttTlsProfile(Profile):
         base = f"mqtt:{self.prefix}"
         specs = [PointSpec(
             "status", "Connection status", PointKind.VALUE, "string",
-            periodic=False, status=True, source=f"{base}/status",
+            periodic=False, status=True, trust_retained=True, source=f"{base}/status",
             description="'online' while the device is connected to the broker; "
                         "'offline' is its retained last will.",
         )]
@@ -625,6 +631,9 @@ class GenericJsonProfile(Profile):
         tags = raw.get("tags", [])
         if not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
             raise InvalidRequest(f"{where}: tags must be a list of strings")
+        trust_retained = raw.get("trust_retained", False)
+        if not isinstance(trust_retained, bool):
+            raise InvalidRequest(f"{where}: trust_retained must be true or false")
         meta: dict[str, Any] = {"topic": self.topic, "path": str(path)}
         if writable:
             if command_topic is None:
@@ -634,7 +643,7 @@ class GenericJsonProfile(Profile):
         self._paths[obj] = path
         self._specs[obj] = PointSpec(
             obj, str(raw.get("name") or obj), kind, datatype, units, writable,
-            description=str(raw.get("description", "")),
+            trust_retained=trust_retained, description=str(raw.get("description", "")),
             source=f"mqtt:{self.topic} {path}", tags=tuple(tags), meta=meta,
         )
 

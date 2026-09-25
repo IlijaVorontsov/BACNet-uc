@@ -41,6 +41,7 @@ const APPROVAL: Approval = {
   rollback: "Apply revision 16",
   plan_id: "p17",
   state: "pending",
+  scope: "call",
   requested_at: Date.now() / 1000,
   expires_at: Date.now() / 1000 + 1800,
   requested_by: "dev",

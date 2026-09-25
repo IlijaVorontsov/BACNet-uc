@@ -116,6 +116,23 @@ async def test_describe(driver: BacnetUcDriver, node: SimNode) -> None:
     assert node.requests - before == 4  # info, objects, catalog, apps: units come from the cache
 
 
+async def test_datatypes_are_canonical(net: SimNetwork, sink: Sink) -> None:
+    """Analog -> real, binary -> enum (0/1), multi-state -> int (state number)."""
+    io = [*EXAMPLE_IO, {"channel": "di1", "type": "multi-state-input", "instance": 1, "name": "Mode"}]
+    sim = SimNode(name="r205-ctl", instance=2051, io=io, network=net)
+    await sim.start()
+    drv = make_driver(sink)
+    try:
+        await drv.add_device(record(sim.name), spec(sim))
+        points = {p.ref.obj: p.datatype for p in (await drv.describe("r205-ctl")).points}
+        assert points == {"analog-input:1": "real", "analog-output:1": "real", "binary-input:1": "enum",
+                          "binary-output:1": "enum", "multi-state-input:1": "int"}
+        (mode,) = await drv.read([ref("multi-state-input:1", "r205-ctl")])
+        assert (mode.value, type(mode.value)) == (1, int)
+    finally:
+        await drv.stop()
+
+
 async def test_describe_tolerates_units_timeouts(driver: BacnetUcDriver, node: SimNode) -> None:
     original = node.handle_datagram
 

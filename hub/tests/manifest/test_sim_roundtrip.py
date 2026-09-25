@@ -113,7 +113,8 @@ async def test_apply_converges_and_rolls_back(farm: Farm) -> None:
     assert again.changes == [] and again.blocked == {}
 
     doc = site.to_dict()
-    doc["system"]["apps"][0]["params"]["setpoint"] = 19
+    thermostat = next(a for a in doc["system"]["apps"] if a["node"] == "r204-ctl")
+    thermostat["params"]["setpoint"] = 19
     doc["system"]["links"] = []
     changed = SiteManifest.from_dict(doc)
     update = await farm.plan(changed, site, 3)

@@ -1,0 +1,34 @@
+# Hub configuration of the demo site. `uc-hub demo` starts the simulated
+# devices of site.yaml and a hub with this file; it copies both into a
+# temporary working directory (a fresh database every start) and fills in
+# what depends on the simulation: the MQTT broker's port, the discovery
+# targets and, with --llm zai, the Z.ai model.
+site_file: site.yaml
+data_dir: data
+listen: {host: 127.0.0.1, port: 8080}   # dev mode (no auth.tokens): loopback only
+web_dir: ../../../web/dist              # served when built (cd web && pnpm build)
+
+llm:
+  provider: scripted                    # llm/scripts/demo.yaml; `uc-hub demo --llm zai` uses Z.ai GLM
+  script: demo
+
+agent:
+  max_tool_calls: 40
+  max_wall_s: 600
+
+drivers:
+  bacnet_uc:
+    poll_interval_s: 1.0
+    refresh_s: 10
+    heartbeat_s: 5
+    # DEMO STAND-IN, see apps/uc-link.c: the simulator emulates uc-link by the
+    # module's file name. Never point a real site at this file.
+    uc_link_wasm: apps/uc-link.wasm
+  bacnet_ip:
+    interface: 127.0.0.1
+    port: 0                             # any free port; the AHU's address is in site.yaml
+    broadcast: null
+    refresh_s: 30
+  mqtt:
+    host: 127.0.0.1                     # plain MQTT to the demo's own mosquitto
+    stale_after_s: 120

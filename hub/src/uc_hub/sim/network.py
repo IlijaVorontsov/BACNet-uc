@@ -466,7 +466,9 @@ class ThermostatApp(EmulatedApp):
     setpoint in analog-value:1, which it creates with the ``setpoint``
     parameter as relinquish default. Parameters: ``setpoint`` (21.0),
     ``kp`` (%/K, 10), ``ki`` (%/(K*s), 0.011); optional ``sensor_device``
-    and ``sensor_instance`` read the temperature from another device."""
+    and ``sensor_instance`` read the temperature from another device, and
+    ``co2_av`` (an instance number) creates analog-value:<co2_av> "Room CO2",
+    a network input that a gateway bridge writes the room's CO2 into."""
 
     kind = "thermostat"
     PRIORITY = 12
@@ -498,6 +500,13 @@ class ThermostatApp(EmulatedApp):
             if e.code != UC_ERR_EXISTS:
                 self.host.log(LOG_ERR, f"cannot create the setpoint object: {e}")
                 return e.code
+        co2 = self.param_number("co2_av", 0.0)
+        if 1 <= co2 < 4194304:
+            try:
+                self.host.obj_create(OBJ_ANALOG_VALUE, int(co2), "Room CO2")
+            except UcError as e:
+                if e.code != UC_ERR_EXISTS:
+                    self.host.log(LOG_WRN, f"cannot create the CO2 object: {e}")
         try:
             self.host.prop_write(*self.SETPOINT, PROP_RELINQUISH_DEFAULT, setpoint)
         except UcError as e:

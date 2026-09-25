@@ -63,6 +63,8 @@ export class MockRun {
   private abort = new AbortController();
   approvalGate: ApprovalGate | null = null;
   questionGate: QuestionGate | null = null;
+  /** Who approved the run's tier L calls for the rest of the run (scope "run"). */
+  runApprover: string | null = null;
 
   constructor(id: string, title: string, createdBy: string, createdAt: number, model: string) {
     this.summary = {
@@ -301,6 +303,25 @@ export class ScriptContext {
     exec: () => ToolOutcome | Promise<ToolOutcome>,
   ): Promise<{ decision: Decision; outcome: ToolOutcome }> {
     const callId = await this.callStart(tool, tier, args);
+    const approver = this.run.runApprover;
+    if (tier === "L" && approver !== null) {
+      // Covered by the run-wide approval: runs at once, audited as such.
+      this.site.addAudit({
+        user: approver,
+        run_id: this.run.summary.id,
+        action: "approval",
+        tool,
+        tier,
+        args,
+        outcome: "approved",
+        detail: `covered by the run-wide approval of ${approver}`,
+      });
+      const started = this.now();
+      await this.sleep(Math.min(durationMs, 2200));
+      const outcome = await exec();
+      this.finish(callId, tool, tier, args, outcome, Math.max(durationMs, Math.round((this.now() - started) * 1000)));
+      return { decision: "approved", outcome };
+    }
     const requested = this.now();
     const ttl = this.opts.approvalTtlS ?? 1800;
     const approval: Approval = {
@@ -315,6 +336,7 @@ export class ScriptContext {
       rollback: spec.rollback,
       plan_id: spec.planId,
       state: "pending",
+      scope: "call",
       requested_at: requested,
       expires_at: requested + ttl,
       requested_by: this.run.summary.created_by,

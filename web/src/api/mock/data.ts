@@ -445,6 +445,7 @@ export function planP17(now: number): Plan {
     targets: ["r204-ctl", "gateway"],
     warnings: ["app link requests permission bacnet.remote (subscribes to ahu1-ctl by COV)"],
     changes,
+    blocked: {},
   };
 }
 

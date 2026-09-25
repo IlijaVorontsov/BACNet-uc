@@ -2,20 +2,24 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiClient, ApiError } from "../api/client";
-import type { Approval, DeviceDescription } from "../api/types";
+import type { Approval, DeviceDescription, Plan } from "../api/types";
+import { ChangesPane } from "../panes/ChangesPane";
 import { DevicesPane } from "../panes/DevicesPane";
 import { ApprovalSheet } from "../phone/ApprovalSheet";
 import { HubProvider } from "../state/hub";
 import { UiProvider } from "../state/ui";
 
-/** Answers requests from a table instead of the network. */
+/** Answers requests from a table instead of the network, and keeps the bodies sent. */
 class FakeClient extends ApiClient {
+  readonly sent: { key: string; body: unknown }[] = [];
+
   constructor(private readonly routes: Record<string, unknown>) {
     super();
   }
 
-  override async request<T>(method: string, path: string): Promise<T> {
+  override async request<T>(method: string, path: string, opts: { body?: unknown } = {}): Promise<T> {
     const key = `${method} ${path}`;
+    if (method !== "GET") this.sent.push({ key, body: opts.body });
     if (!(key in this.routes)) throw new ApiError(404, "not_found", key);
     const value = this.routes[key];
     if (value instanceof Error) throw value;
@@ -58,6 +62,7 @@ const APPROVAL: Approval = {
   rollback: "Apply revision 16",
   plan_id: "p17",
   state: "pending",
+  scope: "call",
   requested_at: Date.now() / 1000,
   expires_at: Date.now() / 1000 + 1800,
   requested_by: "dev",
@@ -86,6 +91,25 @@ describe("ApprovalSheet", () => {
     expect(onDecided).not.toHaveBeenCalled();
     const again = screen.getByRole<HTMLButtonElement>("button", { name: "Hold to apply" });
     expect(again.disabled).toBe(false);
+  });
+
+  it("approves a tier L call for the rest of the run", async () => {
+    const live: Approval = { ...APPROVAL, id: "a_13", tool: "io_force", tier: "L", title: "Force r204-ctl ao0", plan_id: null };
+    const decided: Approval = { ...live, state: "approved", scope: "run", decided_by: "dev", decided_at: Date.now() / 1000 };
+    const client = new FakeClient({ ...BASE, "POST /api/approvals/a_13": decided });
+    const onDecided = vi.fn();
+    render(wrap(client, <ApprovalSheet approval={live} onDecided={onDecided} />));
+    const button = await screen.findByRole<HTMLButtonElement>("button", { name: "Approve for this run" });
+    await waitFor(() => expect(button.disabled).toBe(false));
+    fireEvent.click(button);
+    await waitFor(() => expect(onDecided).toHaveBeenCalledWith(decided));
+    expect(client.sent).toEqual([{ key: "POST /api/approvals/a_13", body: { decision: "approve", scope: "run" } }]);
+  });
+
+  it("offers no run-wide approval for tier C", async () => {
+    render(wrap(new FakeClient(BASE), <ApprovalSheet approval={APPROVAL} onDecided={vi.fn()} />));
+    await screen.findByRole("button", { name: "Hold to apply" });
+    expect(screen.queryByRole("button", { name: "Approve for this run" })).toBeNull();
   });
 });
 
@@ -128,5 +152,23 @@ describe("DevicesPane", () => {
     await waitFor(() => expect(screen.getByText("10.0.2.52:1337")).toBeTruthy());
     expect(screen.getByRole("button", { name: "Identify" })).toBeTruthy();
     expect(screen.queryByText("Blinking for 30 s")).toBeNull();
+  });
+});
+
+describe("ChangesPane", () => {
+  it("says which targets keep a plan from being applied", async () => {
+    const plan: Plan = {
+      id: "p18",
+      revision: 18,
+      base_revision: 17,
+      created_at: 1790290000,
+      targets: ["gateway"],
+      warnings: ["r205-ctl: unreachable: DeviceTimeout: no answer"],
+      changes: [{ id: "c1", target: "gateway", kind: "tags", summary: "tags: 1 point", diff: "", tier: "C" }],
+      blocked: { "r205-ctl": "DeviceTimeout: no answer" },
+    };
+    render(wrap(new FakeClient({ ...BASE, "GET /api/plan": { plan } }), <ChangesPane />));
+    const blocked = await screen.findByRole("list", { name: "Blocked targets" });
+    expect(blocked.textContent).toBe("Cannot be applied: r205-ctl could not be planned (DeviceTimeout: no answer)");
   });
 });

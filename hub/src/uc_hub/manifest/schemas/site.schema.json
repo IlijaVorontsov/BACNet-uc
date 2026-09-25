@@ -187,6 +187,11 @@
               "kind": {"enum": ["input", "output", "value"]},
               "writable": {"type": "boolean", "default": false},
               "command_topic": {"type": "string", "pattern": "^[^#+]{1,256}$"},
+              "trust_retained": {
+                "description": "The device publishes this point retained and only on change, so a retained value is current. Otherwise a retained value counts as stale for bridges until a live message arrives.",
+                "type": "boolean",
+                "default": false
+              },
               "description": {"type": "string", "maxLength": 200},
               "tags": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/tag"}}
             }

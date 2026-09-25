@@ -1,11 +1,13 @@
 # Offline demo for the scripted LLM provider (llm.provider: scripted).
 #
-# Try "Commission room 204", "What is the temperature in room 204?" or "help".
-# Rules are checked top to bottom on every model call; the first match wins.
-# Only the conversation drives the script, so a run can be resumed after an
-# approval or a question like a real model run. The tool arguments follow
-# docs/ai-harness/DESIGN.md section 7; device r<room>-ctl and space r<room>
-# follow the example site in docs/ai-harness/SITE.md.
+# Try "Commission room 204", "Run IO checkout for r204-ctl.", "What is the
+# temperature in room 204?" or "help". Rules are checked top to bottom on
+# every model call; the first match wins. Only the conversation drives the
+# script, so a run can be resumed after an approval or a question like a real
+# model run. The tool arguments and the results the rules look for are those
+# of hub/src/uc_hub/tools; device r<room>-ctl and space r<room> follow the
+# demo site (hub/examples/demo/site.yaml), where room 204's controller is
+# installed but not configured yet.
 
 model: scripted-demo
 delay_s: 0.015
@@ -19,10 +21,11 @@ rules:
       turn: 0
     respond:
       text: >-
-        This is the offline demo model. It can walk through commissioning a
-        room ("Commission room 204") or read a room temperature ("What is the
-        temperature in room 204?"). Every step uses the real tools, approvals
-        and tests of this hub.
+        This is the offline demo model. It can commission a room ("Commission
+        room 204"), check a board's IO with you on site ("Run IO checkout for
+        r204-ctl.") or read a room temperature ("What is the temperature in
+        room 204?"). Every step uses the real tools, approvals and tests of
+        this hub.
 
   # Commission a room -----------------------------------------------------------
   - id: commission-search
@@ -32,17 +35,17 @@ rules:
     respond:
       thinking: >-
         The user wants room ${room} commissioned. First find which devices are
-        placed in that space, then check the controller, its points and the
-        draft manifest before planning anything.
+        in that space, then check the controller, its points and the manifest
+        before planning anything.
       text: "I'll start by finding the devices in room ${room}."
       tool_calls:
         - name: site_search
-          args: {query: "room ${room}", filters: {space: "r${room}"}}
+          args: {query: "", filters: {space: "r${room}"}}
 
   - id: commission-describe
     when: {user: *commission, tool: site_search, ok: true}
     respond:
-      thinking: The search returned the room's devices. Describe the controller to see its IO and apps.
+      thinking: The search shows what is placed in the room. Describe the room controller to see its IO and apps.
       tool_calls:
         - name: device_describe
           args: {device: "r${room}-ctl"}
@@ -50,38 +53,58 @@ rules:
   - id: commission-read
     when: {user: *commission, tool: device_describe, ok: true}
     respond:
-      thinking: The controller is online. Read the room temperature input to confirm the sensor is wired.
+      thinking: >-
+        The controller answers. Read the room temperature input: it shows
+        whether the board is configured and whether its sensor is wired.
       tool_calls:
         - name: point_read
           args: {points: ["r${room}-ctl/analog-input:1"]}
 
+  - id: commission-unconfigured
+    when: {user: *commission, tool: point_read, ok: true, result: 'no value'}
+    respond:
+      thinking: >-
+        The board has no temperature point, so its IO configuration was never
+        uploaded. The manifest already describes its IO and apps; check where
+        the controller is placed before planning.
+      text: >-
+        r${room}-ctl answers but has no temperature point yet: the board is not
+        configured. The manifest describes its IO and apps, so a plan will
+        configure it. Checking its placement first.
+      tool_calls:
+        - name: manifest_get
+          args: {path: /placement}
+
   - id: commission-manifest
     when: {user: *commission, tool: point_read, ok: true}
     respond:
-      thinking: The sensor reads a plausible value. Check what the draft manifest already says about tags and placement.
+      thinking: The sensor reads a value. Check where the manifest places the controller.
       text: "The temperature sensor responds. Checking the site manifest next."
       tool_calls:
         - name: manifest_get
-          args: {path: /tags}
+          args: {path: /placement}
 
   - id: commission-edit
     when: {user: *commission, tool: manifest_get, ok: true}
     respond:
       thinking: >-
         Place the controller in space r${room} and tag the temperature input
-        so links and reports can find it. This only changes the draft.
+        so search, links and reports find it. This only changes the draft.
       text: "I'll place r${room}-ctl in room ${room} and tag its temperature sensor in the draft."
       tool_calls:
         - name: manifest_edit
           args:
             json_patch:
               - {op: add, path: "/placement/r${room}-ctl", value: "r${room}"}
-              - {op: add, path: "/tags/r${room}-ctl~1analog-input:1", value: [Zone_Air_Temperature_Sensor]}
+              - op: add
+                path: "/tags/r${room}-ctl~1analog-input:1"
+                value: [Zone_Air_Temperature_Sensor, "space:r${room}"]
+            message: "Commission room ${room}: placement and tags"
 
   - id: commission-plan
     when: {user: *commission, tool: manifest_edit, ok: true}
     respond:
-      thinking: The draft validates. Compute the plan so the user sees the exact diff.
+      thinking: The draft validates. Compute the plan so the user sees the exact diff for every device.
       tool_calls:
         - name: plan
           args: {}
@@ -102,13 +125,13 @@ rules:
   - id: commission-plan-empty
     when: {user: *commission, tool: plan, ok: true}
     respond:
-      text: "The live site already matches the draft (${summary}), so there is nothing to apply."
+      text: "The live site already matches the manifest (${summary}), so there is nothing to apply."
 
   - id: commission-test
     when: {user: *commission, tool: apply, ok: true}
     respond:
       thinking: Applied. Run the manifest tests on the live site to verify the room works end to end.
-      text: "Applied. Running the site tests for room ${room} now."
+      text: "Applied. Running the site's acceptance tests now."
       tool_calls:
         - name: test_run
           args: {}
@@ -160,6 +183,83 @@ rules:
         the actuator wiring on the output of r${room}-ctl. The force is
         released when its lease ends; re-run the tests after the fix.
 
+  # IO checkout of a board --------------------------------------------------------
+  # Turns count the model's answers since the user's message: 0 describe,
+  # 1 force the valve, 2 ask, 3 release, 4 force the heater, 5 ask, 6 release.
+  - id: io-start
+    when:
+      user: &checkout '(?i)\bio[ -]?checkout\b.*?\b(?P<node>[a-z0-9][a-z0-9-]*-ctl)\b'
+      turn: 0
+    respond:
+      thinking: >-
+        IO checkout of ${node}: force each output for a short lease, ask the
+        technician what happens, release it, then the next channel.
+      text: >-
+        I'll check the outputs of ${node} one at a time: I force a channel for
+        a short time and you tell me what you see on site.
+      tool_calls:
+        - name: device_describe
+          args: {device: "${node}"}
+
+  - id: io-valve
+    when: {user: *checkout, tool: device_describe, ok: true}
+    respond:
+      text: "First the valve output ao0: I'll force it to 100 %."
+      tool_calls:
+        - name: io_force
+          args: {node: "${node}", channel: ao0, value: 100, lease_s: 300}
+
+  - id: io-valve-ask
+    when: {user: *checkout, tool: io_force, ok: true, result: '"channel": "ao0"'}
+    respond:
+      tool_calls:
+        - name: ask_user
+          args:
+            question: "The valve output ao0 of ${node} is forced to 100 %. Is the valve fully open?"
+            options: ["Yes", "No"]
+
+  - id: io-valve-release
+    when: {user: *checkout, tool: ask_user, ok: true, turn: 3}
+    respond:
+      text: "Noted (${summary}). Releasing the valve output."
+      tool_calls:
+        - name: io_release
+          args: {node: "${node}", channel: ao0}
+
+  - id: io-heater
+    when: {user: *checkout, tool: io_release, ok: true, result: '"channel": "ao0"'}
+    respond:
+      text: "Next the heater relay do0: I'll switch it on."
+      tool_calls:
+        - name: io_force
+          args: {node: "${node}", channel: do0, value: 1, lease_s: 300}
+
+  - id: io-heater-ask
+    when: {user: *checkout, tool: io_force, ok: true, result: '"channel": "do0"'}
+    respond:
+      tool_calls:
+        - name: ask_user
+          args:
+            question: "The heater relay do0 of ${node} is forced on. Does the heater get power?"
+            options: ["Yes", "No"]
+
+  - id: io-heater-release
+    when: {user: *checkout, tool: ask_user, ok: true, turn: 6}
+    respond:
+      text: "Noted (${summary}). Releasing the heater relay."
+      tool_calls:
+        - name: io_release
+          args: {node: "${node}", channel: do0}
+
+  - id: io-done
+    when: {user: *checkout, tool: io_release, ok: true, result: '"channel": "do0"'}
+    respond:
+      text: >-
+        IO checkout of ${node} done: the valve output and the heater relay were
+        forced, checked with you on site and released again; your answers are
+        in this run. report_generate with kind io-checkout gives the sheet for
+        the other channels.
+
   # Read a room temperature -----------------------------------------------------
   - id: temperature-read
     when:
@@ -184,4 +284,5 @@ rules:
 fallback:
   text: >-
     The offline demo model only knows a few scenarios. Try "Commission room
-    204" or "What is the temperature in room 204?".
+    204", "Run IO checkout for r204-ctl." or "What is the temperature in room
+    204?".

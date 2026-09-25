@@ -220,6 +220,35 @@ describe("MockServer", () => {
     site.stop();
   });
 
+  it("lets a run-wide approval cover later tier L calls, never tier C", async () => {
+    const { approvals: seeded } = await client.approvals("pending");
+    await expect(client.decide(seeded[0]!.id, { decision: "approve", scope: "run" })).rejects.toMatchObject({
+      status: 400,
+      code: "invalid",
+    });
+    const site = new MockSite({ now: () => Date.now() / 1000 });
+    const run = new MockRun("r_t", "t", "dev", Date.now() / 1000, "m");
+    run.runApprover = "ops";
+    let n = 0;
+    const approvals: Approval[] = [];
+    const ctx = new ScriptContext(run, {
+      site,
+      ids: { next: (prefix) => `${prefix}${++n}` },
+      addApproval: (a) => approvals.push(a),
+      user: "dev",
+      speed: 1000,
+      virtualStart: null,
+    });
+    const spec = { title: "Force", summary: [], diff: "", rollback: "", planId: null };
+    const out = await ctx.gatedTool("io_force", "L", { node: "r204-ctl" }, spec, 0, () => ({ ok: true, summary: "forced" }));
+    expect(out.decision).toBe("approved");
+    expect(approvals).toHaveLength(0);
+    expect(site.audit[1]).toMatchObject({ action: "approval", user: "ops", detail: "covered by the run-wide approval of ops" });
+    expect(site.audit[0]).toMatchObject({ action: "tool", tool: "io_force", outcome: "ok" });
+    expect(run.events.map((e) => e.type)).not.toContain("approval.request");
+    site.stop();
+  });
+
   it("streams live values, starting with the cached ones", async () => {
     const ids = ["hq/r204-ctl/analog-input:1", "hq/r205-ctl/analog-input:1"];
     const got: Reading[] = [];

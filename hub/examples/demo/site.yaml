@@ -1,7 +1,14 @@
-# Demo site for uc-hub: five simulated BACnet-uc room controllers on floor 2,
-# a third-party AHU controller on BACnet/IP, an mqtt_tls node and a generic
-# MQTT CO2 sensor. Every device runs on 127.0.0.1, so the room controllers
-# use distinct SMP and BACnet/IP ports (static bindings instead of Who-Is).
+# Demo site for uc-hub (`uc-hub demo` simulates it): five BACnet-uc room
+# controllers on floor 2, a third-party AHU controller on BACnet/IP, an
+# mqtt_tls node and a generic MQTT CO2 sensor. Every device runs on
+# 127.0.0.1, so the room controllers use distinct SMP and BACnet/IP ports
+# (static bindings instead of Who-Is).
+#
+# Room 204 is where the demo starts: its controller r204-ctl is installed and
+# described here (IO, thermostat, the AHU link, the CO2 bridge, the tests),
+# but the board is still empty, not placed in its room and not tagged.
+# "Commission room 204" places and tags it in a draft, plans (which uploads
+# its configuration and apps), applies after approval and runs the tests.
 apiVersion: bacnet-uc/v1
 kind: Site
 metadata:
@@ -23,7 +30,6 @@ placement:
   r201-ctl: r201
   r202-ctl: r202
   r203-ctl: r203
-  r204-ctl: r204
   r205-ctl: r205
   ahu1-ctl: plant
   f2-mqtt: f2-riser
@@ -95,13 +101,21 @@ system:
         - {channel: di0, type: binary-input, instance: 1, name: R205 Window, debounce_ms: 50}
         - {channel: do0, type: binary-output, instance: 1, name: R205 Heater}
 
-  apps:
+  apps:                                   # thermostat.wasm is built from apps/thermostat.c by apps/build.sh
+    - {name: thermostat, node: r201-ctl, wasm: apps/thermostat.wasm, perms: [bacnet.local], period_ms: 1000,
+       params: {setpoint: 21.0, kp: 10, ki: 0.011}}
+    - {name: thermostat, node: r202-ctl, wasm: apps/thermostat.wasm, perms: [bacnet.local], period_ms: 1000,
+       params: {setpoint: 21.0, kp: 10, ki: 0.011}}
+    - {name: thermostat, node: r203-ctl, wasm: apps/thermostat.wasm, perms: [bacnet.local], period_ms: 1000,
+       params: {setpoint: 20.5, kp: 10, ki: 0.011}}
     - name: thermostat
       node: r204-ctl
-      wasm: apps/thermostat.wasm          # built from apps/thermostat.c by apps/build.sh
+      wasm: apps/thermostat.wasm
       perms: [bacnet.local]
       period_ms: 1000
-      params: {setpoint: 21.5, kp: 10, ki: 0.011}
+      params: {setpoint: 21.5, kp: 10, ki: 0.011, co2_av: 20}   # co2_av: the CO2 bridge's destination
+    - {name: thermostat, node: r205-ctl, wasm: apps/thermostat.wasm, perms: [bacnet.local], period_ms: 1000,
+       params: {setpoint: 22.0, kp: 10, ki: 0.011}}
 
   links:
     # AHU supply air temperature, shown on the room controller (uc-link on r204-ctl)
@@ -161,19 +175,14 @@ external_devices:
 
 bridges:
   - from: r204-co2/co2
-    to: r204-ctl/analog-value:20
+    to: r204-ctl/analog-value:20      # "Room CO2", created by r204's thermostat (param co2_av)
     max_age_s: 120
 
 tags:
   r201-ctl/analog-input:1: [Zone_Air_Temperature_Sensor, space:r201]
   r202-ctl/analog-input:1: [Zone_Air_Temperature_Sensor, space:r202]
   r203-ctl/analog-input:1: [Zone_Air_Temperature_Sensor, space:r203]
-  r204-ctl/analog-input:1: [Zone_Air_Temperature_Sensor, space:r204]
   r205-ctl/analog-input:1: [Zone_Air_Temperature_Sensor, space:r205]
-  r204-ctl/analog-output:1: [Reheat_Valve_Command, space:r204]
-  r204-ctl/analog-value:1: [Zone_Air_Temperature_Setpoint, space:r204]
-  r204-ctl/binary-input:1: [Window_Status, space:r204]
-  r204-ctl/binary-output:1: [Heater_Command, space:r204]
   r204-co2/co2: [Zone_Air_CO2_Sensor, space:r204]
   ahu1-ctl/analog-value:3: [Supply_Air_Temperature_Sensor]
   ahu1-ctl/analog-input:1: [Return_Air_Temperature_Sensor]

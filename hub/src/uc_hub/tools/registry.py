@@ -11,6 +11,7 @@ Tier semantics (docs/ai-harness/DESIGN.md section 7):
 
 The policy engine, not the tool, decides whether a call needs approval; a
 handler only runs after the policy allowed it (or a human approved it).
+``runner.ToolRunner`` does that for the agent loop and the MCP server.
 """
 
 from __future__ import annotations
@@ -30,16 +31,20 @@ class ToolResult:
     ok: bool
     #: Short text for the model and the UI card (keep it under ~2 KB).
     summary: str
-    #: Structured data. Large results are stored and replaced by a handle by
-    #: the agent loop; handlers just return everything.
+    #: Structured data. The runner stores results larger than the inline
+    #: limit and replaces them by ``handle``; handlers just return everything.
     data: Any = None
     #: ``core.errors.HubError.code`` when ``ok`` is False.
     error_code: str | None = None
+    #: ``result://r42`` when ``data`` was stored (read it with ``result_get``).
+    handle: str | None = None
 
     def to_model_text(self, limit: int = 12000) -> str:
         body: dict[str, Any] = {"ok": self.ok, "summary": self.summary}
         if self.data is not None:
             body["data"] = self.data
+        if self.handle:
+            body["handle"] = self.handle
         if self.error_code:
             body["error"] = self.error_code
         text = json.dumps(body, default=str, ensure_ascii=False)
@@ -51,10 +56,16 @@ class ToolResult:
 @dataclass(slots=True)
 class ApprovalInfo:
     title: str
+    #: One line per target: ``"<target>: <detail>"``.
     summary: list[str] = field(default_factory=list)
     diff: str = ""
     rollback: str = ""
     plan_id: str | None = None
+    #: Targets the call changes; a tier C call on more than
+    #: ``policy.max_devices_per_stage`` of them needs an admin.
+    targets: int = 0
+    #: Only an admin may approve (a plan adds or removes life-safety marks).
+    admin_only: bool = False
 
 
 @dataclass(slots=True)
@@ -65,10 +76,11 @@ class ToolCallContext:
     roles: set[str]
     run_id: str | None
     call_id: str | None
-    #: The site runtime (``uc_hub.site.SiteRuntime``); typed loosely to keep
-    #: this module import-light.
+    #: The site runtime (``uc_hub.runtime.site.SiteRuntime``); typed loosely
+    #: to keep this module import-light.
     site: Any
-    #: Services bag: policy, store, leases, events, manifest store, ...
+    #: ``uc_hub.runtime.services.Services``: policy, store, live control,
+    #: manifests, questions, ...
     services: Any
 
 
@@ -87,6 +99,9 @@ class Tool:
     describe_approval: ApprovalDescriber | None = None
     #: Roles allowed to call the tool at all (empty = everyone).
     roles: frozenset[str] = frozenset()
+    #: Seconds the handler may run; None is the runner's default, ``math.inf``
+    #: no limit (a handler that waits for a person bounds the wait itself).
+    timeout_s: float | None = None
 
     def tool_def(self) -> ToolDef:
         return ToolDef(self.name, f"[tier {self.tier}] {self.description}", self.parameters)

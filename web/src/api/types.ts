@@ -12,6 +12,10 @@ export type Role = "viewer" | "operator" | "commissioner" | "admin";
 export type Quality = "good" | "stale" | "fault" | "offline";
 export type PointKind = "input" | "output" | "value";
 export type SafetyClass = "normal" | "critical" | "life-safety";
+/**
+ * real: float; int: whole number (multi-state state numbers 1..n, counters);
+ * enum: two-state value 0 (inactive, off) or 1 (active, on); bool; string.
+ */
 export type Datatype = "real" | "int" | "bool" | "enum" | "string";
 /** A point value: REAL -> number, binary -> 0/1, BOOLEAN -> boolean, NULL -> null. */
 export type Value = number | boolean | string | null;
@@ -149,6 +153,14 @@ export interface DiscoveredDevice {
   bacnet_uc: boolean;
   extra: Record<string, unknown>;
   known: boolean;
+  /** The device's name in the manifest when it is known. */
+  device: string | null;
+}
+
+export interface Discovery {
+  devices: DiscoveredDevice[];
+  /** Protocol -> why its sweep failed. */
+  errors: Record<string, string>;
 }
 
 // ------------------------------------------------ manifest, plan, tests
@@ -198,6 +210,8 @@ export interface Plan {
   targets: string[];
   warnings: string[];
   changes: Change[];
+  /** Targets that could not be planned (target -> reason); such a plan is never applied. */
+  blocked: Record<string, string>;
 }
 
 export type TestStatus = "pass" | "fail" | "error" | "skipped" | "running" | "not-run";
@@ -232,6 +246,12 @@ export interface RunSummary {
 }
 
 export type ApprovalState = "pending" | "approved" | "rejected" | "expired";
+/**
+ * "call": the decision covers one tool call. "run" (tier L only): the
+ * approval also covers the run's later tier L calls; tier C calls are always
+ * approved one by one.
+ */
+export type ApprovalScope = "call" | "run";
 
 export interface Approval {
   id: string;
@@ -245,6 +265,7 @@ export interface Approval {
   rollback: string;
   plan_id: string | null;
   state: ApprovalState;
+  scope: ApprovalScope;
   requested_at: number;
   expires_at: number;
   requested_by: string;
@@ -400,6 +421,8 @@ export interface CreateRunRequest {
 export interface DecisionRequest {
   decision: "approve" | "reject";
   comment?: string;
+  /** Default "call". */
+  scope?: ApprovalScope;
 }
 
 export interface DiscoverRequest {

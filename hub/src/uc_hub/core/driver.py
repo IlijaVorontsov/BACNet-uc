@@ -1,8 +1,11 @@
 """Driver interface. One driver instance serves all devices of one protocol
 on a site.
 
-Life cycle: ``Driver(ctx, config)`` -> ``add_device`` for each device of the
-manifest -> ``start()`` -> calls from the site runtime -> ``stop()``.
+Life cycle: ``Driver(ctx)`` (per-driver settings from hub.yaml arrive in
+``ctx.settings``) -> ``add_device`` for each device of the manifest ->
+``start()`` -> calls from the site runtime (``add_device`` and
+``remove_device`` also while running, when a manifest revision goes live) ->
+``stop()``.
 
 Live values: the driver pushes readings with ``ctx.publish`` for every point
 passed to ``watch`` (COV, MQTT messages or polling, the driver's choice) and

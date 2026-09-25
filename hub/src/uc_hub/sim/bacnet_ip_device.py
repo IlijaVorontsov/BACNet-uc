@@ -25,6 +25,11 @@ SubscribeCOV, ``rpm=False`` rejects ReadPropertyMultiple, and
 ``segmentation=False`` with a small ``max_apdu`` makes large answers (the
 object list of a device with many objects) fail with an abort.
 
+With ``network`` (a ``sim.network.SimNetwork``) the device is also a node of
+the simulated BACnet network between BACnet-uc nodes, so their emulated
+apps (uc-link) can read and subscribe to its present values, as boards do
+over BACnet/IP; writes from there are refused.
+
 Run ``python -m uc_hub.sim.bacnet_ip_device --port 47809`` for the demo.
 """
 
@@ -52,7 +57,9 @@ from bacpypes3.local.multistate import MultiStateValueObject
 from bacpypes3.object import NotificationClassObject
 from bacpypes3.primitivedata import Null
 
+from ..core.ids import OBJECT_TYPES
 from ..drivers.bacnet_ip.stack import BoundApplication, open_application
+from .network import PROP_PRESENT_VALUE, UC_ERR_BACNET, UC_ERR_NOT_FOUND, SimNetwork, UcError
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +151,7 @@ class SimBacnetIpDevice:
         segmentation: bool = True,
         max_apdu: int = 1476,
         extra_objects: int = 0,
+        network: SimNetwork | None = None,
     ) -> None:
         self.host = host
         self.instance = instance
@@ -156,6 +164,9 @@ class SimBacnetIpDevice:
         self.segmentation = segmentation
         self.max_apdu = max_apdu
         self.extra_objects = extra_objects
+        self.network = network
+        self._view = NetworkView(self)
+        self._objects: dict[tuple[int, int], Any] = {}
         self._port = port
         self.app: SimApplication | None = None
         self._ticker: asyncio.Task[None] | None = None
@@ -195,10 +206,19 @@ class SimBacnetIpDevice:
         app.rpm_enabled = self.rpm
         self.app = app
         self._port = app.bound[1]
+        self._objects = {}
+        for obj in objects:
+            type_name, instance = str(obj.objectIdentifier[0]), int(obj.objectIdentifier[1])
+            if type_name in OBJECT_TYPES and type_name != "device":
+                self._objects[(OBJECT_TYPES[type_name], instance)] = obj
+        if self.network is not None:
+            self.network.register(self._view)
         self._ticker = asyncio.create_task(self._tick(), name=f"sim-bacnet-ip:{self.instance}")
         logger.info("simulated BACnet/IP device %d on %s:%d", self.instance, *app.bound)
 
     async def stop(self) -> None:
+        if self.network is not None:
+            self.network.unregister(self._view)
         task, self._ticker = self._ticker, None
         if task is not None:
             task.cancel()
@@ -311,6 +331,17 @@ class SimBacnetIpDevice:
         return [device, self.outside_air_temp, self.supply_air_temp, self.supply_air_setpoint, self.fan_speed,
                 self.fan_command, self.fan_status, self.smoke_damper, self.mode, notification, *spares]
 
+    def present_value(self, obj_type: int, instance: int) -> float:
+        """The present value of a point object as a number (binary: 0/1)."""
+        obj = self._objects.get((obj_type, instance))
+        if obj is None:
+            raise UcError(UC_ERR_NOT_FOUND, f"device {self.instance} has no object {obj_type}:{instance}")
+        return float(int(obj.presentValue)) if obj_type in _BINARY else float(obj.presentValue)
+
+    def cov_increment(self, obj_type: int, instance: int) -> float:
+        increment = getattr(self._objects.get((obj_type, instance)), "covIncrement", None)
+        return float(increment) if increment is not None else 0.0
+
     def set_supply_air_temp(self, value: float) -> None:
         self.supply_air_temp.presentValue = float(value)
 
@@ -344,6 +375,48 @@ class SimBacnetIpDevice:
             status = BinaryPV.active if running else BinaryPV.inactive
             if int(self.fan_status.presentValue) != status:
                 self.fan_status.presentValue = status
+
+
+_BINARY = frozenset({OBJECT_TYPES["binary-input"], OBJECT_TYPES["binary-output"], OBJECT_TYPES["binary-value"]})
+
+
+class NetworkView:
+    """A ``SimBacnetIpDevice`` as a ``sim.network.NetworkNode``: present
+    values to read and subscribe to; everything else is a BACnet error."""
+
+    def __init__(self, device: SimBacnetIpDevice) -> None:
+        self.device = device
+        self.name = device.name
+
+    @property
+    def address(self) -> str:
+        return self.device.address
+
+    @property
+    def instance(self) -> int:
+        return self.device.instance
+
+    @property
+    def reachable(self) -> bool:
+        return self.device.app is not None
+
+    def bacnet_read(self, obj_type: int, instance: int, prop: int, index: int = -1) -> Any:
+        if prop != PROP_PRESENT_VALUE:
+            raise UcError(UC_ERR_BACNET, f"device {self.instance}: only present values are simulated")
+        return self.device.present_value(obj_type, instance)
+
+    def bacnet_write(self, obj_type: int, instance: int, prop: int, value: Any, priority: int = 0,
+                     index: int = -1) -> None:
+        raise UcError(UC_ERR_BACNET, f"device {self.instance}: write access denied")
+
+    def cov_state(self, obj_type: int, instance: int) -> tuple[float, float]:
+        return self.device.present_value(obj_type, instance), self.device.cov_increment(obj_type, instance)
+
+    def step(self) -> None:
+        return None
+
+    async def stop(self) -> None:
+        return None
 
 
 async def _main() -> None:

@@ -15,7 +15,7 @@ import type {
   DecisionRequest,
   DeviceDescription,
   DiscoverRequest,
-  DiscoveredDevice,
+  Discovery,
   Health,
   ManifestInfo,
   ManifestRevision,
@@ -217,7 +217,7 @@ export class ApiClient {
     return this.post("/api/points/read", { ids }, signal);
   }
 
-  discover(req: DiscoverRequest = {}, signal?: AbortSignal): Promise<{ devices: DiscoveredDevice[] }> {
+  discover(req: DiscoverRequest = {}, signal?: AbortSignal): Promise<Discovery> {
     return this.request("POST", "/api/discover", {
       body: req,
       signal,

@@ -18,7 +18,8 @@ export function DecisionLine({ approval }: { approval: Approval }) {
   if (approval.state === "approved") {
     return (
       <span className="done ok-t">
-        Approved by {approval.decided_by ?? "someone"} · {formatClock(approval.decided_at)}
+        Approved {approval.scope === "run" ? "for this run " : ""}by {approval.decided_by ?? "someone"} ·{" "}
+        {formatClock(approval.decided_at)}
       </span>
     );
   }
@@ -85,6 +86,17 @@ export function ApprovalCard({ approval, variant }: { approval: Approval; varian
             {(open || !needsExpand) && (
               <button type="button" className="btn primary" disabled={busy || !allowed} onClick={() => void decide("approve", comment.trim() || undefined)}>
                 {local.tool === "apply" ? "Approve and apply" : "Approve"}
+              </button>
+            )}
+            {local.tier === "L" && (
+              <button
+                type="button"
+                className="btn"
+                title="Also approves the later live (tier L) calls of this run; commits still ask."
+                disabled={busy || !allowed}
+                onClick={() => void decide("approve", comment.trim() || undefined, "run")}
+              >
+                Approve for this run
               </button>
             )}
             <button type="button" className="btn" aria-expanded={open} onClick={() => setOpen((o) => !o)}>

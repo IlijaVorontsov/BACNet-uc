@@ -16,7 +16,6 @@ from uc_hub.manifest import (
     ApplyProgress,
     MemoryBackupStore,
     SiteManifest,
-    SitePlan,
     TargetBackup,
     apply_plan,
     compute_plan,
@@ -41,7 +40,7 @@ def nodes() -> Nodes:
 
 
 async def plan_for(doc: dict[str, Any], nodes: Nodes, uc_link: Path | None,
-                   files: dict[str, bytes], live: SiteManifest | None = None) -> SitePlan:
+                   files: dict[str, bytes], live: SiteManifest | None = None) -> Plan:
     return await compute_plan(SiteManifest.from_dict(doc), live, nodes, resolver(files), uc_link, 2, 1)
 
 
@@ -215,7 +214,7 @@ async def test_several_bridge_changes_apply_as_one_set(doc: dict[str, Any], node
     doc["bridges"].append({"from": "r204-co2/co2", "to": "ahu1-ctl/analog-value:7"})
     live = doc.copy()
     live["bridges"] = [{"from": "r204-co2/co2", "to": "r205-ctl/analog-value:1"}]
-    plan = SitePlan("p9", 9, 8, changes=[
+    plan = Plan("p9", 9, 8, changes=[
         c for c in (await plan_for(doc, nodes, None, {}, SiteManifest.from_dict(live))).changes
         if c.target == GATEWAY
     ])

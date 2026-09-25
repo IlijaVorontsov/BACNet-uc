@@ -2,12 +2,12 @@
 
 import { useState } from "react";
 import { errorMessage } from "../api/client";
-import type { Approval, Device } from "../api/types";
+import type { Approval, ApprovalScope, DecisionRequest, Device } from "../api/types";
 import { useHub } from "./hub";
 
 export function useDecide(approval: Approval): {
   /** Resolves to the decided approval, or null when the request failed. */
-  decide: (decision: "approve" | "reject", comment?: string) => Promise<Approval | null>;
+  decide: (decision: "approve" | "reject", comment?: string, scope?: ApprovalScope) => Promise<Approval | null>;
   busy: boolean;
   error: string | null;
   local: Approval;
@@ -17,11 +17,14 @@ export function useDecide(approval: Approval): {
   const [error, setError] = useState<string | null>(null);
   const [override, setOverride] = useState<Approval | null>(null);
   const local = override && override.id === approval.id && approval.state === "pending" ? override : approval;
-  const decide = async (decision: "approve" | "reject", comment?: string): Promise<Approval | null> => {
+  const decide = async (decision: "approve" | "reject", comment?: string, scope?: ApprovalScope): Promise<Approval | null> => {
     setBusy(true);
     setError(null);
+    const req: DecisionRequest = { decision };
+    if (comment) req.comment = comment;
+    if (scope === "run") req.scope = scope;
     try {
-      const res = await client.decide(approval.id, comment ? { decision, comment } : { decision });
+      const res = await client.decide(approval.id, req);
       setOverride(res);
       return res;
     } catch (err) {

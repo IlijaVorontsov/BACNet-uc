@@ -136,10 +136,9 @@ async def apply_plan(
     result where the backup failed. Raises ``InvalidRequest`` (before touching
     anything) for a plan with blocked targets or gateway changes without a
     ``gateway``."""
-    blocked = getattr(plan, "blocked", None)
-    if blocked:
+    if plan.blocked:
         raise InvalidRequest(f"plan {plan.id} cannot be applied; unreachable while planning: "
-                             + ", ".join(f"{t} ({r})" for t, r in blocked.items()))
+                             + ", ".join(f"{t} ({r})" for t, r in plan.blocked.items()))
     if gateway is None and any(c.target == GATEWAY for c in plan.changes):
         raise InvalidRequest(f"plan {plan.id} has gateway changes but no gateway applier was given")
     runner = _Runner(plan, nodes, gateway, backups, on_progress, verify_timeout_s, poll_interval_s,

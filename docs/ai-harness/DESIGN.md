@@ -1,6 +1,7 @@
 # BACnet-uc AI harness: design proposal
 
-Status: **proposal**, not implemented yet. The interactive UI mockup is in
+Status: **being implemented** in `hub/` and `web/` (see `hub/README.md` for
+what exists). The interactive UI mockup is in
 [`ui-mockup.html`](ui-mockup.html). Open it in a browser and use the
 Desktop and Phone buttons to switch views.
 
@@ -260,6 +261,41 @@ tier** that the policy engine enforces, whatever the model asks for.
 | `report_generate(kind)` | R | Commissioning report, point list, IO checkout sheet |
 | `ask_user(question, options)` | R | Structured question to the user, shown as buttons |
 
+Implemented so far (`hub/src/uc_hub/tools/`, JSON Schemas in the tool
+definitions): `site_search {query?, filters?: {space?, device?, protocol?,
+tag?, kind?, writable?}, limit?}`, `site_tree {space?}`, `device_describe
+{device}`, `point_read {points}`, `point_history {point, minutes?, agg?}`,
+`priority_array {point}`, `discover {protocol?, timeout_s?}`, `manifest_get
+{path?, which?}`, `result_get {handle, offset?, limit?}`, `ask_user
+{question, options?}` and `report_generate {kind}` (R); `manifest_edit
+{json_patch, message?}` and `plan {}` (S); `point_write {point, value,
+lease_s?}`, `io_force {node, channel, value, lease_s?}`, `io_release {node,
+channel}`, `device_identify {device, seconds?}` and `test_run {tests?}` (L);
+`apply {plan_id}` (C). The agent always writes at its own priority, so
+`point_write` has no priority argument.
+
+One `ToolRunner` (`tools/runner.py`) serves the agent loop and the MCP
+server: it validates the arguments (errors go back to the model as a failed
+result with code `invalid`), asks the policy about the caller's roles,
+builds the approval card for L and C calls (after the policy checks the call
+itself, so nobody is asked to approve a write to a life-safety point), runs
+an approved call only when the approver's roles may approve it, runs
+the handler with a time limit, stores results larger than
+`agent.result_inline_limit` as `result://rN` handles and audits every call.
+Text that devices report (object names, descriptions, app errors, MQTT
+payload text) is cleaned (control characters removed, length capped) and
+returned under a `device_data` key; summaries never quote it, and the tool
+descriptions tell the model that `device_data` is data.
+
+Tier L and C calls become approvals (`agent/approvals.py`). An approval is
+decided in the web app; approving re-runs `prepare` with the stored
+arguments and the approver's roles, so a call that went stale in the
+meantime is not run. A tier L approval can cover the rest of its run
+(`scope: "run"`, "approval once per run" in the table above); tier C calls
+always need their own. `uc-hub mcp` serves the same registry over MCP
+(`mcp_server.py`) as a configured identity; each MCP connection is a run
+of its own, so its calls and approvals show in the web app.
+
 ## 8. Agent loop
 
 ```
@@ -280,13 +316,27 @@ user message
             (max 60 tool calls, 20 min wall clock, token budget per run)
 ```
 
+Implemented in `hub/src/uc_hub/agent/loop.py`: one asyncio task per run,
+the history stored after every step, the model's stream turned into run
+events (API.md). The budgets (`agent.max_tool_calls`, `agent.max_wall_s`)
+count per turn, and the time spent waiting for an approval or an answer
+does not count. A turn also ends on a provider error (the run stays usable,
+a new message retries), on `finish_reason` `sensitive` or `length`, and
+when the same call fails twice in a row. At a restart, runs that wait for a
+person keep waiting; runs that were working end their turn with an error,
+because what their interrupted call did is unknown.
+
 **Context strategy.** GLM-5.3 has a 1M-token context, but a building with
 10,000 points still should not be pasted into the prompt. It would be slow
 and expensive, and the model gets worse at finding the relevant parts in a
 long context. Instead:
 
 - The prompt carries a **site summary**: counts per space and equipment type,
-  protocols, unhealthy devices, and the draft's pending changes.
+  protocols, unhealthy devices, and the draft's pending changes. It is
+  built from the manifest and the hub's own state, never from device text,
+  and added before every user message (`agent/context.py`), so the system
+  prompt and the conversation before it stay the same for the provider's
+  cache.
 - The model reaches everything else through `site_search` and
   `device_describe`, which return compact tables.
 - Large tool results are stored server-side. The model gets a summary and a
@@ -296,6 +346,9 @@ long context. Instead:
 
 **Skills (playbooks).** These are task-specific instructions, loaded when the
 user picks a workflow or the agent recognises one:
+
+The implemented playbooks (`agent/playbooks.py`) are `commission`,
+`onboard`, `io-checkout`, `troubleshoot` and `handover`.
 
 | Playbook | Steps |
 |---|---|
@@ -344,7 +397,7 @@ enforced in the gateway code, **not by the system prompt**:
    admin can remove the mark.
 2. **The agent writes with its own BACnet priority** (default 12), which is
    lower than manual operator (8), critical equipment control (5) and
-   life safety (1, 2). It never writes at priorities 1 to 7.
+   life safety (1, 2). It never writes at priorities 1 to 8.
 3. **Every live write has a lease.** When the lease ends, or the gateway
    loses contact, the value is relinquished. Nothing the agent writes stays
    in the priority array by accident. Permanent changes are only made through
@@ -366,6 +419,20 @@ enforced in the gateway code, **not by the system prompt**:
    concluded from them.
 8. **Audit.** Every tool call, its arguments, the result summary, the approver
    and the timing are stored and exportable.
+
+Where the gateway enforces them: `policy/policy.py` (tiers and roles,
+life-safety and deny rules, priorities, the rate limit), `runtime/live.py`
+(every agent write and IO force goes through the policy and holds a lease;
+BACnet-uc nodes get the lease length too, and writes without a priority
+array are undone by writing back the previous value; `runtime/services.py`
+releases every lease when the hub stops), `runtime/manifest.py`
+(permanent changes only through plan and apply; only an admin adds or
+removes a life-safety mark), `runtime/bridges.py` (gateway bridges follow
+the agent's write rules) and `runtime/testing.py` (live acceptance tests are
+agent actions), `agent/approvals.py` (an approval is checked again with the
+approver's roles; only tier L approvals can cover a whole run) and
+`agent/loop.py` (cancelling a run releases its leases). Rule 5 (simulation
+first) is not implemented yet.
 
 ## 11. GLM-5.3 integration
 
@@ -412,10 +479,11 @@ hand the task to the user.
 | `tool.result` | Summary, a handle to the full result, duration |
 | `approval.request` | Plan diff, affected points, tier, rollback, expiry |
 | `plan.updated` | Draft revision and change count |
-| `run.state` | `running`, `waiting_approval`, `done`, `failed`, `cancelled` |
+| `run.state` | `running`, `waiting_approval`, `waiting_answer`, `idle` (turn done), `failed`, `cancelled` |
 
-- `GET /api/live?points=...` is a separate SSE stream for live values (COV,
-  MQTT) behind the Points and Trends views.
+- `GET /api/live?ids=...` (or `?device=`) is a separate SSE stream for live
+  values (COV, MQTT) behind the Points and Trends views.
+- The full contract, with every event and error, is `API.md`.
 - Web Push notifies about approvals and alarms when the PWA is closed.
 
 ## 13. Security
@@ -507,6 +575,8 @@ agent on the other, and a change is always shown as a reviewable diff**.
   resumes from the last event ID.
 
 ## 15. Proposed repository layout and stack
+
+The layout as built is in `hub/README.md`; the proposal was:
 
 ```
 hub/                          Python 3.12 (not harness/, which the BACnet branch reserved)

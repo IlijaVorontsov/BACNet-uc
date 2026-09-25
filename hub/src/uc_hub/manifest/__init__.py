@@ -13,7 +13,7 @@ from .diff import json_diff, text_diff, yaml_diff
 from .load import Bridge, DeviceSpec, Policy, SiteManifest, Space, load_site, parse_yaml
 from .nodedocs import DesiredApp, Link
 from .patch import apply_patch, get_pointer
-from .plan import GATEWAY, SitePlan, compute_plan, directory_resolver
+from .plan import GATEWAY, compute_plan, directory_resolver
 from .testrun import TestTarget, compare, run_tests
 from .validate import validate_site
 
@@ -29,7 +29,6 @@ __all__ = [
     "MemoryBackupStore",
     "Policy",
     "SiteManifest",
-    "SitePlan",
     "Space",
     "TargetBackup",
     "TestTarget",

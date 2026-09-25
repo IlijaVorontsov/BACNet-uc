@@ -161,7 +161,7 @@ def test_effective_priority(policy: Policy) -> None:
 
 @pytest.mark.parametrize("datatype,value", [
     ("real", float("nan")), ("real", float("inf")), ("real", "hot"), ("real", True),
-    ("bool", 2), ("bool", "on"), ("int", 1.5), ("enum", True), ("string", 3),
+    ("bool", 2), ("bool", "on"), ("int", 1.5), ("enum", True), ("enum", 2), ("string", 3),
 ])
 def test_bad_values(datatype: str, value: Any) -> None:
     policy = Policy("hq", PolicySettings(max_writes_per_minute=100))
@@ -170,7 +170,7 @@ def test_bad_values(datatype: str, value: Any) -> None:
 
 
 @pytest.mark.parametrize("datatype,value", [
-    ("real", 21), ("real", 21.5), ("bool", 1), ("bool", False), ("bool", 1.0), ("int", 3), ("enum", 2.0),
+    ("real", 21), ("real", 21.5), ("bool", 1), ("bool", False), ("bool", 1.0), ("int", 3), ("enum", 1.0),
     ("string", "auto"),
 ])
 def test_good_values(datatype: str, value: Any) -> None:
@@ -285,3 +285,20 @@ def test_io_force_obeys_safety_and_deny_rules(policy: Policy) -> None:
     policy.check_force(sensor, now=2)
     with pytest.raises(PolicyDenied, match="rate limit"):
         policy.check_force(sensor, now=3)
+
+
+def test_checks_without_admitting_do_not_count(policy: Policy) -> None:
+    """Approval previews and gateway bridges apply the rules without using
+    the agent's write budget."""
+    cmd = point("r204-ctl/analog-output:1")
+    for t in range(10):
+        assert policy.check_point_write(cmd, None, 1.0, now=float(t), admit=False) == 12
+        policy.check_force(point("r204-ctl/analog-input:1"), now=float(t), admit=False)
+    with pytest.raises(PolicyDenied, match="life-safety"):
+        policy.check_point_write(point("ahu1-ctl/binary-output:9"), None, 1, now=0, admit=False)
+    with pytest.raises(PolicyDenied, match="deny pattern"):
+        policy.check_force(point("ahu1-ctl/binary-output:4"), now=0, admit=False)
+    for t in (20.0, 21.0, 22.0):
+        policy.check_point_write(cmd, None, 1.0, now=t)
+    with pytest.raises(PolicyDenied, match="rate limit"):
+        policy.check_point_write(cmd, None, 1.0, now=23.0)

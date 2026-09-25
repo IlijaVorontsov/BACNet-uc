@@ -16,7 +16,7 @@ from .conftest import FakeClock
 
 APPROVAL_KEYS = {
     "id", "run_id", "call_id", "tool", "tier", "title", "summary", "diff", "rollback", "plan_id", "state",
-    "requested_at", "expires_at", "requested_by", "decided_by", "decided_at", "comment",
+    "scope", "requested_at", "expires_at", "requested_by", "decided_by", "decided_at", "comment",
 }
 RUN_KEYS = {"id", "title", "state", "created_at", "updated_at", "created_by", "last_seq", "model"}
 
@@ -33,8 +33,46 @@ async def test_migrations_are_idempotent(tmp_path: Path) -> None:
         mode = db.execute("PRAGMA journal_mode").fetchone()[0]
     assert versions == [v for v, _ in MIGRATIONS]
     assert {"manifest_revisions", "manifest_heads", "runs", "run_events", "approvals", "questions", "audit",
-            "results", "leases", "plan_backups", "test_results"} <= tables
+            "results", "leases", "plan_backups", "test_results", "plans"} <= tables
     assert mode == "wal"
+
+
+async def test_version_1_database_is_migrated(tmp_path: Path) -> None:
+    path = tmp_path / "hub.db"
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at REAL NOT NULL)")
+        for sql in dict(MIGRATIONS)[1]:
+            db.execute(sql)
+        db.execute("INSERT INTO schema_version (version, applied_at) VALUES (1, 0)")
+        for doc in ('{"n": 1}', '{"n": 2}'):
+            db.execute("INSERT INTO plan_backups (plan_id, target, documents, created_at) "
+                       "VALUES ('p3', 'r204-ctl', ?, 0)", (doc,))
+    async with Store(path) as s:
+        assert await s.schema_version() == SCHEMA_VERSION
+        backups = await s.list_plan_backups("p3")
+        assert [(b["attempt"], b["documents"]) for b in backups] == [(1, {"n": 1}), (2, {"n": 2})]
+        await s.save_plan_backup("p3", "r204-ctl", {"n": 3}, attempt=3)
+        await s.save_plan("p3", revision=3, base_revision=2, data={})
+
+
+async def test_version_2_database_is_migrated(tmp_path: Path) -> None:
+    path = tmp_path / "hub.db"
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at REAL NOT NULL)")
+        for version in (1, 2):
+            for sql in dict(MIGRATIONS)[version]:
+                db.execute(sql)
+            db.execute("INSERT INTO schema_version (version, applied_at) VALUES (?, 0)", (version,))
+        db.execute("INSERT INTO runs (id, title, state, created_by, created_at, updated_at) "
+                   "VALUES ('r_1', 't', 'idle', 'dev', 0, 0)")
+        db.execute("INSERT INTO approvals (id, run_id, tool, tier, title, requested_at, expires_at, requested_by) "
+                   "VALUES ('a_1', 'r_1', 'apply', 'C', 'Apply', 0, 1e12, 'dev')")
+        db.execute("INSERT INTO questions (id, run_id, text, asked_at) VALUES ('q_1', 'r_1', 'Open?', 0)")
+    async with Store(path) as s:
+        assert await s.schema_version() == SCHEMA_VERSION
+        assert await s.run_meta("r_1") == {}
+        assert (await s.get_approval("a_1"))["scope"] == "call"
+        assert (await s.get_question("q_1"))["expired_at"] is None
 
 
 async def test_newer_schema_is_refused(tmp_path: Path) -> None:
@@ -104,6 +142,16 @@ async def test_manifest_revisions(store: Store, clock: FakeClock) -> None:
 
 
 # -- runs and events --------------------------------------------------------------------------
+async def test_run_meta(store: Store) -> None:
+    run = await store.create_run(title="t", created_by="dev", meta={"kind": "agent", "roles": ["admin"]})
+    assert set(run) == RUN_KEYS
+    assert await store.run_meta(run["id"]) == {"kind": "agent", "roles": ["admin"]}
+    await store.update_run(run["id"], meta={"kind": "agent", "grant": None})
+    assert await store.run_meta(run["id"]) == {"kind": "agent", "grant": None}
+    with pytest.raises(NotFound):
+        await store.run_meta("r_missing")
+
+
 async def test_runs_crud(store: Store, clock: FakeClock) -> None:
     run = await store.create_run(title="Commission room 204", created_by="dev", model="glm-5.3",
                                  state="running")
@@ -208,8 +256,13 @@ async def test_approval_round_trip(store: Store, clock: FakeClock) -> None:
         await store.decide_approval(a["id"], "reject", user="other")
     assert (await store.get_approval(a["id"]))["decided_by"] == "ilija"
 
+    assert decided["scope"] == "call"
     b = await _approval(store, tier="L", tool="point_write", plan_id=None)
     assert (await store.decide_approval(b["id"], "reject", user="ops"))["state"] == "rejected"
+    c = await _approval(store, tier="L", tool="io_force", plan_id=None)
+    assert (await store.decide_approval(c["id"], "approve", user="ops", scope="run"))["scope"] == "run"
+    with pytest.raises(InvalidRequest):
+        await store.decide_approval(b["id"], "approve", user="x", scope="forever")
     with pytest.raises(Conflict):
         await store.decide_approval(b["id"], "reject", user="ops")
     with pytest.raises(NotFound):
@@ -253,6 +306,12 @@ async def test_approval_expiry(store: Store, clock: FakeClock) -> None:
     assert len(await store.list_approvals()) == 3
     with pytest.raises(Conflict, match="already expired"):
         await store.decide_approval(fresh["id"], "approve", user="x")
+
+    chosen = await _approval(store, run_id="r_3", ttl_s=600)
+    kept = await _approval(store, run_id="r_3", ttl_s=600)
+    assert [e["id"] for e in await store.expire_approvals(ids=[chosen["id"]], reason="gone")] == [chosen["id"]]
+    assert await store.expire_approvals(ids=[]) == []
+    assert (await store.get_approval(kept["id"]))["state"] == "pending"
     with pytest.raises(InvalidRequest):
         await store.list_approvals(state="nope")
 
@@ -271,6 +330,17 @@ async def test_questions(store: Store) -> None:
         await store.answer_question("q_missing", "No", user="tech2")
     assert await store.list_questions("r_1", pending_only=True) == []
     assert await store.get_question(q["id"]) == answered
+
+    late = await store.create_question(run_id="r_1", call_id="c10", text="Heater on?")
+    other = await store.create_question(run_id="r_2", call_id="c1", text="Fan on?")
+    assert await store.expire_questions(run_id="r_1") == [late["id"]]
+    assert await store.expire_questions(run_id="r_1") == []
+    assert (await store.get_question(late["id"]))["expired_at"] is not None
+    assert await store.list_questions("r_1", pending_only=True) == []
+    with pytest.raises(Conflict, match="expired"):
+        await store.answer_question(late["id"], "Yes", user="tech1")
+    assert await store.expire_questions(ids=[other["id"]]) == [other["id"]]
+    assert await store.expire_questions() == []
 
 
 async def test_audit(store: Store, clock: FakeClock) -> None:
@@ -297,12 +367,16 @@ async def test_result_blobs(store: Store, clock: FakeClock) -> None:
     assert await store.get_result(f"result://{handle}", run_id="r_1") == data
     with pytest.raises(NotFound):
         await store.get_result(handle, run_id="r_other")
+    with pytest.raises(NotFound):
+        await store.get_result(handle, owner_only=True)
+    unowned = await store.put_result({"x": 1})
+    assert await store.get_result(unowned, owner_only=True) == {"x": 1}
     for bad in ("r999", "bogus", "result://x"):
         with pytest.raises(NotFound):
             await store.get_result(bad)
     clock.advance(100)
     await store.put_result([1], run_id="r_1")
-    assert await store.prune_results(older_than=clock.now - 50) == 1
+    assert await store.prune_results(older_than=clock.now - 50) == 2
     with pytest.raises(NotFound):
         await store.get_result(handle)
 
@@ -348,12 +422,42 @@ async def test_plan_backups(store: Store) -> None:
 
     await PlanBackupStore(store).save(Backup())
     await store.save_plan_backup("p17", "gateway", {"gateway": {"bridges": []}})
-    await store.save_plan_backup("p17", "r204-ctl", {"files": {}})
+    await PlanBackupStore(store, attempt=2).save(Backup())
+    await store.save_plan_backup("p17", "r204-ctl", {"files": {}}, attempt=3)
     latest = await store.get_plan_backup("p17", "r204-ctl")
-    assert latest is not None and latest["documents"] == {"files": {}}
-    assert [(b["target"], b["documents"].get("plan_id")) for b in await store.list_plan_backups("p17")] == [
-        ("r204-ctl", "p17"), ("gateway", None), ("r204-ctl", None)]
+    assert latest is not None and (latest["documents"], latest["attempt"]) == ({"files": {}}, 3)
+    first = await store.get_plan_backup("p17", "r204-ctl", first=True)
+    assert first is not None and (first["documents"]["plan_id"], first["attempt"]) == ("p17", 1)
+    assert [(b["target"], b["attempt"], b["documents"].get("plan_id"))
+            for b in await store.list_plan_backups("p17")] == [
+        ("r204-ctl", 1, "p17"), ("gateway", 1, None), ("r204-ctl", 2, "p17"), ("r204-ctl", 3, None)]
+    # An attempt's backup is never replaced.
+    with pytest.raises(Conflict):
+        await PlanBackupStore(store).save(Backup())
+    assert (await store.get_plan_backup("p17", "r204-ctl", first=True))["id"] == first["id"]
     assert await store.get_plan_backup("p18", "r204-ctl") is None
+
+
+async def test_plans(store: Store, clock: FakeClock) -> None:
+    data = {"id": "p17", "changes": [{"id": "c1", "payload": {"data": "AGFzbQ=="}}], "blocked": {}}
+    saved = await store.save_plan("p17", revision=17, base_revision=16, data=data)
+    assert (saved["state"], saved["attempts"], saved["data"]) == ("planned", 0, data)
+    with pytest.raises(Conflict):
+        await store.save_plan("p17", revision=17, base_revision=16, data={})
+    clock.advance(1)
+    await store.save_plan("p17-2", revision=17, base_revision=16, data={"id": "p17-2"})
+    assert await store.plan_count(17) == 2 and await store.plan_count(18) == 0
+    latest = await store.latest_plan(17)
+    assert latest is not None and latest["id"] == "p17-2"
+    assert await store.latest_plan(16) is None
+    updated = await store.update_plan("p17", state="applying", attempts=1)
+    assert (updated["state"], updated["attempts"], updated["updated_at"]) == ("applying", 1, clock.now)
+    assert (await store.get_plan("p17"))["state"] == "applying"
+    assert await store.get_plan("p99") is None
+    with pytest.raises(InvalidRequest):
+        await store.update_plan("p17", state="done")
+    with pytest.raises(NotFound):
+        await store.update_plan("p99", attempts=2)
 
 
 async def test_test_results(store: Store, clock: FakeClock) -> None:

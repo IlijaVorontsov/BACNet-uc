@@ -190,6 +190,9 @@ class _Checker:
         #: generic-json device name -> its configured point ids
         self.json_points: dict[str, set[str]] = {}
         self.life_safety: set[PointRef] = set()
+        #: Gateway and live-test writes may not outrank this priority (use a
+        #: number from it to 16): the policy refuses them.
+        self.agent_priority: int = (doc.get("policy") or {}).get("agent_write_priority", 12)
 
     def run(self) -> list[str]:
         self.devices()
@@ -453,6 +456,9 @@ class _Checker:
                 self.e.add(path, "bridge source and destination are the same point")
             if dst in self.life_safety:
                 self.e.add((*path, "to"), f"{dst} is a life-safety point")
+            if bridge.get("priority", self.agent_priority) < self.agent_priority:
+                self.e.add((*path, "priority"), f"priority {bridge['priority']} would outrank the agent write "
+                                                f"priority {self.agent_priority}; use {self.agent_priority}..16")
             if dst in destinations:
                 self.e.add((*path, "to"), f"{dst} is already written by {destinations[dst]}")
             else:
@@ -545,6 +551,9 @@ class _Checker:
         if priority in RESERVED_PRIORITIES:
             self.e.add((*path, "priority"), f"tests may not write at priority {priority}; 1..8 are reserved "
                                              "for life safety, critical equipment and operators")
+        elif isinstance(priority, int) and priority < self.agent_priority:
+            self.e.add((*path, "priority"), f"priority {priority} would outrank the agent write priority "
+                                             f"{self.agent_priority}; live tests write at {self.agent_priority}..16")
         parsed = ref.bacnet
         if (priority is None and parsed is not None and parsed[0] in COMMANDABLE_TYPES
                 and body.get("property", "present-value") == "present-value"):

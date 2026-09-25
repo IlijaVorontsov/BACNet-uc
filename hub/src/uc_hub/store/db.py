@@ -1,5 +1,6 @@
 """SQLite persistence: manifest revisions, runs and their events, approvals,
-questions, the audit log, result blobs, leases, plan backups and test results.
+questions, the audit log, result blobs, leases, plans, plan backups and test
+results.
 
 One aiosqlite connection serves the hub. An asyncio lock serializes its use,
 so a multi-statement transaction never interleaves with another coroutine's
@@ -27,7 +28,7 @@ from typing import Any, Literal, Protocol, TypeVar
 
 import aiosqlite
 
-from ..core.errors import HubError, InvalidRequest, NotFound
+from ..core.errors import Conflict, InvalidRequest, NotFound
 from ..core.types import TestResult
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,10 @@ TIERS = ("R", "S", "L", "C")
 LEASE_KINDS = ("write", "force")
 LEASE_STATES = ("active", "released", "failed")
 TEST_TARGETS = ("live", "sim")
+PLAN_STATES = ("planned", "applying", "applied", "failed")
+#: ``call``: the decision covers one tool call; ``run``: a tier L approval that
+#: also approves the run's later tier L calls.
+APPROVAL_SCOPES = ("call", "run")
 #: Keys every run event carries; event fields may not reuse them.
 EVENT_KEYS = frozenset({"seq", "run_id", "ts", "type"})
 
@@ -47,12 +52,6 @@ _DECISIONS = {"approve": "approved", "approved": "approved", "reject": "rejected
 _LEASE_COLUMNS = frozenset({"state", "attempts", "expires_at", "released_at", "last_error"})
 _HANDLE_RE = re.compile(r"^(?:result://)?r([0-9]{1,18})$")
 _MAX_LIMIT = 10_000
-
-
-class Conflict(HubError):
-    """The row is not in a state that allows the operation (HTTP 409)."""
-
-    code = "conflict"
 
 
 # -- schema -------------------------------------------------------------------------------
@@ -183,7 +182,41 @@ _V1: tuple[str, ...] = (
     )""",
 )
 
-MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = ((1, _V1),)
+# Plans are kept with their change payloads so an approved plan can be applied
+# after a restart; backups are keyed by apply attempt so a re-apply never
+# replaces what a target looked like before the first attempt.
+_V2: tuple[str, ...] = (
+    """CREATE TABLE plans (
+        id TEXT PRIMARY KEY,
+        revision INTEGER NOT NULL,
+        base_revision INTEGER NOT NULL,
+        data TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'planned'
+            CHECK (state IN ('planned', 'applying', 'applied', 'failed')),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        created_at REAL NOT NULL,
+        updated_at REAL NOT NULL
+    )""",
+    "CREATE INDEX plans_by_revision ON plans (revision, created_at)",
+    "ALTER TABLE plan_backups ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1",
+    # Earlier backups of one plan target were separate attempts, in id order.
+    """UPDATE plan_backups SET attempt = (
+        SELECT COUNT(*) FROM plan_backups AS b
+        WHERE b.plan_id = plan_backups.plan_id AND b.target = plan_backups.target AND b.id <= plan_backups.id
+    )""",
+    "CREATE UNIQUE INDEX plan_backups_by_attempt ON plan_backups (plan_id, target, attempt)",
+)
+
+# Run metadata (who drives the run, its playbook, a run-wide approval) lets a
+# run resume after a restart; the approval scope and question expiry record
+# decisions that were implicit before.
+_V3: tuple[str, ...] = (
+    "ALTER TABLE runs ADD COLUMN meta TEXT NOT NULL DEFAULT '{}'",
+    "ALTER TABLE approvals ADD COLUMN scope TEXT NOT NULL DEFAULT 'call' CHECK (scope IN ('call', 'run'))",
+    "ALTER TABLE questions ADD COLUMN expired_at REAL",
+)
+
+MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = ((1, _V1), (2, _V2), (3, _V3))
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
 
@@ -278,6 +311,7 @@ def _approval_json(row: sqlite3.Row, *, with_args: bool = False) -> dict[str, An
         "rollback": row["rollback"],
         "plan_id": row["plan_id"],
         "state": row["state"],
+        "scope": row["scope"],
         "requested_at": row["requested_at"],
         "expires_at": row["expires_at"],
         "requested_by": row["requested_by"],
@@ -301,6 +335,7 @@ def _question_json(row: sqlite3.Row) -> dict[str, Any]:
         "answer": row["answer"],
         "answered_by": row["answered_by"],
         "answered_at": row["answered_at"],
+        "expired_at": row["expired_at"],
     }
 
 
@@ -340,8 +375,22 @@ def _backup_json(row: sqlite3.Row) -> dict[str, Any]:
         "id": row["id"],
         "plan_id": row["plan_id"],
         "target": row["target"],
+        "attempt": row["attempt"],
         "documents": json.loads(row["documents"]),
         "created_at": row["created_at"],
+    }
+
+
+def _plan_json(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "revision": row["revision"],
+        "base_revision": row["base_revision"],
+        "data": json.loads(row["data"]),
+        "state": row["state"],
+        "attempts": row["attempts"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
     }
 
 
@@ -601,18 +650,22 @@ class Store:
         model: str = "",
         state: str = "idle",
         run_id: str | None = None,
+        meta: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """``meta`` is the agent's own record of the run (``run_meta``); it
+        is not part of the API shape."""
         _check_choice("run state", state, RUN_STATES)
         now = self.clock()
         rid = run_id or new_id("r")
+        meta_text = dumps(dict(meta or {}))
 
         async def op(db: aiosqlite.Connection) -> dict[str, Any]:
             try:
                 await _exec(
                     db,
-                    "INSERT INTO runs (id, title, state, created_by, created_at, updated_at, model) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (rid, title, state, created_by, now, now, model),
+                    "INSERT INTO runs (id, title, state, created_by, created_at, updated_at, model, meta) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (rid, title, state, created_by, now, now, model, meta_text),
                 )
             except sqlite3.IntegrityError as e:
                 raise Conflict(f"run {rid} already exists") from e
@@ -647,6 +700,7 @@ class Store:
         state: str | None = None,
         title: str | None = None,
         model: str | None = None,
+        meta: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         sets: dict[str, Any] = {"updated_at": self.clock()}
         if state is not None:
@@ -656,6 +710,8 @@ class Store:
             sets["title"] = title
         if model is not None:
             sets["model"] = model
+        if meta is not None:
+            sets["meta"] = dumps(dict(meta))
 
         async def op(db: aiosqlite.Connection) -> dict[str, Any]:
             assignments = ", ".join(f"{k} = ?" for k in sets)
@@ -666,6 +722,13 @@ class Store:
             return _run_json(row)
 
         return await self._run(op, write=True)
+
+    async def run_meta(self, run_id: str) -> dict[str, Any]:
+        row = await self._fetchone("SELECT meta FROM runs WHERE id = ?", (run_id,))
+        if row is None:
+            raise NotFound(f"run {run_id} not found")
+        meta: dict[str, Any] = json.loads(row["meta"])
+        return meta
 
     async def save_messages(self, run_id: str, messages: Sequence[Mapping[str, Any]]) -> None:
         """Replace the run's LLM message history (OpenAI chat format)."""
@@ -787,21 +850,22 @@ class Store:
         return [_approval_json(r) for r in rows]
 
     async def decide_approval(
-        self, approval_id: str, decision: str, *, user: str, comment: str | None = None
+        self, approval_id: str, decision: str, *, user: str, comment: str | None = None, scope: str = "call"
     ) -> dict[str, Any]:
         """pending -> approved/rejected, atomically. Raises ``Conflict`` when the
         approval was already decided or its time is up, ``NotFound`` when unknown."""
         state = _DECISIONS.get(decision)
         if state is None:
             raise InvalidRequest(f"decision must be 'approve' or 'reject', got {decision!r}")
+        _check_choice("approval scope", scope, APPROVAL_SCOPES)
         now = self.clock()
 
         async def op(db: aiosqlite.Connection) -> dict[str, Any]:
             count, _ = await _exec(
                 db,
-                "UPDATE approvals SET state = ?, decided_by = ?, decided_at = ?, comment = ? "
+                "UPDATE approvals SET state = ?, decided_by = ?, decided_at = ?, comment = ?, scope = ? "
                 "WHERE id = ? AND state = 'pending' AND expires_at > ?",
-                (state, user, now, comment, approval_id, now),
+                (state, user, now, comment, scope, approval_id, now),
             )
             row = await _one(db, "SELECT * FROM approvals WHERE id = ?", (approval_id,))
             if row is None:
@@ -814,13 +878,20 @@ class Store:
 
         return await self._run(op, write=True)
 
-    async def expire_approvals(self, *, run_id: str | None = None, reason: str | None = None) -> list[dict[str, Any]]:
-        """pending -> expired for every approval whose time is up, or with
-        ``run_id`` for every pending approval of that run (the run ended).
+    async def expire_approvals(self, *, run_id: str | None = None, ids: Sequence[str] | None = None,
+                               reason: str | None = None) -> list[dict[str, Any]]:
+        """pending -> expired for every approval whose time is up, with
+        ``run_id`` for every pending approval of that run (the run ended), or
+        with ``ids`` for those approvals (their requester stopped waiting).
         Returns the approvals that changed so the caller can tell the runs."""
         now = self.clock()
         params: tuple[Any, ...]
-        if run_id is None:
+        if ids is not None:
+            if not ids:
+                return []
+            where = f"state = 'pending' AND id IN ({', '.join('?' * len(ids))})"
+            params = tuple(ids)
+        elif run_id is None:
             where, params = "state = 'pending' AND expires_at <= ?", (now,)
         else:
             where, params = "state = 'pending' AND run_id = ?", (run_id,)
@@ -863,28 +934,57 @@ class Store:
         return None if row is None else _question_json(row)
 
     async def list_questions(self, run_id: str, *, pending_only: bool = False) -> list[dict[str, Any]]:
+        """``pending_only``: neither answered nor expired."""
         sql = "SELECT * FROM questions WHERE run_id = ?"
         if pending_only:
-            sql += " AND answer IS NULL"
+            sql += " AND answer IS NULL AND expired_at IS NULL"
         rows = await self._fetchall(sql + " ORDER BY asked_at, rowid", (run_id,))
         return [_question_json(r) for r in rows]
 
     async def answer_question(self, question_id: str, answer: str, *, user: str) -> dict[str, Any]:
-        """Record the first answer; a second one raises ``Conflict``."""
+        """Record the first answer; a second one, or one after the question
+        expired, raises ``Conflict``."""
         now = self.clock()
 
         async def op(db: aiosqlite.Connection) -> dict[str, Any]:
             count, _ = await _exec(
                 db,
-                "UPDATE questions SET answer = ?, answered_by = ?, answered_at = ? WHERE id = ? AND answer IS NULL",
+                "UPDATE questions SET answer = ?, answered_by = ?, answered_at = ? "
+                "WHERE id = ? AND answer IS NULL AND expired_at IS NULL",
                 (answer, user, now, question_id),
             )
             row = await _one(db, "SELECT * FROM questions WHERE id = ?", (question_id,))
             if row is None:
                 raise NotFound(f"question {question_id} not found")
             if count == 0:
+                if row["answer"] is None:
+                    raise Conflict(f"question {question_id} expired; nobody waits for the answer any more")
                 raise Conflict(f"question {question_id} was already answered by {row['answered_by']}")
             return _question_json(row)
+
+        return await self._run(op, write=True)
+
+    async def expire_questions(self, *, run_id: str | None = None, ids: Sequence[str] = ()) -> list[str]:
+        """Mark unanswered questions expired (``ids``, or every open one of
+        ``run_id``): nobody waits for them any more, so a late answer is
+        refused. Returns the ids that changed."""
+        now = self.clock()
+        params: tuple[Any, ...]
+        if run_id is not None:
+            where, params = "run_id = ?", (run_id,)
+        elif ids:
+            where, params = f"id IN ({', '.join('?' * len(ids))})", tuple(ids)
+        else:
+            return []
+
+        async def op(db: aiosqlite.Connection) -> list[str]:
+            rows = await _all(db, f"SELECT id FROM questions WHERE {where} AND answer IS NULL "
+                                  "AND expired_at IS NULL", params)
+            changed = [r["id"] for r in rows]
+            if changed:
+                await _exec(db, f"UPDATE questions SET expired_at = ? WHERE id IN ({', '.join('?' * len(changed))})",
+                            (now, *changed))
+            return changed
 
         return await self._run(op, write=True)
 
@@ -939,14 +1039,16 @@ class Store:
 
         return await self._run(op, write=True)
 
-    async def get_result(self, handle: str, *, run_id: str | None = None) -> Any:
+    async def get_result(self, handle: str, *, run_id: str | None = None, owner_only: bool = False) -> Any:
         """The stored data of ``r42`` or ``result://r42``. With ``run_id``, only
-        that run's results are visible."""
+        that run's results are visible; with ``owner_only`` also a ``run_id``
+        of None is a filter (results stored without a run), as for a caller
+        whose own results are the only ones it may read."""
         m = _HANDLE_RE.match(handle.strip())
         if not m:
             raise NotFound(f"no result {handle!r}")
         row = await self._fetchone("SELECT run_id, data FROM results WHERE id = ?", (int(m[1]),))
-        if row is None or (run_id is not None and row["run_id"] != run_id):
+        if row is None or ((run_id is not None or owner_only) and row["run_id"] != run_id):
             raise NotFound(f"no result {handle!r}")
         return json.loads(row["data"])
 
@@ -1017,23 +1119,85 @@ class Store:
                                     (*params, _limit(limit)))
         return [_lease_json(r) for r in rows]
 
+    # -- plans ---------------------------------------------------------------------------------
+    async def save_plan(self, plan_id: str, *, revision: int, base_revision: int, data: Any) -> dict[str, Any]:
+        """Store a computed plan with its change payloads (``data``); plans are
+        immutable, so an existing id raises ``Conflict``."""
+        text = dumps(data)
+        now = self.clock()
+
+        async def op(db: aiosqlite.Connection) -> dict[str, Any]:
+            try:
+                await _exec(db, "INSERT INTO plans (id, revision, base_revision, data, created_at, updated_at) "
+                                "VALUES (?, ?, ?, ?, ?, ?)", (plan_id, revision, base_revision, text, now, now))
+            except sqlite3.IntegrityError as e:
+                raise Conflict(f"plan {plan_id} already exists") from e
+            row = await _one(db, "SELECT * FROM plans WHERE id = ?", (plan_id,))
+            assert row is not None
+            return _plan_json(row)
+
+        return await self._run(op, write=True)
+
+    async def get_plan(self, plan_id: str) -> dict[str, Any] | None:
+        row = await self._fetchone("SELECT * FROM plans WHERE id = ?", (plan_id,))
+        return None if row is None else _plan_json(row)
+
+    async def latest_plan(self, revision: int) -> dict[str, Any] | None:
+        """The newest plan computed for manifest ``revision``."""
+        row = await self._fetchone("SELECT * FROM plans WHERE revision = ? ORDER BY created_at DESC, rowid DESC "
+                                   "LIMIT 1", (revision,))
+        return None if row is None else _plan_json(row)
+
+    async def plan_count(self, revision: int) -> int:
+        """How many plans were computed for manifest ``revision``."""
+        row = await self._fetchone("SELECT COUNT(*) FROM plans WHERE revision = ?", (revision,))
+        return int(row[0]) if row else 0
+
+    async def update_plan(
+        self, plan_id: str, *, state: str | None = None, attempts: int | None = None
+    ) -> dict[str, Any]:
+        sets: dict[str, Any] = {"updated_at": self.clock()}
+        if state is not None:
+            _check_choice("plan state", state, PLAN_STATES)
+            sets["state"] = state
+        if attempts is not None:
+            sets["attempts"] = attempts
+
+        async def op(db: aiosqlite.Connection) -> dict[str, Any]:
+            assignments = ", ".join(f"{k} = ?" for k in sets)
+            await _exec(db, f"UPDATE plans SET {assignments} WHERE id = ?", (*sets.values(), plan_id))
+            row = await _one(db, "SELECT * FROM plans WHERE id = ?", (plan_id,))
+            if row is None:
+                raise NotFound(f"plan {plan_id} not found")
+            return _plan_json(row)
+
+        return await self._run(op, write=True)
+
     # -- plan backups -------------------------------------------------------------------------
-    async def save_plan_backup(self, plan_id: str, target: str, documents: Any) -> int:
+    async def save_plan_backup(self, plan_id: str, target: str, documents: Any, *, attempt: int = 1) -> int:
+        """Keep one backup per (plan, target, apply attempt); saving the same
+        attempt again raises ``Conflict`` instead of replacing it."""
         text = dumps(documents)
         now = self.clock()
 
         async def op(db: aiosqlite.Connection) -> int:
-            _, rowid = await _exec(db, "INSERT INTO plan_backups (plan_id, target, documents, created_at) "
-                                       "VALUES (?, ?, ?, ?)", (plan_id, target, text, now))
+            try:
+                _, rowid = await _exec(db, "INSERT INTO plan_backups (plan_id, target, attempt, documents, "
+                                           "created_at) VALUES (?, ?, ?, ?, ?)", (plan_id, target, attempt, text, now))
+            except sqlite3.IntegrityError as e:
+                raise Conflict(f"plan {plan_id} already has a backup of {target} for attempt {attempt}") from e
             assert rowid is not None
             return rowid
 
         return await self._run(op, write=True)
 
-    async def get_plan_backup(self, plan_id: str, target: str) -> dict[str, Any] | None:
-        """The latest backup of ``target`` taken for ``plan_id``."""
+    async def get_plan_backup(self, plan_id: str, target: str, *, first: bool = False) -> dict[str, Any] | None:
+        """The latest backup of ``target`` taken for ``plan_id``; with
+        ``first`` the earliest one, taken before any attempt changed it."""
+        order = "ASC" if first else "DESC"
         row = await self._fetchone(
-            "SELECT * FROM plan_backups WHERE plan_id = ? AND target = ? ORDER BY id DESC LIMIT 1", (plan_id, target))
+            f"SELECT * FROM plan_backups WHERE plan_id = ? AND target = ? ORDER BY attempt {order}, id {order} "
+            "LIMIT 1", (plan_id, target))
         return None if row is None else _backup_json(row)
 
     async def list_plan_backups(self, plan_id: str) -> list[dict[str, Any]]:
@@ -1133,11 +1297,14 @@ class _JsonBackup(Protocol):
 
 
 class PlanBackupStore:
-    """``manifest.apply.BackupStore`` over the database: each backup is saved
-    in its ``to_json`` form; read it back with ``Store.get_plan_backup``."""
+    """``manifest.apply.BackupStore`` over the database for one apply
+    attempt: each backup is saved in its ``to_json`` form under ``attempt``,
+    so the backups of earlier attempts stay; read them back with
+    ``Store.get_plan_backup`` (``first=True`` for the pre-apply state)."""
 
-    def __init__(self, store: Store) -> None:
+    def __init__(self, store: Store, attempt: int = 1) -> None:
         self._store = store
+        self.attempt = attempt
 
     async def save(self, backup: _JsonBackup) -> None:
-        await self._store.save_plan_backup(backup.plan_id, backup.target, backup.to_json())
+        await self._store.save_plan_backup(backup.plan_id, backup.target, backup.to_json(), attempt=self.attempt)

@@ -6,8 +6,10 @@
  * Drives analog-output:1 (valve, %) at priority 12 from analog-input:1 (room
  * temperature) towards the setpoint in analog-value:1, which the app creates
  * with the "setpoint" parameter as relinquish default. Parameters: setpoint
- * (degrees C, default 21), kp (%/K, default 10), ki (%/(K*s), default 0.011).
- * The hub simulator emulates the same behaviour (uc_hub.sim.network).
+ * (degrees C, default 21), kp (%/K, default 10), ki (%/(K*s), default 0.011)
+ * and co2_av (optional): the instance of an analog value "Room CO2" the app
+ * creates as a network input, which a gateway bridge writes the room's CO2
+ * into. The hub simulator emulates the same behaviour (uc_hub.sim.network).
  *
  * Build: ./build.sh (clang --target=wasm32, the recipe of bacnet_uc.h).
  */
@@ -30,6 +32,7 @@ static double clamp(double v, double lo, double hi)
 UC_EXPORT(uc_app_init) int32_t uc_app_init(void)
 {
 	int32_t rc;
+	double co2;
 
 	kp = uc_param_num("kp", kp);
 	ki = uc_param_num("ki", ki);
@@ -37,6 +40,13 @@ UC_EXPORT(uc_app_init) int32_t uc_app_init(void)
 	if (rc < 0 && rc != UC_ERR_EXISTS) {
 		uc_log_str(UC_LOG_ERR, "cannot create the setpoint object");
 		return rc;
+	}
+	co2 = uc_param_num("co2_av", 0.0);
+	if (co2 >= 1.0 && co2 < 4194304.0) {
+		rc = uc_obj_create_str(UC_OBJ_ANALOG_VALUE, (uint32_t)co2, "Room CO2");
+		if (rc < 0 && rc != UC_ERR_EXISTS) {
+			uc_log_str(UC_LOG_WRN, "cannot create the CO2 object");
+		}
 	}
 	uc_prop_write(UC_OBJ_ANALOG_VALUE, 1u, UC_PROP_RELINQUISH_DEFAULT, UC_ARRAY_ALL,
 		      uc_param_num("setpoint", 21.0), UC_PRIORITY_NONE);

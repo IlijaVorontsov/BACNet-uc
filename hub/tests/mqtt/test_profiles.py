@@ -73,7 +73,8 @@ def feed(profile: MqttTlsProfile, leaf: str, payload: Any, now: float = 1.0) -> 
     (3.0, "int", 3),
     ("7", "int", 7),
     ("7.0", "int", 7),
-    (2, "enum", 2),
+    (1, "enum", 1),
+    ("0", "enum", 0),
     (1, "bool", True),
     (0.0, "bool", False),
     ("ON", "bool", True),
@@ -91,7 +92,7 @@ def test_coerce(value: Any, datatype: Any, expected: Any) -> None:
 
 
 @pytest.mark.parametrize(("value", "datatype"), [
-    ("abc", "real"), (math.nan, "real"), (math.inf, "int"), (2.5, "int"), (-1, "enum"),
+    ("abc", "real"), (math.nan, "real"), (math.inf, "int"), (2.5, "int"), (-1, "enum"), (2, "enum"),
     (2, "bool"), ("maybe", "bool"), ([1], "real"), ({"a": 1}, "int"),
     pytest.param(10**400, "real", id="huge-int-real"),   # float() raises OverflowError
 ])
@@ -409,6 +410,14 @@ def generic(spec: dict[str, Any] | None = None) -> GenericJsonProfile:
     return profile
 
 
+def test_retained_trust_is_declared_per_point() -> None:
+    spec = {**CO2_SPEC, "points": [{"id": "co2", "path": "$.ppm", "trust_retained": True},
+                                   {"id": "battery", "path": "$.bat.pct"}]}
+    profile = generic(spec)
+    assert [profile.spec(o).trust_retained for o in ("co2", "battery")] == [True, False]  # type: ignore[union-attr]
+    assert tls_profile().spec("status").trust_retained  # type: ignore[union-attr]
+
+
 def test_generic_points() -> None:
     points = {p.ref.obj: p for p in generic().points()}
     assert list(points) == ["co2", "battery", "setpoint", "fan"]
@@ -507,6 +516,7 @@ async def test_generic_write() -> None:
     {"points": [{"id": "a", "kind": "sensor"}]},
     {"points": [{"id": "a", "tags": "x"}]},
     {"points": [{"id": "a", "units": 5}]},
+    {"points": [{"id": "a", "trust_retained": "yes"}]},
     {"points": ["co2"]},
     {"command_topic": None, "points": [{"id": "a", "writable": True}]},
 ])

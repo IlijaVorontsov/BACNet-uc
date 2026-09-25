@@ -1,4 +1,5 @@
 from .errors import (
+    Conflict,
     DeviceError,
     DeviceTimeout,
     HubError,
@@ -7,6 +8,7 @@ from .errors import (
     PolicyDenied,
     Unsupported,
     ValidationFailed,
+    error_for,
 )
 from .ids import OBJECT_TYPE_NAMES, OBJECT_TYPES, PointRef, bacnet_obj
 from .types import (
@@ -31,6 +33,7 @@ from .types import (
 __all__ = [
     "Change",
     "ChangeResult",
+    "Conflict",
     "DeviceDescription",
     "DeviceError",
     "DeviceRecord",
@@ -57,4 +60,5 @@ __all__ = [
     "Value",
     "WriteResult",
     "bacnet_obj",
+    "error_for",
 ]

@@ -265,3 +265,19 @@ def test_agent_priorities_and_harmless_steps_are_fine(doc: dict[str, Any]) -> No
 ])
 def test_relative_paths(path: str, ok: bool) -> None:
     assert is_relative_inside(path) is ok
+
+
+def test_gateway_and_test_writes_may_not_outrank_the_agent(doc: dict[str, Any]) -> None:
+    """The policy refuses these writes at run time, so the manifest may not ask for them."""
+    doc["policy"] = {"agent_write_priority": 12}
+    doc["bridges"][0]["priority"] = 10
+    steps(doc).append({"write": {"point": "r204-ctl/analog-value:1", "value": 21, "priority": 11}})
+    with pytest.raises(ValidationFailed) as info:
+        SiteManifest.from_dict(doc)
+    assert info.value.errors == [
+        "/bridges/0/priority: priority 10 would outrank the agent write priority 12; use 12..16",
+        "/system/tests/0/steps/3/write/priority: priority 11 would outrank the agent write priority 12; "
+        "live tests write at 12..16",
+    ]
+    doc["policy"] = {"agent_write_priority": 10}
+    SiteManifest.from_dict(doc)

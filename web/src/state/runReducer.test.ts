@@ -35,6 +35,7 @@ function approval(state: Approval["state"], extra: Partial<Approval> = {}): Appr
     rollback: "Apply revision 16",
     plan_id: "p17",
     state,
+    scope: "call",
     requested_at: 1000,
     expires_at: 2800,
     requested_by: "dev",

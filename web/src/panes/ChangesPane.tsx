@@ -68,6 +68,15 @@ export function ChangesPane() {
           </button>
         </div>
       )}
+      {Object.keys(plan.blocked).length > 0 && (
+        <ul className="warnings" aria-label="Blocked targets">
+          {Object.entries(plan.blocked).map(([target, reason]) => (
+            <li key={target}>
+              <span className="warn-t">Cannot be applied:</span> {target} could not be planned ({reason})
+            </li>
+          ))}
+        </ul>
+      )}
       {plan.warnings.length > 0 && (
         <ul className="warnings" aria-label="Warnings">
           {plan.warnings.map((w, i) => (

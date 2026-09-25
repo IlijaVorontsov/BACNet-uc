@@ -400,8 +400,9 @@ export class MockServer {
             bacnet_uc: d.protocol === "bacnet-uc",
             extra: {},
             known: d.space !== null,
+            device: d.space !== null ? d.name : null,
           }));
-        return json({ devices });
+        return json({ devices, errors: {} });
       }),
       route("GET", "/api/manifest", () =>
         json({ live_revision: site.liveRevision, draft_revision: site.draftRevision, ...site.manifestYaml() }),
@@ -481,15 +482,25 @@ export class MockServer {
         if (body.decision !== "approve" && body.decision !== "reject") {
           throw new HttpError(400, "validation", 'decision must be "approve" or "reject"');
         }
+        if (body.scope !== undefined && body.scope !== "call" && body.scope !== "run") {
+          throw new HttpError(400, "invalid", 'scope must be "call" or "run"');
+        }
         const a = this.approvals.get(p.id ?? "");
         if (!a) throw new HttpError(404, "not_found", `no approval ${p.id}`);
         if (a.state !== "pending") throw new HttpError(409, "conflict", `approval ${a.id} is already ${a.state}`);
         const decision = body.decision === "approve" ? "approved" : "rejected";
+        const scope = decision === "approved" ? (body.scope ?? "call") : "call";
+        if (scope === "run" && a.tier !== "L") {
+          throw new HttpError(400, "invalid", "only tier L approvals can cover the rest of the run");
+        }
+        const run = this.runs.get(a.run_id);
+        if (scope === "run" && run) run.runApprover = USER;
+        a.scope = scope;
         a.state = decision;
         a.decided_by = USER;
         a.decided_at = Date.now() / 1000;
         a.comment = typeof body.comment === "string" && body.comment.trim() ? body.comment.trim() : null;
-        this.runs.get(a.run_id)?.decide(decision);
+        run?.decide(decision);
         return json({ ...a });
       }),
       route("GET", "/api/audit", (_req, url) => {

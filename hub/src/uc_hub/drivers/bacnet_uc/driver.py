@@ -46,6 +46,7 @@ from ...core.ids import (
     bacnet_obj,
 )
 from ...core.types import (
+    Datatype,
     DeviceDescription,
     DeviceRecord,
     DiscoveredDevice,
@@ -94,6 +95,16 @@ def point_kind(type_name: str) -> PointKind:
     if type_name.endswith("-output"):
         return PointKind.OUTPUT
     return PointKind.VALUE
+
+
+def point_datatype(type_name: str) -> Datatype:
+    """``real`` for analog, ``enum`` (0/1) for binary and ``int`` (state
+    number) for multi-state objects, as ``core.types.Datatype`` defines them."""
+    if type_name.startswith("analog-"):
+        return "real"
+    if type_name.startswith("binary-"):
+        return "enum"
+    return "int"
 
 
 def normalize_value(type_name: str, value: Any) -> Value:
@@ -294,6 +305,15 @@ class BacnetUcDriver(Driver):
         """The SMP interface of a node, for plan/apply."""
         return self._client(self._node(name))
 
+    def connect(self, name: str, spec: Mapping[str, Any]) -> SmpNodeClient:
+        """A new client for a node the driver does not manage (yet): planning
+        and applying a draft that adds a node or moves it to another address.
+        The caller closes it."""
+        client, reason = self._make_client(name, spec)
+        if client is None:
+            raise DeviceTimeout(f"{name}: {reason}")
+        return client
+
     def _node(self, name: str) -> _Node:
         node = self._nodes.get(name)
         if node is None:
@@ -473,7 +493,7 @@ class BacnetUcDriver(Driver):
             ref=PointRef(self.ctx.site, node.name, oid),
             name=str(obj.get("name") or oid),
             kind=kind,
-            datatype="real" if type_name.startswith("analog-") else "enum",
+            datatype=point_datatype(type_name),
             writable=kind is not PointKind.INPUT,
             commandable=type_name in PRIORITY_TYPES,
             source=source,

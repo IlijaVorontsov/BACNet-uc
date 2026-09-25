@@ -218,32 +218,36 @@ class Policy:
         return None
 
     def check_point_write(
-        self, point: Point, priority: int | None, value: Value, now: float | None = None
+        self, point: Point, priority: int | None, value: Value, now: float | None = None,
+        *, admit: bool = True,
     ) -> int | None:
         """Admit an agent write of ``value`` to ``point`` or raise
         ``PolicyDenied`` (``InvalidRequest`` for a malformed priority or
         value). Returns the priority to write at: the requested one, the
         agent priority when none was given, None for non-commandable points.
         An admitted write counts toward the per-minute rate limit (``now``:
-        monotonic seconds, see ``admit_write``)."""
+        monotonic seconds, see ``admit_write``); ``admit=False`` checks the
+        rules without counting (approval previews, gateway bridges)."""
         self._check_target(point)
         if not point.writable:
             raise PolicyDenied(f"{point.ref} is not writable")
         effective = self._priority(point, priority)
         _check_value(point, value)
-        self.admit_write(now)
+        if admit:
+            self.admit_write(now)
         return effective
 
-    def check_force(self, point: Point | None, now: float | None = None) -> None:
+    def check_force(self, point: Point | None, now: float | None = None, *, admit: bool = True) -> None:
         """Admit an IO force (``io_force``, live test steps) or raise
         ``PolicyDenied``. ``point`` is the point the forced channel feeds
         (None when no point uses the channel). Forcing a channel drives or
         simulates that point, so the life-safety and deny rules apply as for
         a write; an input need not be writable. The force counts toward the
-        rate limit."""
+        rate limit unless ``admit`` is False."""
         if point is not None:
             self._check_target(point)
-        self.admit_write(now)
+        if admit:
+            self.admit_write(now)
 
     def _check_target(self, point: Point) -> None:
         pid = str(point.ref)
@@ -315,7 +319,7 @@ def _check_value(point: Point, value: Value) -> None:
         "real": isinstance(value, (int, float)) and not isinstance(value, bool),
         "bool": isinstance(value, bool) or (_integral(value) and value in (0, 1)),
         "int": _integral(value),
-        "enum": _integral(value),
+        "enum": _integral(value) and value in (0, 1),
         "string": isinstance(value, str),
     }.get(kind, isinstance(value, (int, float, str)))
     if not ok:

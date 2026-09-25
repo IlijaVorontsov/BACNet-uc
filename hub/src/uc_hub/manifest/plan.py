@@ -52,20 +52,6 @@ REBOOT_FIELDS = ("device.instance", "bacnet.udp_port", "network")
 _SUMMARY_PATHS = 6
 
 
-@dataclass(slots=True)
-class SitePlan(Plan):
-    """A plan plus the targets that could not be planned. ``apply_plan``
-    refuses a plan with blocked targets: its changes would be incomplete."""
-
-    #: Target -> reason (e.g. the node did not answer).
-    blocked: dict[str, str] = field(default_factory=dict)
-
-    def to_json(self) -> dict[str, Any]:
-        out = Plan.to_json(self)
-        out["blocked"] = dict(self.blocked)
-        return out
-
-
 def directory_resolver(base_dir: Path, max_bytes: int = MAX_MODULE_BYTES) -> FileResolver:
     """A FileResolver for regular files below ``base_dir``; paths that leave
     it (``..``, absolute paths, symlinks pointing outside) are refused, and
@@ -108,15 +94,15 @@ async def compute_plan(
     plan_id: str | None = None,
     concurrency: int = 4,
     node_timeout_s: float = 60.0,
-) -> SitePlan:
+) -> Plan:
     """Diff ``desired`` against the live nodes and the ``live`` manifest.
 
     ``files`` reads app modules named in the manifest; ``uc_link_wasm`` is the
     stock uc-link module (links are skipped with a warning without it).
     Unreachable nodes get a warning and no changes, and are recorded in
-    ``SitePlan.blocked``.
+    ``Plan.blocked``; ``apply_plan`` refuses such a plan.
     """
-    plan = SitePlan(id=plan_id or f"p{revision}", revision=revision, base_revision=base_revision)
+    plan = Plan(id=plan_id or f"p{revision}", revision=revision, base_revision=base_revision)
     link_module = await _read_link_module(uc_link_wasm, plan.warnings) if desired.links else None
     limit = asyncio.Semaphore(max(1, concurrency))
 

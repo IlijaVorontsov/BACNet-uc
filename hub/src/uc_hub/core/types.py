@@ -20,6 +20,10 @@ from .ids import PointRef
 #: BOOLEAN -> bool, CharacterString -> str, NULL -> None.
 Value = float | int | bool | str | None
 
+#: ``Point.datatype``, one canonical meaning whatever the protocol:
+#: ``real`` float; ``int`` whole number (multi-state state numbers 1..n,
+#: counters); ``enum`` two-state value 0 (inactive, off) or 1 (active, on),
+#: the BACnet binary present value; ``bool`` true/false; ``string`` text.
 Datatype = Literal["real", "int", "bool", "enum", "string"]
 Tier = Literal["R", "S", "L", "C"]
 
@@ -276,6 +280,10 @@ class Plan:
     created_at: float = field(default_factory=time.time)
     #: Warnings the approver must see (e.g. an app asks for "io" permission).
     warnings: list[str] = field(default_factory=list)
+    #: Targets that could not be planned (target -> reason, e.g. the node did
+    #: not answer). A plan with blocked targets is incomplete and is never
+    #: applied, also when it is rebuilt from storage.
+    blocked: dict[str, str] = field(default_factory=dict)
 
     @property
     def targets(self) -> list[str]:
@@ -294,6 +302,7 @@ class Plan:
             "targets": self.targets,
             "changes": [c.to_json() for c in self.changes],
             "warnings": list(self.warnings),
+            "blocked": dict(self.blocked),
         }
 
 

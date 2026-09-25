@@ -9,6 +9,10 @@ device is offline or the broker link is down. Every decoded message is
 published at once with ``ctx.publish``, so ``watch`` has nothing to add. The
 profiles (``mqtt_tls``, ``generic-json``) are in ``profiles``.
 
+A value that arrived as a retained message is the broker's stored copy, of
+unknown age; ``retained_only`` tells consumers that must not act on such a
+value (gateway bridges) until the device sends a live one.
+
 Settings (``drivers.mqtt`` in hub.yaml, all optional): ``host``, ``port``
 (8883 with ``tls``, else 1883), ``tls`` {``ca``, ``cert``, ``key``,
 ``insecure``}, ``username``, ``password`` or ``password_env``, ``client_id``
@@ -205,6 +209,17 @@ class MqttDriver(Driver):
         return WriteResult(ref, False, None, priority,
                            f"{ref} has no priority array; write the value to restore instead")
 
+    def retained_only(self, ref: PointRef) -> bool:
+        """True while the point's value is a retained message the broker
+        replayed (a stored copy of unknown age) and no live message has
+        updated it since the hub connected. Points that declare retained
+        values current (``trust_retained``, the mqtt_tls status) never are."""
+        profile = self._devices.get(ref.device) if ref.site == self.ctx.site else None
+        if profile is None:
+            return False
+        spec = profile.spec(ref.obj)
+        return spec is not None and not spec.trust_retained and ref.obj in profile.retained
+
     # -- commands -------------------------------------------------------------
     async def command(
         self, device: str, cmd: str, arg: str | None = None, timeout_s: float | None = None,
@@ -249,6 +264,10 @@ class MqttDriver(Driver):
         now = time.time()
         for profile in profiles:
             changed = profile.handle(topic, payload, now)
+            if retained:
+                profile.retained.update(changed)
+            else:
+                profile.retained.difference_update(changed)
             if profile.online:
                 profile.record.last_seen = now
             if profile.online is not None and profile.online != profile.record.online:

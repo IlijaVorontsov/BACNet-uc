@@ -21,8 +21,8 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from ..core.errors import InvalidRequest, NotFound
-from ..store.db import Conflict, Store, new_id
+from ..core.errors import Conflict, InvalidRequest, NotFound
+from ..store.db import Store, new_id
 
 logger = logging.getLogger(__name__)
 

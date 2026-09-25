@@ -13,7 +13,8 @@ from typing import Any
 import pytest
 
 from uc_hub.core.errors import DeviceError, InvalidRequest, NotFound
-from uc_hub.manifest import GATEWAY, MemoryBackupStore, SiteManifest, SitePlan, apply_plan, compute_plan
+from uc_hub.core.types import Plan
+from uc_hub.manifest import GATEWAY, MemoryBackupStore, SiteManifest, apply_plan, compute_plan
 from uc_hub.manifest.nodedocs import CFG_APPS, CFG_DEVICE, CFG_IO, UC_LINK_FILE
 from uc_hub.manifest.plan import directory_resolver
 
@@ -34,11 +35,11 @@ def nodes() -> Nodes:
 
 
 async def make_plan(site: SiteManifest, nodes: Nodes, uc_link: Path | None, app_files: dict[str, bytes],
-                    live: SiteManifest | None = None) -> SitePlan:
+                    live: SiteManifest | None = None) -> Plan:
     return await compute_plan(site, live, nodes, resolver(app_files), uc_link, revision=2, base_revision=1)
 
 
-def kinds(plan: SitePlan, target: str | None = None) -> list[str]:
+def kinds(plan: Plan, target: str | None = None) -> list[str]:
     return [c.kind if c.kind != "upload-doc" else f"upload-doc {c.payload['doc']}"
             for c in plan.changes if target is None or c.target == target]
 
@@ -494,7 +495,7 @@ async def test_plan_with_demo_site(uc_link: Path) -> None:
                              "only a site admin may approve this"]
     assert plan.targets == [*site.nodes, GATEWAY]
     installs = [c.payload["manifest"]["name"] for c in plan.changes if c.kind == "install-app"]
-    assert installs == ["thermostat", "link"]
+    assert installs == ["thermostat"] * 4 + ["link", "thermostat"]  # r201..r204 (with its link), r205
     results = await apply_plan(plan, nodes, FakeGateway(), MemoryBackupStore())
     assert all(r.ok for r in results)
     assert json.loads(nodes.nodes["r204-ctl"].files[CFG_APPS])["apps"][0]["name"] == "thermostat"

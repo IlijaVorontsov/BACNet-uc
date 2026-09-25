@@ -39,6 +39,13 @@ class DeviceTimeout(HubError):
     code = "timeout"
 
 
+class Conflict(HubError):
+    """The object is not in a state that allows the operation (an approval
+    already decided, a stale plan, a lease no longer active)."""
+
+    code = "conflict"
+
+
 class PolicyDenied(HubError):
     """The policy engine refused the operation. Never retried automatically."""
 
@@ -53,3 +60,16 @@ class ValidationFailed(HubError):
     def __init__(self, message: str, errors: list[str] | None = None):
         super().__init__(message)
         self.errors = errors or []
+
+
+def error_for(code: str, message: str) -> HubError:
+    """An error that carries ``code`` (a failed tool result's ``error_code``),
+    of the class that owns the code when there is one, so it is reported the
+    same way as the original exception."""
+    for cls in (NotFound, InvalidRequest, Unsupported, DeviceError, DeviceTimeout, Conflict, PolicyDenied,
+                ValidationFailed):
+        if cls.code == code:
+            return cls(message)
+    error = HubError(message)
+    error.code = code
+    return error
