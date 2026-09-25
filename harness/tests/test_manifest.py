@@ -601,10 +601,11 @@ def test_link_priority_6_is_an_error_for_every_destination(dst: str) -> None:
 
 
 def test_link_period_limit_of_uc_link() -> None:
-    """uc-link skips a link with period_ms > 3600000 as malformed (CON-5)."""
+    """uc-link skips a link with period_ms > 3600000 as malformed (CON-5); the
+    system schema carries the same maximum, so the schema check reports it."""
     doc = base_doc()
     doc["links"] = [{"from": "a/analog-input:1", "to": "b/analog-value:21", "mode": "poll",
                      "period_ms": 7200000}]
-    assert_error(doc, "/links/0/period_ms", "exceeds 3600000")
+    assert_error(doc, "/links/0/period_ms", "3600000")
     doc["links"][0]["period_ms"] = 3600000
     assert not errors(doc)
