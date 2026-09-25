@@ -2,6 +2,8 @@
 
 Design **v2.2** (2026-09-25, reviewed) applies the user decisions below. The full design is `docs/HIL.md` on the HIL branch. After the D45 integration it moves to `docs/hil/SESSION_NOTES.md` on `main`, and main becomes the single source for HIL work.
 
+- **Handover (2026-09-25):** a helper runs a Bluetooth-mesh bench (2 × nRF54L15 DK, FX2, Raspberry Pi 4); start at `docs/hil/handover/README.md`.
+
 ### Decisions from the user (2026-09-25, read first)
 
 - **Boards the user owns:** FRDM-MCXN947, FRDM-MCXA156, FRDM-MCXN236, FRDM-MCXA153, nRF54LM20 DK and several nRF54L15 DKs. No NUCLEO-F767ZI is owned. Consequences:
