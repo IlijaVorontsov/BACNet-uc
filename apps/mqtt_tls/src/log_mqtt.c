@@ -276,7 +276,10 @@ int app_log_last_json(size_t n, char *buf, size_t len)
 {
 	uint32_t total = app_log_count();
 	uint32_t from = (total > n) ? total - (uint32_t)n : 0U;
+	uint32_t oldest = (total > ARRAY_SIZE(ring)) ? total - ARRAY_SIZE(ring) : 0U;
 	int count;
+
+	from = MAX(from, oldest);
 
 	/* Keep the newest lines: drop the oldest until the rest fit. */
 	for (; from <= total; from++) {

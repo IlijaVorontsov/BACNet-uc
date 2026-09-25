@@ -717,6 +717,7 @@ static int publish_logs(int64_t now)
 		pending_lost = 0U;
 		ret = app_log_line_json(&line, lost, payload, sizeof(payload));
 		if (ret < 0) {
+			pending_lost = lost + 1U;
 			continue;
 		}
 		ret = publish(topic_log, payload, ret, MQTT_QOS_0_AT_MOST_ONCE, false);

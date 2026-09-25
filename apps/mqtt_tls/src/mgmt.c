@@ -43,6 +43,11 @@ static void revert_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
 
+	if (boot_is_img_confirmed()) {
+		/* Confirmed some other way, e.g. SMP "image confirm". */
+		return;
+	}
+
 	LOG_ERR("Test image never came online: rebooting so MCUboot reverts it");
 	/* Give the log a moment to reach the console. */
 	k_sleep(K_MSEC(500));

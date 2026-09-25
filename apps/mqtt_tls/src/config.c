@@ -109,6 +109,8 @@ static bool have_lkg;
  */
 static int trial_left;
 static bool loading;
+/* topic_root of the LKG discarded by a factory reset. */
+static char reset_root[APP_CFG_STR_LEN];
 
 static const char *const level_names[] = { "off", "err", "wrn", "inf", "dbg" };
 
@@ -348,14 +350,23 @@ static void apply_log_level(void)
 	app_log_set_level(level);
 }
 
-/* Check a stored LKG blob: every field must be a value parse_value accepts. */
+/* Check a stored LKG blob: every stored key must hold a value parse_value
+ * accepts. Keys that were not stored take the (current) Kconfig defaults,
+ * which need not pass the runtime rules.
+ */
 static bool lkg_valid(struct lkg_blob *blob)
 {
 	struct app_config tmp = defaults;
 	char text[APP_CFG_STR_LEN];
 
+	blob->mask &= BIT_MASK(ARRAY_SIZE(keys));
 	for (size_t i = 0; i < ARRAY_SIZE(keys); i++) {
 		const struct key_desc *k = &keys[i];
+
+		if (!(blob->mask & BIT(i))) {
+			memcpy(field(&blob->cfg, k), cfield(&defaults, k), k->size);
+			continue;
+		}
 
 		if (k->type == TYPE_STR) {
 			((char *)field(&blob->cfg, k))[k->size - 1] = '\0';
@@ -373,7 +384,6 @@ static bool lkg_valid(struct lkg_blob *blob)
 			return false;
 		}
 	}
-	blob->mask &= BIT_MASK(ARRAY_SIZE(keys));
 
 	return true;
 }
@@ -404,7 +414,7 @@ static int h_set(const char *name, size_t len, settings_read_cb read_cb, void *c
 		struct lkg_blob blob;
 
 		if (!loading) {
-			return -EACCES;
+			return 0; /* SMP "load": already in RAM */
 		}
 		if (len != sizeof(blob) || read_cb(cb_arg, &blob, sizeof(blob)) != sizeof(blob) ||
 		    !lkg_valid(&blob)) {
@@ -436,7 +446,7 @@ static int h_set(const char *name, size_t len, settings_read_cb read_cb, void *c
 
 	if (settings_name_steq(name, "trial", NULL)) {
 		if (!loading) {
-			return -EACCES;
+			return 0;
 		}
 		k_mutex_lock(&lock, K_FOREVER);
 		trial_left = CLAMP(atoi(text), 0, CONFIG_APP_CONFIG_FALLBACK_ATTEMPTS + 1);
@@ -554,6 +564,7 @@ static void factory_reset_handler(struct k_work *work)
 
 int app_config_init(void)
 {
+	int recovered = 0;
 	int ret;
 
 	init_defaults();
@@ -572,6 +583,19 @@ int app_config_init(void)
 	loading = false;
 	if (ret < 0) {
 		LOG_WRN("Loading settings failed: %d", ret);
+	}
+
+	/* A reset between storing a connection key and storing the trial
+	 * counter leaves an untried configuration without a trial: start one.
+	 */
+	k_mutex_lock(&lock, K_FOREVER);
+	if (trial_left == 0) {
+		update_trial_locked();
+		recovered = trial_left;
+	}
+	k_mutex_unlock(&lock);
+	if (recovered > 0) {
+		persist_trial(recovered);
 	}
 
 	k_mutex_lock(&lock, K_FOREVER);
@@ -686,6 +710,12 @@ int app_config_reset(void)
 	k_mutex_lock(&lock, K_FOREVER);
 	current = defaults;
 	explicit_mask = 0U;
+	if (have_lkg) {
+		/* So that the next online session can clear its retained
+		 * messages (RAM only).
+		 */
+		memcpy(reset_root, lkg.cfg.topic_root, sizeof(reset_root));
+	}
 	have_lkg = false;
 	trial_left = 0;
 	k_mutex_unlock(&lock);
@@ -829,7 +859,7 @@ bool app_config_attempt(void)
 void app_config_lkg_topic_root(char *buf, size_t len)
 {
 	k_mutex_lock(&lock, K_FOREVER);
-	snprintk(buf, len, "%s", have_lkg ? lkg.cfg.topic_root : "");
+	snprintk(buf, len, "%s", have_lkg ? lkg.cfg.topic_root : reset_root);
 	k_mutex_unlock(&lock);
 }
 
@@ -851,13 +881,18 @@ void app_config_online(const struct app_config *used, uint32_t used_mask)
 		save_lkg = true;
 	}
 	blob = lkg;
-	if (trial_left > 0) {
-		/* If the connection settings changed again while this session
-		 * was connecting, the newer ones stay on trial.
+	if (save_lkg || trial_left > 0) {
+		/* Compare with the new LKG. If the connection settings changed
+		 * again while this session was connecting, the newer ones are
+		 * (or stay) on trial.
 		 */
+		int before = trial_left;
+
 		update_trial_locked();
-		trial = trial_left;
-		confirmed = (trial_left == 0);
+		if (trial_left != before) {
+			trial = trial_left;
+		}
+		confirmed = (before > 0 && trial_left == 0);
 	}
 	k_mutex_unlock(&lock);
 

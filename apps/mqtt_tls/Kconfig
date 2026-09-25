@@ -282,8 +282,10 @@ if APP_SMP && MCUMGR
 configdefault MCUMGR_TRANSPORT_UDP_MTU
 	default 1472
 
+# mcumgr params reports this as buf_size, and clients size their frames from
+# it: it must not exceed the UDP MTU.
 configdefault MCUMGR_TRANSPORT_NETBUF_SIZE
-	default 1536
+	default 1472
 
 configdefault MCUMGR_TRANSPORT_WORKQUEUE_STACK_SIZE
 	default 3072
