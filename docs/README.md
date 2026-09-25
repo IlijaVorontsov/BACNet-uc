@@ -49,6 +49,8 @@ compose distributed BACnet applications across nodes.
 | [simulation.md](simulation.md) | Running several `native_sim` nodes (host, network namespaces, containers) |
 | [security.md](security.md) | Threat model, current exposure, BACnet service policy (passwords, CreateObject/DeleteObject), SMP over DTLS (planned), image signing, application sandbox and AOT |
 | [roadmap.md](roadmap.md) | Planned work |
+| [HIL_SESSION_PROMPT.md](HIL_SESSION_PROMPT.md) | Brief for the next session: bring-up and verification on the real boards (hardware in the loop) |
+| [SESSION_NOTES.md](SESSION_NOTES.md) | Environment set-up, pitfalls, coordination with the MQTT firmware |
 
 ## Normative sources
 
