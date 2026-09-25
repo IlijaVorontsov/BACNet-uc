@@ -171,7 +171,7 @@ Installing an existing name replaces its entry (rc `STATE` if it is running
 and `restart` is not true). A start (install, `start`, boot, reload) fails
 with rc `VERIFY` for a module whose instantiation would run module code
 before the watchdog covers it: a start function or an exported
-`__wasm_call_ctors` or `__post_instantiate` (`last_error` "... not supported
+`__wasm_call_ctors`, `__post_instantiate` or `_initialize` (`last_error` "... not supported
 (runs at instantiation)"); the SDK never produces them.
 
 `stop` (also `remove`, `install` with `restart`, and a `reload` of `apps`

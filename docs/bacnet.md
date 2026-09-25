@@ -159,7 +159,11 @@ output at a priority relinquishes it (`uc_prop_write_null()` /
 `uc_app_deinit()` for AO/BO/MSO and write their off or fail-safe value to a
 value object instead. If an application fails (trap, watchdog),
 `uc_app_deinit()` is not called and its command stays in the priority array
-until overwritten or relinquished by another writer.
+until overwritten or relinquished by another writer. A relinquish on another
+device from `uc_app_deinit()` must complete within the watchdog period
+(2 s for the whole callback, blocking time included once the stop is
+pending); a device that does not answer in time may keep the command
+([wasm-runtime.md](wasm-runtime.md#31-lifecycle)).
 
 ### 3.5 Persistence
 

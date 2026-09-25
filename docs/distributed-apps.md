@@ -188,7 +188,7 @@ links:
 | `from` | – | source point `<node>/<type>:<instance>`; any readable numeric Present_Value on any node of the manifest |
 | `to` | – | destination on a node of the manifest; must be writable: AO, AV, BO, BV, MSO, MSV |
 | `mode` | `cov` | `cov`: SubscribeCOV with polling fallback; `poll`: ReadProperty every `period_ms` |
-| `period_ms` | 1000 | poll period, and the fallback poll period of a `cov` link (100..3600000; `validate_system` rejects longer periods, which uc-link would skip as malformed) |
+| `period_ms` | 1000 | poll period, and the fallback poll period of a `cov` link (100..3600000: `minimum` and `maximum` in [`system.schema.json`](../schemas/system.schema.json), so `validate_system` rejects longer periods, which uc-link would skip as malformed) |
 | `priority` | 0 | write priority 1..16 for commandable destinations (AO, BO, MSO; not 6), 0 = no priority; value objects (AV, BV, MSV) ignore it: use 0 (6 is rejected for every destination: analog-value refuses it) |
 | `scale`, `offset` | 1, 0 | destination = source × `scale` + `offset` |
 
@@ -429,6 +429,7 @@ harness polling every 200 ms) completed in 488 ms.
 | Who-Is repetition while unbound | 1000 ms | firmware client |
 | COV lifetime / renewal | 300 s / 150 s | `uc-link`, `uc_point.h` |
 | app callback watchdog | 2000 ms of execution time | `CONFIG_UC_APP_WATCHDOG_MS` |
+| app stop: a remote request in flight abandoned (`UC_ERR_TIMEOUT`) | within 50 ms; the whole stop about 1 s, at most 2 × watchdog + about 1 s | `UC_BN_CANCEL_POLL_MS`, [wasm-runtime.md](wasm-runtime.md#31-lifecycle) |
 
 A tight `within_ms` in a test should be derived from this budget plus the
 harness's 200 ms read interval.

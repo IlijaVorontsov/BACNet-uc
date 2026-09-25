@@ -145,9 +145,17 @@ and can be read back.
 | Board | Default `/lfs` backing | Size | Erase block | Survives reset |
 |-------|------------------------|------|-------------|----------------|
 | NUCLEO-F767ZI | external SPI NOR W25Q128JV on SPI1 | 16 MiB | 4 KiB | yes |
-| FRDM-MCXN947 | on-board W25Q64JV via FlexSPI, whole chip (`storage_partition`) | 8 MiB | 4 KiB | yes |
+| FRDM-MCXN947 | on-board W25Q64JV (8 MiB) via FlexSPI, `storage_partition` 0x000000-0x7EFFFF | 8128 KiB (2032 blocks) | 4 KiB | yes |
 | native_sim | flash simulator, partition @ 0x75000 | 1580 KiB | 4 KiB | yes (`flash.bin`, `--flash=<file>`) |
 | any, snippet `uc-ramfs` | RAM flash simulator | 64 KiB | 1 KiB | no |
+
+On the FRDM-MCXN947 the overlay
+([`frdm_mcxn947_mcxn947_cpu0.overlay`](../firmware/boards/frdm_mcxn947_mcxn947_cpu0.overlay))
+shrinks the board's `storage_partition` to the first 8128 KiB of the
+W25Q64JV. The top 64 KiB (0x7F0000-0x7FFFFF) are reserved for the settings
+partition of the MQTT firmware in this repository, so that both firmwares
+can be flashed alternately on one board without wiping each other's data
+([storage-and-logging.md](storage-and-logging.md#12-frdm-mcxn947)).
 
 ### 4.1 SPI NOR on the NUCLEO-F767ZI
 

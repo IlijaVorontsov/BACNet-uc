@@ -20,7 +20,7 @@
  *   interrupt a busy loop (simulated time stands still); an instruction
  *   budget per call (CONFIG_WAMR_INSTRUCTION_LIMIT) stops it there.
  * - Modules whose instantiation would run code (start function, exported
- *   __wasm_call_ctors / __post_instantiate) are refused at start.
+ *   __wasm_call_ctors / __post_instantiate / _initialize) are refused at start.
  * - The modules' libc-builtin printf/puts/putchar output becomes log lines
  *   of the app, like uc_log (level inf).
  */

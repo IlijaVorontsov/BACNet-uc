@@ -94,6 +94,8 @@ class Module:
     section_sizes: dict[str, int] = field(default_factory=dict)
     features: set[str] = field(default_factory=set)
     opcode_counts: dict[str, int] = field(default_factory=dict)
+    # number of "call" instructions per defined function (code section order)
+    func_call_counts: list[int] = field(default_factory=list)
     decode_errors: list[str] = field(default_factory=list)
 
     # -- helpers -----------------------------------------------------------
@@ -372,7 +374,7 @@ def decode_body(r: Reader, mod: Module) -> None:
                 r.valtype()
         elif kind == _REFTYPE:
             r.byte()
-        if name in ("memory.grow", "memory.size", "call_indirect"):
+        if name in ("memory.grow", "memory.size", "call_indirect", "call"):
             _count(mod, name)
 
 
@@ -504,10 +506,12 @@ def parse(data: bytes) -> Module:
                 fsize = body.u32()
                 fr = Reader(data, body.pos, body.pos + fsize)
                 body.pos = fr.end
+                calls_before = mod.opcode_counts.get("call", 0)
                 try:
                     decode_body(fr, mod)
                 except WasmError as exc:
                     mod.decode_errors.append(f"function {i}: {exc}")
+                mod.func_call_counts.append(mod.opcode_counts.get("call", 0) - calls_before)
         elif sid == 11:
             for _ in range(body.u32()):
                 flags = body.u32()

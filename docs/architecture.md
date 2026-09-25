@@ -157,7 +157,7 @@ only in the Ethernet driver thread).
 | `uc_app0` .. `uc_app3` | 10 (`CONFIG_UC_APP_THREAD_PRIORITY`) | 8192 each | `uc_apps` | one per application slot; the only thread that executes that slot's WebAssembly instance |
 | shell (UART) | 14 | 4096 | Zephyr shell | console, `uc` commands, SMP shell transport |
 | shell (dummy backend) | 14 | 4096 | Zephyr shell | executes the commands of the SMP shell group (`exec`) |
-| logging | 14 | 2048 | Zephyr logging | formats deferred log messages for UART, FS and net backends; `fs_sync()` after each batch |
+| logging | 14 | 2048 | Zephyr logging | formats deferred log messages for UART, FS and net backends; `fs_sync()` after each batch, also of a single message (`uc_log_sync.c`) |
 | `idle` | 15 | 320 | kernel | |
 
 Consequences of this assignment:
@@ -175,7 +175,11 @@ Consequences of this assignment:
   overwritten when it is full), never the control path.
 - Applications may block in host calls (remote requests wait up to
   `timeout_ms`); the watchdog is paused while they block, so only execution
-  time counts against `CONFIG_UC_APP_WATCHDOG_MS`. On `native_sim` simulated
+  time counts against `CONFIG_UC_APP_WATCHDOG_MS`. A stop cancels these
+  calls (a remote request in flight is abandoned within 50 ms, later ones
+  fail at once and are timed by the watchdog), so stopping an application
+  takes about 1 s and at most 2 × the watchdog plus about 1 s
+  ([wasm-runtime.md](wasm-runtime.md#31-lifecycle)). On `native_sim` simulated
   time stands still while a callback computes, so the watchdog cannot fire
   there; a budget of interpreted instructions per callback
   (`CONFIG_WAMR_INSTRUCTION_LIMIT`, 100 000 000 on `native_sim`, off on the
@@ -296,7 +300,10 @@ sequenceDiagram
 ```
 
 A caller that times out marks its slot abandoned; the BACnet thread frees it
-later and never touches the caller's memory again. Error, Reject and Abort
+later and never touches the caller's memory again. An application caller also
+looks at its cancel flag every 50 ms (`UC_BN_CANCEL_POLL_MS`) and abandons the
+request the same way when the application is being stopped
+(`UC_ERR_TIMEOUT`). Error, Reject and Abort
 PDUs return `UC_ERR_BACNET`, a device that cannot be bound
 `UC_ERR_NO_ROUTE`, no free slot or TSM entry `UC_ERR_BUSY`.
 
@@ -535,7 +542,9 @@ of the linker map; `.rodata` adds 113 512 B, mostly strings and tables):
 | IO hardware error | driver return code | point skipped, logged once per episode, retried every sample | `ERR uc_io: ai0 (analog-input 1): read failed` |
 | application trap (out-of-bounds, unreachable, division by zero) | WAMR exception | instance destroyed, owned objects deleted, subscriptions cancelled, state `failed`, `last_error` set | `uc_app status` |
 | application endless loop | watchdog `CONFIG_UC_APP_WATCHDOG_MS` (2 s) of execution time; on `native_sim` the instruction budget `CONFIG_WAMR_INSTRUCTION_LIMIT` (interpreter only) | `wasm_runtime_terminate()` / trap, state `failed` | `last_error: "uc_app_tick: watchdog, callback exceeded 2000 ms"` (`native_sim`: `"uc_app_tick: instruction limit exceeded"`) |
-| application floods events or logs | queue full / rate limit | events dropped and counted as errors; log lines above 20/s dropped and counted | `WRN <app>: N log lines dropped` |
+| application floods events or logs | queue full / rate limit | events dropped and counted as errors; log lines (`uc_log` and `printf` output together) above 20/s dropped and counted | `WRN <app>: N log lines dropped` |
+| application blocked in, or looping on, remote requests or kv access while it is stopped | stop request | blocking calls cancelled (`UC_ERR_TIMEOUT` / `UC_ERR_IO`), the rest of the callback timed by the watchdog, terminated after 100 more blocking calls; stop completes in about 1 s | `uc_app status`; `failed` only when the callback had to be terminated |
+| module with code that runs at instantiation (start function, exported `__wasm_call_ctors`, `__post_instantiate`, `_initialize`) | check before `wasm_runtime_instantiate()` | start refused, state `failed`, rc `VERIFY` | `last_error: "start function not supported (runs at instantiation)"` |
 | WAMR pool exhausted | load/instantiate fails | start fails, state `failed`, `last_error` names the WAMR message | `uc_app status`, `uc_node info` `wasm.pool_free` |
 | thread stack overflow | MPU stack guard (Cortex-M7), stack limit registers (Cortex-M33) | kernel fatal error | fatal error dump on the console |
 | kernel fatal error, hang | - | **Planned**: hardware watchdog (IWDG on the F767, WWDT0 on the MCXN947) fed by the BACnet thread, reset on fatal error | |

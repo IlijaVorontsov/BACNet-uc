@@ -552,6 +552,7 @@ skipped.
 | File | Tests | Content |
 |------|------:|---------|
 | `test_single_node.py` | 9 | one node in `host` mode: `node_info` and the SMP size limits; staged `device.json` (activation, an invalid staged file deleted, reboot in place); IO forcing observed over BACnet/IP (a point on an unknown channel skipped, force rules); `prop_read`/`prop_write` rules (whole arrays, priority 6, invalid values); `bacnet.password` for DCC/ReinitializeDevice; SMP over the console pty with full-size frames; deploying the example apps; a large manifest installed through `apps.json`; the `uc-link` restart after an `io.json` reload |
+| `test_app_limits.py` | 12 | review regressions in one `host` node: modules that run code at instantiation (start section, `__wasm_call_ctors`, `__post_instantiate`) are refused with `VERIFY` and a plain control module runs; an app blocked in or looping over blocking host calls (also from `uc_app_deinit`) stops in about a second; `printf` output appears as a tagged app log line; `remove` deletes all kv keys (300); `\uXXXX` escapes in configuration documents; an escaped param value survives `reload apps` |
 | `test_sim_demo.py` | 1 | [`sim-demo.yaml`](../harness/examples/systems/sim-demo.yaml) through the CLI in `netns` mode: `sim up`, `validate`, `plan`, `apply` (reboots), re-plan in sync, the three manifest tests, IO drift followed by `push_config io` and `restart_app`, `status`, `sim down` |
 
 ```sh
@@ -563,7 +564,7 @@ sudo PYTHON=$(command -v python) BACNET_UC_FIRMWARE=/path/to/build-native/zephyr
 `run-isolated.sh` runs pytest in new network and mount namespaces with a
 private `/run/netns`, so the ports 1337/47808, the bridge `bnuc0` and the
 namespace names cannot collide with other simulations on the machine, and
-nothing is left behind. Result for the current state: 10 passed in about 22 s.
+nothing is left behind. Result for the current state: 22 passed in about 32 s.
 
 ### 8.3 Custom systems in CI
 
@@ -691,6 +692,6 @@ What was checked for this document, and how:
 | `claude mcp add` | the command of section 10 in a scratch directory | writes `.mcp.json` with the `stdio` entry and `BACNET_UC_HOME` |
 | Single-node CLI flow (sections 5.1-5.3 equivalents) | `native_sim/native/64` build, one node in a private network namespace; the quick start of the top-level README and [getting-started.md](getting-started.md) sections 4-10 | all succeeded; `analog-input:1` read 21.5 after forcing `ai0` to 2150 mV with scale 0.01 |
 | Distributed flow | `harness/examples/systems/sim-demo.yaml` in `netns` mode inside private network and mount namespaces: `sim up --erase`, `system plan`, `system apply --no-dry-run`, `system status`, `system test`, `sim down` | 6 actions applied, both nodes rebooted, `in_sync: true`, 3 of 3 tests passed |
-| Harness test suite | `cd harness && python -m pytest -q` (in a private network namespace) | 596 passed, 10 skipped (the e2e tests without a firmware); `ruff check src tests` clean |
-| End-to-end tests | `sudo PYTHON=... BACNET_UC_FIRMWARE=<build>/zephyr/zephyr.exe tests/e2e/run-isolated.sh` | 10 passed |
+| Harness test suite | `cd harness && python -m pytest -q` | 644 passed, 22 skipped (the e2e tests without a firmware); `ruff check src tests` clean |
+| End-to-end tests | `sudo PYTHON=... BACNET_UC_FIRMWARE=<build>/zephyr/zephyr.exe tests/e2e/run-isolated.sh` | 22 passed |
 | CI workflow | not run on GitHub; its commands were run locally by the harness integration | - |

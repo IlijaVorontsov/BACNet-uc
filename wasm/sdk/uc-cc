@@ -144,6 +144,38 @@ def heap_base(path: Path) -> int | None:
         return None
 
 
+CTORS_NOTE = (
+    "global constructors (__attribute__((constructor)) or C++ static objects with "
+    "constructors) are not supported: without an entry point wasm-ld runs them again "
+    "before every exported callback, resetting the application's state, and the firmware "
+    "refuses modules that run code at instantiation; do the setup in uc_app_init()")
+
+
+def has_constructors(clang: str, lflags: list[str], objs: list[str], tmp: str,
+                     verbose: bool) -> bool | None:
+    """Link a probe that exports __wasm_call_ctors and report whether it calls
+    anything (it is empty without constructors in this non-PIC, non-shared
+    memory configuration). None if the probe could not be built."""
+    probe = os.path.join(tmp, "ctors-probe.wasm")
+    cmd = [clang, "--target=wasm32", "-nostdlib", *lflags,
+           "-Wl,--export=__wasm_call_ctors", "-o", probe, *objs]
+    if verbose:
+        print(shlex.join(cmd), file=sys.stderr)
+    if subprocess.run(cmd, check=False, capture_output=True).returncode != 0:
+        return None
+    try:
+        mod = wasmfile.parse_file(probe)
+    except (OSError, wasmfile.WasmError):
+        return None
+    exp = mod.export("__wasm_call_ctors")
+    if exp is None:
+        return None
+    defined = exp.index - len(mod.imported(0))
+    if defined < 0 or defined >= len(mod.func_call_counts):
+        return None
+    return mod.func_call_counts[defined] > 0
+
+
 def main(argv: list[str]) -> int:
     args, extra = parse_args(argv)
     cflags = compile_flags(args.opt, args.debug) + extra
@@ -189,6 +221,10 @@ def main(argv: list[str]) -> int:
                 stack += (-base) % PAGE
                 if stack + (base - args.stack_size) > args.memory:
                     break
+            if has_constructors(args.clang, lflags, objs, tmp, args.verbose):
+                print(f"uc-cc: error: {out}: {CTORS_NOTE}", file=sys.stderr)
+                out.unlink(missing_ok=True)
+                return 1
         except FileNotFoundError:
             print(f"uc-cc: error: {args.clang} not found (install clang >= 16 with the "
                   "wasm32 target and wasm-ld, or set UC_CLANG)", file=sys.stderr)

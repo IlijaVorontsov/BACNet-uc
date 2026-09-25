@@ -21,7 +21,14 @@ Common rules for all documents:
 - A missing document gives its defaults. An invalid document is rejected as a
   whole; the log names the first offending field
   (`WRN uc_config: io.json: invalid or missing points.type (entry 2)`).
-- Strings are UTF-8; length limits are in bytes.
+- Strings are UTF-8. The firmware decodes every JSON escape: `\"`, `\\`,
+  `\/`, `\b`, `\f`, `\n`, `\r`, `\t` and `\uXXXX` (UTF-16, a surrogate
+  pair is one code point; stored as UTF-8). `\u0000`, an unpaired surrogate
+  or an unknown escape makes the field invalid (the document is rejected).
+- Length limits are in bytes of the decoded value, after unescaping:
+  `"\u00e9"` counts 2 bytes (`é` in UTF-8), not 6, so a value with escapes
+  is accepted whenever its decoded form fits
+  ([`uc_config.c`](../firmware/src/config/uc_config.c) `tok_str()`).
 
 ## 1. `device.json`
 
@@ -165,11 +172,16 @@ allows 8, the Kconfig maximum); more rejects the document.
 | `heap_kb` | integer | no | 8 | 0..256; multiple of 4 recommended | app heap for libc-builtin `malloc` |
 | `stack_kb` | integer | no | 4 | 1..64 | WAMR execution stack |
 | `perms` | array of strings | no | [] | `bacnet.local`, `bacnet.remote`, `io`, `kv` | granted host functions ([wasm-runtime.md](wasm-runtime.md#7-sandboxing)) |
-| `params` | array of `{key, value}` | no | [] | ≤ 16 (`CONFIG_UC_APP_PARAMS_MAX`); key `^[A-Za-z0-9_.-]{1,23}$`, value ≤ 95 bytes | read with `uc_param_get()`; all values are strings |
+| `params` | array of `{key, value}` | no | [] | ≤ 16 (`CONFIG_UC_APP_PARAMS_MAX`); key `^[A-Za-z0-9_.-]{1,23}$`, value ≤ 95 bytes after unescaping | read with `uc_param_get()`; all values are strings |
 | `sha256` | string | no | none | 64 lowercase hex digits | verified at install and every start |
 
 The SMP `install` command takes the same fields with `params` as a CBOR map
 and `sha256` as a byte string ([management-protocol.md](management-protocol.md#group-64-uc_app---webassembly-applications)).
+When the firmware writes `apps.json` it escapes `"`, `\` and control
+characters (`\n`, `\t`, other control characters as `\u00XX`); since the
+parser decodes them again, parameter values with quotes, backslashes,
+control characters or non-ASCII text round-trip unchanged through
+`apps.json` (install, reboot, `reload apps`).
 An `install` request must fit one SMP request (1024 bytes over UDP); an entry
 with many or long `params` is written into `apps.json` instead, which the
 harness's `deploy_app` does automatically (`installed_via: apps.json`).

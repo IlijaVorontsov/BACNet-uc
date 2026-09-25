@@ -80,6 +80,9 @@ between agent and harness, (5) the build inputs.
 | T2 | firmware upload (sysbuild builds) | MCUboot verifies an ECDSA P-256 signature, but the default key is MCUboot's public development key (`root-ec-p256.pem`): anyone can sign an image that boots |
 | T3 | out-of-bounds access, bad pointers | contained (section 5); WAMR 2.4.5's linear-memory allocation gap (bounds checks up to 4095 bytes beyond the allocated pool block) is closed by the firmware's WAMR glue |
 | T3 | writing any local object | allowed with `bacnet.local` (no per-object ACL) |
+| T3 | endless loop, or blocking on requests to unreachable devices so that a stop, remove or reinstall hangs | contained: the watchdog ends a callback after 2 s of execution time; a stop cancels the app's blocking host calls and completes in about 1 s, at most 2 × watchdog + about 1 s (section 5) |
+| T3 | code that runs during instantiation (start function, `__wasm_call_ctors`, `__post_instantiate`, `_initialize`), outside the watchdog and the app context | refused at start with rc `VERIFY` |
+| T3 | flooding or forging log lines through `uc_log` or `printf`/`puts`/`putchar` | contained: both become log lines tagged `uc_app: <app>:`, sanitised, cut to 120 characters, 20 per second per app (section 8) |
 | T5 | `apply_system(dry_run=false)`, `bacnet_write`, `io_force` | executed if the MCP client allows the call; `flash_firmware`/`update_firmware` need `confirm=true`; `node_shell` is disabled unless enabled at server start |
 | T6 | console UART | shell (`uc` commands, `kernel`, `fs`, `net`) and SMP over the shell transport, no login |
 
@@ -147,8 +150,10 @@ Planned DTLS design:
 | Pointer validation in every host function | **Implemented** | the full range `[ptr, ptr+len)` must lie in linear memory, offset 0 rejected; failures return `UC_ERR_INVALID` instead of trapping |
 | Permissions per app (`bacnet.local`, `bacnet.remote`, `io`, `kv`) checked per host call | **Implemented** | `UC_ERR_PERM` otherwise |
 | Object ownership | **Implemented** | an app deletes only its own objects; its objects disappear when it stops |
-| Watchdog per callback | **Implemented** | `CONFIG_UC_APP_WATCHDOG_MS` (2 s) of execution time; `wasm_runtime_terminate()`. On `native_sim` (simulated time does not advance in a busy loop) an instruction budget per callback, `CONFIG_WAMR_INSTRUCTION_LIMIT`, instead; it does not cover AOT code |
-| Resource quotas | **Implemented** | WAMR pool per board, `heap_kb`, `stack_kb`, module ≤ 256 KiB, 16 queued events, 20 log lines/s, 16 COV subscriptions and 8 client slots shared per node, kv values ≤ 256 bytes |
+| Watchdog per callback | **Implemented** | `CONFIG_UC_APP_WATCHDOG_MS` (2 s) of execution time; `wasm_runtime_terminate()`. Time blocked in remote requests and kv access does not count, except while the app is being stopped. On `native_sim` (simulated time does not advance in a busy loop) an instruction budget per callback, `CONFIG_WAMR_INSTRUCTION_LIMIT`, instead; it does not cover AOT code |
+| Stop cancels blocking host calls | **Implemented** | a stop (also `remove`, reinstall, `reload apps`) abandons a remote request in flight within about 50 ms (`UC_ERR_TIMEOUT`); later blocking calls of the stopping callback fail at once (`uc_remote_*`: `UC_ERR_TIMEOUT`, `uc_kv_*`: `UC_ERR_IO`) and count against the watchdog; a callback that keeps calling them is terminated after 100 calls (this also covers `native_sim`, where host calls do not consume the instruction budget). A stop completes in about 1 s, at most 2 × watchdog + about 1 s; an app blocked in, or looping on, blocking host calls can no longer make it fail with rc `BUSY` ([wasm-runtime.md](wasm-runtime.md#31-lifecycle)) |
+| No module code at instantiation | **Implemented** | a module with a start function or an exported `__wasm_call_ctors`, `__post_instantiate` or `_initialize` is refused at start (rc `VERIFY`, `last_error` "... not supported (runs at instantiation)"): WAMR would run that code inside `wasm_runtime_instantiate()`, beyond the watchdog, the instruction budget and the app's context (`modules/wasm-micro-runtime/wamr_zephyr_module.c`). `uc-cc` and `uc-wasm-info` report such modules as errors |
+| Resource quotas | **Implemented** | WAMR pool per board, `heap_kb`, `stack_kb`, module ≤ 256 KiB, 16 queued events, 20 log lines/s (`uc_log` and `printf` output together), 16 COV subscriptions and 8 client slots shared per node, kv values ≤ 256 bytes |
 | kv store confinement | **Implemented** | keys `[A-Za-z0-9_.-]{1,31}` except `.` and `..`, stored under `/lfs/data/<app>/` |
 | API version check | **Implemented** | the host refuses a module whose `UC_API_VERSION` major differs |
 | Integrity (`sha256` in the app manifest, checked at install and at every start) | **Implemented** | protects against corrupted transfers, **not** against a malicious uploader |
@@ -208,7 +213,7 @@ writable property of every device.
 |------|--------|
 | No secrets in logs: the BACnet password is never logged or printed (`uc cfg show device` prints `password: configured` / `none`); the planned DTLS and signing code must not log key material, PSK identities are logged at most as a fingerprint | **Implemented**; rule for new code |
 | Logs are readable by every SMP client (`/lfs/log/log.NNNN` through the FS group) and sent in clear text with the syslog option (`overlay-syslog.conf`, UDP 514) | fact; keep syslog on the management VLAN |
-| Application log lines are application-controlled text (max 120 characters, 20 lines/s per app) | **Implemented** limits; treat content as untrusted |
+| Application output is application-controlled text. `uc_log` and the libc-builtin `printf`/`vprintf`/`puts`/`putchar` both end up as log lines of source `uc_app`, prefixed with the app name (`uc_app: <app>: ...`; `printf` at info level, collected per line, an unfinished line logged when the callback returns). Control characters are replaced by blanks, lines are cut to 120 characters, 20 lines/s per app for both together (the excess is dropped and counted); an app cannot write untagged text to the console or the log | **Implemented** limits; treat content as untrusted |
 | Log level is configurable at run time (`device.json` `log.level`); `dbg` reveals request details | **Implemented**; use `inf` in production |
 
 ## 9. Harness and AI agent

@@ -193,7 +193,8 @@ Between ticks the thread waits for events and delivers them in arrival order
 events. `uc_set_tick_period(0)` or `period_ms: 0` gives an event-only
 application.
 
-Stop (`uc_app stop`, `remove`, `install` with `restart`, `reload apps`):
+Stop (`uc_app stop`, `remove`, `install` with `restart`, and `uc_node reload
+apps` for a removed or changed entry):
 
 1. The manager sets the stop flag and cancels the application's blocking host
    calls. A remote request in flight is abandoned within about 50 ms
@@ -202,9 +203,10 @@ Stop (`uc_app stop`, `remove`, `install` with `restart`, `reload apps`):
 2. From then on, blocking calls of the running callback fail at once
    (`uc_remote_*` to another device: `UC_ERR_TIMEOUT`, `uc_kv_*`:
    `UC_ERR_IO`) and no longer pause the watchdog, so the callback has to
-   return. If it does not, the watchdog terminates it; a callback that makes
-   100 more blocking calls after the cancellation is terminated at once
-   (on `native_sim` host calls do not consume the instruction budget). A
+   return. If it does not, the watchdog terminates it; a callback that goes on
+   calling blocking host functions is terminated at the 100th call after the
+   cancellation (on `native_sim` host calls do not consume the instruction
+   budget). A
    terminated callback ends in `failed`, without `uc_app_deinit()`.
 3. After the callback returned, `uc_app_deinit()` is called under the
    watchdog. Its blocking calls work again (e.g. to relinquish a command on
@@ -218,7 +220,9 @@ Stop (`uc_app stop`, `remove`, `install` with `restart`, `reload apps`):
 A stop normally completes in about 1 s and takes at most 2 ×
 `CONFIG_UC_APP_WATCHDOG_MS` (the rest of the running callback plus
 `uc_app_deinit()`) plus about 1 s for the cancellation and the cleanup,
-whatever the module does. The manager gives up after 2 × watchdog + 8 s
+whatever the module does, as long as its code can be terminated
+(interpreted code; AOT code only as described in section 2.1). The manager
+gives up after 2 × watchdog + 8 s
 (rc `BUSY`, the application keeps its `apps.json` entry,
 [management-protocol.md](management-protocol.md#group-64-uc_app---webassembly-applications));
 an application blocked in, or looping on, remote requests no longer runs
@@ -242,7 +246,10 @@ again; there is no automatic restart.
 | `uc_app_deinit` | `void (void)` | `() -> ()` | no | on a regular stop |
 
 An export with a different signature fails the start ("export X: wrong
-signature").
+signature"). A module must not have a start function and must not export
+`__wasm_call_ctors`, `__post_instantiate` or `_initialize` (step 5 above;
+rc `VERIFY`): all module code runs in these callbacks, and global
+initialisation belongs in `uc_app_init()`.
 
 ## 4. Host ABI reference
 
@@ -439,8 +446,8 @@ above 90 % ([distributed-apps.md](distributed-apps.md#4-placement-rules)).
 | Relation to BACnet | the BACnet thread (5), network threads and SMP (3) preempt applications; an application cannot delay BACnet responses or the IO scan |
 | Tick jitter | a tick runs when its thread is scheduled after the timer expired; with idle higher-priority threads this is within a scheduler tick |
 | Event latency | a COV notification or write is delivered after the running callback returns |
-| Watchdog | each callback may execute for `CONFIG_UC_APP_WATCHDOG_MS` (2000 ms); time blocked in remote requests or kv access does not count (the watchdog pauses). Expiry: `wasm_runtime_terminate()`, the instance stops at its next branch or call, the application enters `failed` with `last_error` "`<export>: watchdog, callback exceeded 2000 ms`" |
-| Watchdog on `native_sim` | simulated time only advances while the simulated CPU idles, so the watchdog timer cannot expire during a callback that never blocks. Instead every call into a module gets a budget of interpreted instructions (`CONFIG_WAMR_INSTRUCTION_LIMIT`, 100 000 000 by default on `native_sim`, roughly 0.1 to 0.5 s on a PC); a callback that exceeds it traps (`last_error` "`uc_app_tick: instruction limit exceeded`") and the node keeps running. The budget does not cover AOT code: an AOT busy loop still hangs a `native_sim` node. On the boards the metering is not built (0) and the watchdog works in real time |
+| Watchdog | each callback may execute for `CONFIG_UC_APP_WATCHDOG_MS` (2000 ms); time blocked in remote requests or kv access does not count (the watchdog pauses), except once a stop is pending: then the stopping callback and `uc_app_deinit()` are timed including their blocking calls. Expiry: `wasm_runtime_terminate()`, the instance stops at its next branch or call, a blocking host call in progress returns at once (cancelled), and the application enters `failed` with `last_error` "`<export>: watchdog, callback exceeded 2000 ms`" (during `uc_app_deinit()` it still ends `stopped`) |
+| Watchdog on `native_sim` | simulated time only advances while the simulated CPU idles, so the watchdog timer cannot expire during a callback that never blocks. Instead every call into a module gets a budget of interpreted instructions (`CONFIG_WAMR_INSTRUCTION_LIMIT`, 100 000 000 by default on `native_sim`, roughly 0.1 to 0.5 s on a PC); a callback that exceeds it traps (`last_error` "`uc_app_tick: instruction limit exceeded`") and the node keeps running. The budget does not cover AOT code: an AOT busy loop still hangs a `native_sim` node. Host calls do not consume the budget either, so a stopping callback that keeps calling blocking host functions after the cancellation is terminated after 100 such calls instead (section 3.1). On the boards the metering is not built (0) and the watchdog works in real time |
 
 ## 7. Sandboxing
 
@@ -449,11 +456,14 @@ above 90 % ([distributed-apps.md](distributed-apps.md#4-placement-rules)).
 | Linear memory with software bounds checks; every linear memory allocated with the full size WAMR checks against (section 5) | reading or writing firmware memory, other applications, peripherals |
 | Pointer validation in every host function: the whole range `[ptr, ptr+len)` (all 8 bytes of a `double *`) must lie in the linear memory; NULL (offset 0) and zero lengths where data is needed are rejected; data is copied with `memcpy` (no alignment assumptions) | host memory corruption through crafted pointers; bad pointers return `UC_ERR_INVALID` instead of trapping |
 | Import whitelist | only `bacnet_uc` and libc-builtin functions link; unknown imports fail the load |
+| No code at instantiation | a module with a start function or an exported `__wasm_call_ctors`, `__post_instantiate` or `_initialize` is refused (rc `VERIFY`, section 3.1): all module code runs in callbacks under the watchdog and with the app's permissions |
 | Permissions (`perms`) | `bacnet.local`: local objects (create, delete own, read, write, local COV); `bacnet.remote`: requests to other devices; `io`: raw channel access; `kv`: persistent storage. Without any permission an application can only log, read the uptime, change its tick period and read its parameters |
 | Object ownership | an application deletes only its own objects; its objects disappear when it stops |
 | Watchdog | endless loops: `wasm_runtime_terminate()` stops the instance at the next branch or call (interpreter; AOT only with `--enable-multi-thread`); on `native_sim` the instruction budget (interpreter only) |
+| Cancellable blocking calls | a stop cancels the app's remote requests and kv access and times the rest of the callback including blocking calls, so an app blocked in or looping on remote requests cannot delay a stop, remove, reinstall or `reload apps` beyond 2 × watchdog + about 1 s |
+| Tagged output | `uc_log` and `printf`/`puts`/`putchar` output become log lines of source `uc_app`, prefixed with the app name, sanitised, cut to 120 characters and rate limited; a module cannot write untagged text to the console or the log |
 | No native code by default | the interpreter executes modules; AOT (native code in executable RAM) is a build option with its own risk (section 2.1) |
-| Resource limits | pool sized per board, `heap_kb`, `stack_kb`, 16 queued events, 20 log lines/s, 16 COV subscriptions, 8 client slots (shared), kv values ≤ 256 bytes, module ≤ `CONFIG_UC_APP_MAX_FILE_SIZE` (256 KiB) |
+| Resource limits | pool sized per board, `heap_kb`, `stack_kb`, 16 queued events, 20 log lines/s (`uc_log` and `printf` together), 16 COV subscriptions, 8 client slots (shared), kv values ≤ 256 bytes, module ≤ `CONFIG_UC_APP_MAX_FILE_SIZE` (256 KiB) |
 | Thread per application | a trap or a blocking call affects one application only |
 | Integrity | optional `sha256` in the manifest, checked at install and at every start |
 
@@ -486,8 +496,8 @@ wasm/sdk/uc-aot --board nucleo_f767zi -o hello.aot hello.wasm   # optional, need
 
 | Tool | Usage | Notes |
 |------|-------|-------|
-| `uc-cc` | `uc-cc [-O z\|s\|0..3] [-I dir] [-D name[=val]] [-g] [--stack-size B] [--heap-kb N] [--no-page-align] [--allow-grow] -o app.wasm app.c [more.c ...]` | clang `--target=wasm32` with the ABI's flags (`-mcpu=mvp -msign-ext -mnontrapping-fptoint -mbulk-memory`, `-Oz` by default), links twice so that `__heap_base` is page-aligned, then checks the module against the host ABI (imports, signatures, features, no `memory.grow`); `--print-flags` prints the flags for other build systems (`wasm/sdk/Makefile.inc`, `wasm/sdk/cmake`) |
-| `uc-wasm-info` | `uc-wasm-info app.wasm` | imports, exports, required permissions, memory layout and the linear memory the firmware will allocate |
+| `uc-cc` | `uc-cc [-O z\|s\|0..3] [-I dir] [-D name[=val]] [-g] [--stack-size B] [--heap-kb N] [--no-page-align] [--allow-grow] -o app.wasm app.c [more.c ...]` | clang `--target=wasm32` with the ABI's flags (`-mcpu=mvp -msign-ext -mnontrapping-fptoint -mbulk-memory`, `-Oz` by default), links twice so that `__heap_base` is page-aligned, then checks the module against the host ABI (imports, signatures, features, no `memory.grow`, no code at instantiation: a start function or an export `__wasm_call_ctors`, `__post_instantiate`, `_initialize` is an error); `--print-flags` prints the flags for other build systems (`wasm/sdk/Makefile.inc`, `wasm/sdk/cmake`) |
+| `uc-wasm-info` | `uc-wasm-info app.wasm` | imports, exports, required permissions, memory layout and the linear memory the firmware will allocate; the same ABI check as `uc-cc` (exit status 1 on errors), also for modules from other toolchains |
 | `uc-aot` | `uc-aot --board <board> [-o app.aot] [-O 0..3] app.wasm`; `uc-aot --list` | wamrc (`--wamrc`, `$WAMRC`, `/opt/wamrc/wamrc` or `PATH`, WAMR 2.4.5) with the board's target, `--bounds-checks=1`, `--enable-multi-thread`, indirect mode on Cortex-M; then checks the runtime symbols the file needs against WAMR's symbol map. Only useful with AOT firmware (section 2.1) |
 
 The `hello.c` of the commands above:
@@ -510,6 +520,25 @@ UC_EXPORT(uc_app_tick) void uc_app_tick(uint64_t now_ms)
 
 Host-side unit tests compile the same source natively against the host stub
 (`wasm/sdk/host-stub`); `make -C wasm test`.
+
+No code at instantiation: the firmware refuses a module with a start
+function or an exported `__wasm_call_ctors`, `__post_instantiate` or
+`_initialize` (rc `VERIFY`, section 3.1), and `uc-cc` and `uc-wasm-info`
+report these as errors ("module has a start function: ...", "export
+__wasm_call_ctors: the firmware refuses modules that run code at
+instantiation"). Modules built by `uc-cc` from plain C have none of them.
+Do not use `__attribute__((constructor))` functions or, in C++, global
+objects with constructors (dynamic initialisation). If the module exports
+their runner (`--export=__wasm_call_ctors`, or `_initialize` in the WASI
+reactor model), the firmware refuses it. If it does not, wasm-ld (checked
+with clang 18, linking with `--no-entry` as `uc-cc` does) wraps every
+exported function so that it calls `__wasm_call_ctors` first: the
+constructors would then run again before every callback and reset whatever
+they initialise. `uc-cc` therefore links a probe that exports
+`__wasm_call_ctors` and fails with "global constructors ... are not
+supported" when that function calls anything (a constant-initialised C++
+object is fine: clang emits it as data). Modules from other toolchains are
+not probed this way. Initialise globals statically or in `uc_app_init()`.
 
 ### 8.2 Rust (sketch, checked)
 
@@ -583,7 +612,12 @@ pub extern "C" fn uc_app_tick(now_ms: u64) {
 }
 ```
 
-Result: 772-byte module, linear memory 8 KiB with `heap_kb: 0`. A crate
+Result: 772-byte module, linear memory 8 KiB with `heap_kb: 0`. It has no
+start function and exports none of the instantiation functions, so it passes
+the check of section 3.1 (re-checked with the current `uc-wasm-info`). Rust
+has no global constructors of its own; do not use crates that register code
+in `.init_array` (such as `ctor`): wasm-ld turns that into
+`__wasm_call_ctors` as for C constructors (section 8.1). A crate
 that needs an allocator provides a `#[global_allocator]` over a static
 buffer (the WAMR app heap is only reachable through libc-builtin `malloc`).
 Bindings for the whole ABI can be generated from `bacnet_uc.h` with
@@ -593,8 +627,8 @@ Bindings for the whole ABI can be generated from `bacnet_uc.h` with
 
 | Toolchain | Imports / exports | Points to watch |
 |-----------|-------------------|-----------------|
-| AssemblyScript | `@external("bacnet_uc", "uc_log") declare function uc_log(level: i32, msg: usize, len: u32): void;` exported functions with `export function uc_app_init(): i32` | the default runtime imports `env.abort` with a signature that differs from libc-builtin: build with `--use abort=` or a custom abort; strings are UTF-16, convert with `String.UTF8.encode()`; use `--runtime stub` or `minimal` and check that no `memory.grow` is emitted (otherwise the memory is not shrunk: `--initialMemory 1 --maximumMemory 1`) |
-| TinyGo | `//go:wasmimport bacnet_uc uc_log` and `//export uc_app_init` | target `wasm-unknown` (no WASI), `-scheduler=none`, `-gc=leaking` or `conservative` with a fixed heap; module sizes are larger (tens of KiB); check the result with `uc-wasm-info` |
+| AssemblyScript | `@external("bacnet_uc", "uc_log") declare function uc_log(level: i32, msg: usize, len: u32): void;` exported functions with `export function uc_app_init(): i32` | the default runtime imports `env.abort` with a signature that differs from libc-builtin: build with `--use abort=` or a custom abort; strings are UTF-16, convert with `String.UTF8.encode()`; use `--runtime stub` or `minimal` and check that no `memory.grow` is emitted (otherwise the memory is not shrunk: `--initialMemory 1 --maximumMemory 1`); top-level statements and globals with non-constant initialisers compile into a start function, which the firmware refuses: keep the top level to constant declarations and initialise in `uc_app_init()`, and check with `uc-wasm-info` that no start function is reported |
+| TinyGo | `//go:wasmimport bacnet_uc uc_log` and `//export uc_app_init` | target `wasm-unknown` (no WASI), `-scheduler=none`, `-gc=leaking` or `conservative` with a fixed heap; module sizes are larger (tens of KiB); check the result with `uc-wasm-info`. TinyGo initialises its runtime and package variables in an exported `_initialize` or a start function; the firmware refuses such a module (and would not call `_initialize` either), so TinyGo needs a runtime whose initialisation is called from `uc_app_init()` |
 
 ## 9. Deployment
 

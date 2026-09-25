@@ -31,7 +31,7 @@ flowchart LR
 | CI | GitHub Actions workflow: harness tests, SDK checks, firmware builds of the three boards (warnings as errors), unit tests, end-to-end tests (not run on GitHub yet) | [harness-mcp.md](harness-mcp.md#8-ci-usage) |
 
 Current state: the `native_sim/native/64` firmware builds and runs, the
-harness test suite passes (596 tests, plus 10 end-to-end tests against the
+harness test suite passes (644 tests, plus 22 end-to-end tests against the
 `native_sim` firmware) and the system tests of
 `harness/examples/systems/sim-demo.yaml` pass on `native_sim` (two nodes,
 three tests). The `nucleo_f767zi` and `frdm_mcxn947/mcxn947/cpu0` firmware

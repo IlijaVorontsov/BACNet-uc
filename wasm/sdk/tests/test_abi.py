@@ -123,6 +123,11 @@ class RejectTest(unittest.TestCase):
         "badexport": ("#include <bacnet_uc.h>\nUC_APP_DECLARE()\n"
                       "UC_EXPORT(uc_app_tick) void uc_app_tick(uint32_t t) { (void)t; }\n",
                       "export uc_app_tick: signature (i32) -> ()"),
+        # wasm-ld would re-run the constructor before every exported callback
+        "ctor": ("#include <bacnet_uc.h>\nUC_APP_DECLARE()\nstatic uint64_t t0;\n"
+                 "__attribute__((constructor)) static void setup(void) { t0 = uc_uptime_ms(); }\n"
+                 "UC_EXPORT(uc_app_init) int32_t uc_app_init(void) { return t0 == 0; }\n",
+                 "global constructors"),
     }
 
     def test_rejected(self) -> None:

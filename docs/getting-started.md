@@ -153,7 +153,8 @@ need network namespaces or containers: see [simulation.md](simulation.md) and
 ### FRDM-MCXN947
 
 1. Connect Ethernet and the MCU-Link USB-C port. `/lfs` is on the on-board
-   8 MiB QSPI flash.
+   8 MiB QSPI flash (its first 8128 KiB; the top 64 KiB are reserved, see
+   [hardware.md](hardware.md#4-storage-options)).
 2. Flash and open the console:
 
    ```sh
@@ -364,8 +365,8 @@ distributed application from a manifest: [distributed-apps.md](distributed-apps.
 | firmware unit tests (ztest, `native_sim`) | `west build -b native_sim/native/64 BACNet-uc/firmware/tests/unit -d build-unit -t run` ✔ (32 tests: `uc_common` 10, `uc_config` 22) |
 | firmware build scenarios | `west twister -T BACNet-uc/firmware -p native_sim/native/64 -p nucleo_f767zi -p frdm_mcxn947/mcxn947/cpu0` |
 | WebAssembly SDK and examples | `make -C BACNet-uc/wasm check` (needs wamrc for the AOT part; `make -C BACNet-uc/wasm all test validate` without it) |
-| harness unit and integration tests | `cd BACNet-uc/harness && pip install -e '.[dev,serial,sim]' && python -m pytest -q` ✔ (596 passed; the 10 end-to-end tests are skipped without a firmware) |
-| harness end-to-end tests against `native_sim` (root: private network and mount namespaces) | `cd BACNet-uc/harness && sudo PYTHON=$(command -v python) BACNET_UC_FIRMWARE=$PWD/../../build-native/zephyr/zephyr.exe tests/e2e/run-isolated.sh` ✔ (10 passed) |
+| harness unit and integration tests | `cd BACNet-uc/harness && pip install -e '.[dev,serial,sim]' && python -m pytest -q` ✔ (644 passed; the 22 end-to-end tests are skipped without a firmware) |
+| harness end-to-end tests against `native_sim` (root: private network and mount namespaces) | `cd BACNet-uc/harness && sudo PYTHON=$(command -v python) BACNET_UC_FIRMWARE=$PWD/../../build-native/zephyr/zephyr.exe tests/e2e/run-isolated.sh` ✔ (22 passed) |
 
 The same jobs run in CI (`.github/workflows/ci.yml`, see
 [harness-mcp.md](harness-mcp.md#8-ci-usage)).

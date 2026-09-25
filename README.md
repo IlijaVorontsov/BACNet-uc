@@ -35,7 +35,9 @@ system manifest, first in simulation and then on hardware.
 - **WebAssembly applications**: WAMR 2.4.5 fast interpreter (AOT as a build
   option), a versioned host ABI (`bacnet_uc.h`) for local and remote BACnet
   objects, COV subscriptions, raw IO and persistent storage, a permission
-  model, pointer validation, a per-callback watchdog; SDK with `uc-cc`
+  model, pointer validation, a per-callback watchdog, stops that cancel
+  blocking host calls, app output (`uc_log`, `printf`) as tagged,
+  rate-limited log lines; SDK with `uc-cc`
   (clang), `uc-aot` (wamrc), a host stub for unit tests and four example
   applications (`blinky`, `thermostat`, `alarm`, `uc-link`).
 - **MCP development harness**: 36 tools, resources and prompts for AI agents
@@ -202,7 +204,7 @@ the WAMR pool in DTCM / SRAMX); the images have not run on the boards yet
 | Board | Zephyr target | CPU | `/lfs` | Network | WAMR pool | Status |
 |-------|---------------|-----|--------|---------|-----------|--------|
 | ST NUCLEO-F767ZI | `nucleo_f767zi` | Cortex-M7, 216 MHz, DP FPU | external SPI NOR (W25Q128JV on SPI1) or RAM (`-S uc-ramfs`) | on-board Ethernet (LAN8742A) | 112 KiB (DTCM) | builds and links (RAM 91.5 %, DTCM 97.1 %); not yet run on hardware |
-| NXP FRDM-MCXN947 | `frdm_mcxn947/mcxn947/cpu0` | Cortex-M33 core 0, 150 MHz, SP FPU | on-board 8 MiB QSPI NOR (FlexSPI) or RAM (`-S uc-ramfs`) | on-board Ethernet (ENET QoS) | 96 KiB (SRAMX) | builds and links (RAM 91.1 %, SRAMX 100 %); not yet run on hardware |
+| NXP FRDM-MCXN947 | `frdm_mcxn947/mcxn947/cpu0` | Cortex-M33 core 0, 150 MHz, SP FPU | on-board 8 MiB QSPI NOR (FlexSPI; 8128 KiB for `/lfs`, the top 64 KiB reserved) or RAM (`-S uc-ramfs`) | on-board Ethernet (ENET QoS) | 96 KiB (SRAMX) | builds and links (RAM 91.1 %, SRAMX 100 %); not yet run on hardware |
 | native_sim (Linux x86-64) | `native_sim/native/64` | host | file (`--flash=<file>`) | host sockets (NSOS) | 256 KiB | builds and runs; used for the simulated system tests |
 
 ## Documentation
@@ -262,7 +264,7 @@ Version 0.1.0 (`CONFIG_UC_FW_VERSION`), host ABI 1.0, work in progress.
 | `native_sim/native/64` firmware | builds and runs; end-to-end system tests of `harness/examples/systems/sim-demo.yaml` pass (two nodes, three tests) |
 | NUCLEO-F767ZI, FRDM-MCXN947 firmware | the default configuration, the `uc-ramfs` variant and the MCUboot (sysbuild) builds of both boards link without warnings; default: FLASH about 24 %, RAM about 91 % (`uc-ramfs`: RAM about 96 %; numbers in [docs/architecture.md](docs/architecture.md#62-measured-usage)). Not yet run on hardware |
 | Firmware unit tests | 32 ztest cases pass on `native_sim` |
-| Harness | 596 unit and integration tests pass (in-process fake node); 10 end-to-end tests against `native_sim` firmware pass |
+| Harness | 644 unit and integration tests pass (in-process fake node); 22 end-to-end tests against `native_sim` firmware pass |
 | CI | [`.github/workflows/ci.yml`](.github/workflows/ci.yml); has not run on GitHub yet |
 | Security | development configuration: SMP without authentication (DTLS not wired up), MCUboot development key; BACnet DCC/ReinitializeDevice need `bacnet.password`, CreateObject/DeleteObject off by default; see [docs/security.md](docs/security.md) before connecting a node to a shared network |
 | Planned | MS/TP, BACnet/SC, signed applications, AOT validated on the boards (a build option today), fleet OTA, schedules and trend logs: [docs/roadmap.md](docs/roadmap.md) |
