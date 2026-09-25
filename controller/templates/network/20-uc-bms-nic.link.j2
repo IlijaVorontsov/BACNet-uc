@@ -1,0 +1,8 @@
+# Rendered by uc-ctl (network role). Do not edit.
+# dual mode: the USB NIC with network.bms.nic_mac becomes bms0.
+# .link files apply when the device appears (boot or re-plug), not on reload.
+[Match]
+PermanentMACAddress={{ d.bms_nic_mac }}
+
+[Link]
+Name={{ d.bms_if }}

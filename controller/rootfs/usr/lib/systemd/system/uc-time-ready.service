@@ -1,0 +1,21 @@
+# uc-controller (DESIGN.md §7): wait at most 2 minutes for trustworthy time.
+# uc-hub and uc-historian are ordered after this unit; it never fails, so
+# supervision starts even when the time cannot be trusted
+# (/run/uc-controller/time-untrusted is then set for the health check).
+[Unit]
+Description=uc-controller: wait up to 2 minutes for trustworthy time
+Wants=chrony.service
+After=chrony.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/uc-controller/uc-time-ready
+TimeoutStartSec=150
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

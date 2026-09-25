@@ -1,0 +1,20 @@
+# Rendered by uc-ctl (dhcp role) from services.dhcp and devices.yaml. Do not edit.
+# DHCP and DNS for the BMS network only (DESIGN.md §5.2).
+interface={{ d.bms_if }}
+except-interface=lo
+bind-dynamic
+no-resolv
+no-hosts
+dhcp-authoritative
+dhcp-range={{ dhcp.range[0] }},{{ dhcp.range[1] }},{{ d.bms_netmask }},{{ dhcp.lease }}
+# option 6 (DNS), 7 (log server), 42 (NTP): the controller's BMS address
+dhcp-option=option:dns-server,{{ d.dhcp_options["dns-server"] }}
+dhcp-option=option:log-server,{{ d.dhcp_options["log-server"] }}
+dhcp-option=option:ntp-server,{{ d.dhcp_options["ntp-server"] }}
+# no router option: the BMS network is not routed through the controller
+dhcp-option=option:router
+host-record={{ d.broker_name }},{{ site.controller.hostname }},{{ d.bms_ip }}
+{% for dev in reservations %}
+# {{ dev.label }}
+dhcp-host={{ dev.mac }},{{ dev.ip }}
+{% endfor %}

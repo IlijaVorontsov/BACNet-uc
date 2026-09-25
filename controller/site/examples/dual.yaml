@@ -1,0 +1,50 @@
+# Example site file, dual mode (DESIGN.md §6.1): the onboard port (it0) is on
+# the IT LAN and gets its address by DHCP; a USB NIC (bms0, matched by MAC)
+# connects the physically separate BMS network, where the controller serves
+# DHCP. Test keys only.
+version: 1
+site:
+  id: plant2
+  name: Plant 2
+  domain: plant2.internal
+  timezone: Europe/Vienna
+controller:
+  hostname: ucc-plant2
+  rtc: rv3028
+  ups_gpio: 17
+network:
+  mode: dual
+  mac: "dc:a6:32:01:02:03"
+  it: {dhcp: true}
+  bms: {address: 10.30.0.2/24, nic_mac: "00:e0:4c:68:00:01"}
+  sources:
+    admin: [192.0.2.0/27, 198.51.100.10/32]
+    ui: [192.0.2.0/24]
+    backup: [192.0.2.40/32]
+    bbmd: [10.31.0.5/32]
+time:
+  servers: [ntp1.corp.example, ntp2.corp.example]
+  nts: [ptbtime1.ptb.de]
+services:
+  dhcp: {enabled: true, range: [10.30.0.100, 10.30.0.199], lease: 12h}
+  mqtt:
+    extra_roots: [legacy-uc]
+  hub:
+    users:
+      - {user: ops, roles: [operator]}
+      - {user: admin-1, roles: [admin, commissioner]}
+    llm: {provider: zai}
+  ui:
+    names: [ucc-plant2.corp.example]
+  updates: {online: false, auto_security: false}
+backup:
+  recipients:
+    - age1tc9wwg2vtgtd29psvsgy8rwlzmuqt5nrvfpg0rqg8y03yq2ct8zsm492fu
+  targets:
+    - {type: sftp, url: "sftp://uc-backup@192.0.2.40/uc/plant2"}
+  history_repo: "sftp://uc-backup@192.0.2.40:22/uc/plant2-pg"
+  at: "03:05"
+admins:
+  - {name: ilija, keys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO8vVyEuSWBxBzEYJ4ijziH7DKc5xluOjG3NXDuEEOCC ilija@laptop"]}
+  - {name: lab, keys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBYosgavc9jE8TegJqzJsm0L4NJVRD2gpCKI4rLGflKn lab@hil"]}
+ssh_user_ca: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG/OjsOKxr1Cb67O/DrrnNjGXv0FfXF1mwLOkNi0+9S2 uc-user-ca"]

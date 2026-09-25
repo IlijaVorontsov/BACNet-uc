@@ -1,0 +1,74 @@
+#!/usr/bin/python3
+"""uc-time-ready: wait at most 2 minutes for trustworthy time (DESIGN.md §7).
+
+Run by uc-time-ready.service (oneshot); uc-hub and the historian are ordered
+after it. Succeeds at once when the RTC is valid (uc-time-policy --check) or
+chrony is synchronised (``chronyc -c tracking`` leap status is not "Not
+synchronised"). Otherwise it polls until the deadline, then creates
+/run/uc-controller/time-untrusted (health alarm) and exits 0 anyway:
+supervision never waits longer than that.
+
+UC_TIME_READY_TIMEOUT (seconds, default 120) and UC_ROOT exist for tests.
+"""
+
+import os
+import subprocess
+import sys
+import time
+
+POLICY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uc-time-policy")
+UNTRUSTED = "/run/uc-controller/time-untrusted"
+INTERVAL_S = 2.0
+
+
+def rooted(path):
+    return os.environ.get("UC_ROOT", "").rstrip("/") + path
+
+
+def rtc_valid():
+    try:
+        return subprocess.run([sys.executable, POLICY, "--check"], stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def chrony_synced():
+    try:
+        res = subprocess.run(["chronyc", "-c", "tracking"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if res.returncode != 0 or not res.stdout.strip():
+        return False
+    leap = res.stdout.strip().splitlines()[-1].split(",")[-1]
+    return leap != "Not synchronised"
+
+
+def main():
+    timeout = float(os.environ.get("UC_TIME_READY_TIMEOUT", "120"))
+    deadline = time.monotonic() + timeout
+    marker = rooted(UNTRUSTED)
+    while True:
+        if rtc_valid():
+            reason = "RTC valid"
+            break
+        if chrony_synced():
+            reason = "chrony synchronised"
+            break
+        if time.monotonic() >= deadline:
+            os.makedirs(os.path.dirname(marker), mode=0o755, exist_ok=True)
+            with open(marker, "w", encoding="utf-8") as fh:
+                fh.write(time.strftime("%Y-%m-%dT%H:%M:%SZ\n", time.gmtime()))
+            print(f"uc-time-ready: time not trusted after {timeout:g} s; continuing ({UNTRUSTED})")
+            return 0
+        time.sleep(INTERVAL_S)
+    try:
+        os.unlink(marker)
+    except FileNotFoundError:
+        pass
+    print(f"uc-time-ready: {reason}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

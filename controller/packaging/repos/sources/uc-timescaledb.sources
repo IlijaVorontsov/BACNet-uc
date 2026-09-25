@@ -1,0 +1,7 @@
+# TimescaleDB (TSL build) and timescaledb-toolkit from packagecloud (DESIGN.md §4.10).
+# Installed by add-repos.sh.
+Types: deb
+URIs: https://packagecloud.io/timescale/timescaledb/debian
+Suites: trixie
+Components: main
+Signed-By: /etc/apt/keyrings/uc-timescaledb.asc

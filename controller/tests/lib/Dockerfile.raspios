@@ -1,0 +1,20 @@
+# uc-test-raspios: the official Raspberry Pi OS Lite arm64 2026-09-15 root file
+# system (imported by import-raspios.sh), prepared for tests: apt over https
+# through the build proxy. Test image only: it trusts the proxy's CA.
+# Build: . controller/tests/lib/ctr.sh; ctr_build controller/tests/lib/Dockerfile.raspios uc-test-raspios
+FROM raspios-lite:2026-09-15
+ARG HTTPS_PROXY=
+COPY extra-ca.crt /usr/local/share/ca-certificates/uc-test-extra-ca.crt
+RUN set -eu; \
+    ca=/usr/local/share/ca-certificates/uc-test-extra-ca.crt; \
+    [ -s "$ca" ] || rm -f "$ca"; \
+    if [ -n "$HTTPS_PROXY" ]; then \
+        printf 'Acquire::https::Proxy "%s";\n' "$HTTPS_PROXY" > /etc/apt/apt.conf.d/90uc-test-proxy; \
+    fi; \
+    sed -i -e 's#http://deb.debian.org#https://deb.debian.org#g' \
+           -e 's#http://archive.raspberrypi.com#https://archive.raspberrypi.com#g' \
+        /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list.d/raspi.sources; \
+    update-ca-certificates >/dev/null 2>&1
+ENV LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 \
+    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+CMD ["bash"]

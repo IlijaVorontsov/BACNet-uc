@@ -1,0 +1,37 @@
+# Example site file, flat mode (DESIGN.md §6.1): lab and HIL rig only. One
+# untagged LAN on eth0 (renamed bms0); SSH and the UI are reached through
+# the source sets on bms0. Isolated: no upstream NTP, no LLM. Test keys only.
+version: 1
+site:
+  id: lab
+  name: Lab / HIL rig
+  domain: lab.internal
+controller:
+  hostname: ucc-lab
+  hardware: pi4
+  rtc: ds3231
+network:
+  mode: flat
+  mac: null
+  bms: {address: 10.20.0.2/24}
+  sources:
+    admin: [10.20.0.0/24]
+    ui: [10.20.0.0/24]
+time:
+  servers: []
+services:
+  dhcp: {enabled: true, range: [10.20.0.100, 10.20.0.199], lease: 1h}
+  history:
+    expected_points: 200
+  hub:
+    users: [{user: lab, roles: [admin]}]
+    llm: {provider: none}
+  ui:
+    names: [ucc-lab.lab.internal]
+  updates: {online: false, auto_security: false}
+backup:
+  recipients: [age1jrlvr6gnnn3eugd9kawswkmg73707lhgztx4m38929dvhngnlqtqgwuurd]
+  targets:
+    - {type: usb}
+admins:
+  - {name: lab, keys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBYosgavc9jE8TegJqzJsm0L4NJVRD2gpCKI4rLGflKn lab@hil"]}

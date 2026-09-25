@@ -1,0 +1,29 @@
+#!/usr/sbin/nft -f
+# uc-controller fail-safe ruleset (DESIGN.md §6.3).
+# The uc-controller package installs this file as /etc/nftables.conf until the
+# first successful `uc-ctl apply` replaces it. SSH and ICMP in on every
+# interface except bms0, the DHCP client, everything else in is dropped, no
+# forwarding, nothing out of bms0. A box that was never configured can
+# neither expose the BMS network nor lock out support.
+flush ruleset
+
+table inet uc {
+  chain input {
+    type filter hook input priority 0; policy drop;
+    iif lo accept
+    iifname "bms0" drop
+    ct state established,related accept
+    ct state invalid drop
+    meta l4proto { icmp, ipv6-icmp } accept
+    tcp dport 22 accept
+    udp sport 67 udp dport 68 accept                       # DHCP client (renewals)
+    udp sport 547 udp dport 546 accept                     # DHCPv6 client
+  }
+  chain forward {
+    type filter hook forward priority 0; policy drop;
+  }
+  chain output {
+    type filter hook output priority 0; policy accept;
+    oifname "bms0" drop
+  }
+}

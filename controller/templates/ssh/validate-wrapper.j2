@@ -1,0 +1,4 @@
+# Validation only (never installed): the staged drop-in plus a temporary
+# host key that the validator generates next to this file.
+Include {{ P('/etc/ssh/sshd_config.d/10-uc.conf') }}
+HostKey {{ P(hostkey) }}

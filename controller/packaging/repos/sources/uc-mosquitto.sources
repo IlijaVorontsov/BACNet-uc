@@ -1,0 +1,6 @@
+# mosquitto 2.1.2 from repo.mosquitto.org (DESIGN.md §4.10, §8.1). Installed by add-repos.sh.
+Types: deb
+URIs: https://repo.mosquitto.org/debian
+Suites: trixie
+Components: main
+Signed-By: /etc/apt/keyrings/uc-mosquitto.asc

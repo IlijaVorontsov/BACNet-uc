@@ -1,0 +1,26 @@
+# Rendered by uc-ctl (ssh role). Do not edit. DESIGN.md §18.
+# Included before the rest of sshd_config: the first value of a keyword wins.
+# No ListenAddress: sshd may start before the VLANs are up; nftables restricts.
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+AuthenticationMethods publickey
+PubkeyAuthentication yes
+AllowGroups ssh-admins
+AuthorizedKeysFile /etc/ssh/authorized_keys/%u
+{% if user_ca %}
+TrustedUserCAKeys {{ P('/etc/ssh/uc-user-ca.pub') }}
+{% endif %}
+MaxAuthTries 3
+LoginGraceTime 20
+PerSourcePenalties yes
+ClientAliveInterval 300
+ClientAliveCountMax 2
+X11Forwarding no
+AllowAgentForwarding no
+AllowTcpForwarding no
+AllowStreamLocalForwarding no
+PermitTunnel no
+GatewayPorts no
+PermitUserEnvironment no
+LogLevel VERBOSE

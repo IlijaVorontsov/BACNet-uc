@@ -1,0 +1,29 @@
+# uc-controller apt pins (DESIGN.md §4.10). Installed by add-repos.sh as
+# /etc/apt/preferences.d/uc-controller.pref.
+
+# PGDG: PostgreSQL 18 and pgBackRest. Their PGDG dependencies (libpq5,
+# postgresql-common, postgresql-client-18) keep the default 500 as well.
+Package: postgresql-18 pgbackrest
+Pin: origin apt.postgresql.org
+Pin-Priority: 500
+
+# packagecloud: the TimescaleDB TSL build and the toolkit.
+Package: timescaledb-2-postgresql-18 timescaledb-2-loader-postgresql-18 timescaledb-toolkit-postgresql-18
+Pin: origin packagecloud.io
+Pin-Priority: 900
+
+# repo.mosquitto.org: the broker, its clients and library ...
+Package: mosquitto mosquitto-clients libmosquitto1
+Pin: origin repo.mosquitto.org
+Pin-Priority: 900
+
+# ... and nothing else from that repository replaces a Debian package.
+Package: *
+Pin: origin repo.mosquitto.org
+Pin-Priority: 100
+
+# Never the Apache-only (+dfsg) TimescaleDB builds from Debian or PGDG: an
+# edition flip returned partial data (TimescaleDB issue #7787).
+Package: postgresql-18-timescaledb postgresql-17-timescaledb timescaledb-2-oss-postgresql-18
+Pin: version *
+Pin-Priority: -1

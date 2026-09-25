@@ -1,0 +1,8 @@
+# Rendered by uc-ctl (network role). Do not edit.
+# trunk mode: IT zone = VLAN {{ d.it_vlan }} on {{ d.parent }}.
+[NetDev]
+Name={{ d.it_if }}
+Kind=vlan
+
+[VLAN]
+Id={{ d.it_vlan }}

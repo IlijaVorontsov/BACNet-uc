@@ -1,0 +1,266 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:uc-controller:controller.schema.json:v1",
+  "title": "uc-controller site file (controller.yaml), version 1",
+  "description": "DESIGN.md §5.1. Contains no secrets. Semantic checks (subnets, VLAN ids, DHCP range, age recipients, hub users, manifest name) are done by uc_controller.config after schema validation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "site", "controller", "network", "admins"],
+  "properties": {
+    "version": {"const": 1},
+    "site": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "domain"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$", "description": "Must equal metadata.name of the hub site.yaml."},
+        "name": {"type": "string", "minLength": 1, "maxLength": 200, "default": ""},
+        "domain": {"$ref": "#/$defs/fqdn"},
+        "timezone": {"type": "string", "pattern": "^(UTC|[A-Za-z_]+(/[A-Za-z0-9_+-]+){1,2})$", "default": "UTC"}
+      }
+    },
+    "controller": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hostname"],
+      "properties": {
+        "hostname": {"$ref": "#/$defs/label"},
+        "hardware": {"enum": ["pi4", "vm"], "default": "pi4"},
+        "rtc": {"enum": ["ds3231", "rv3028", "none"], "default": "ds3231"},
+        "ups_gpio": {"type": ["integer", "null"], "minimum": 4, "maximum": 27, "default": null},
+        "ssd_reserve_percent": {"type": "integer", "minimum": 0, "maximum": 50, "default": 0}
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bms"],
+      "properties": {
+        "mode": {"enum": ["trunk", "dual", "flat"], "default": "trunk"},
+        "parent": {"type": "string", "pattern": "^[a-z][a-z0-9]{0,14}$", "default": "eth0"},
+        "mac": {
+          "description": "auto: pin the first board's MAC after a board swap; null: never pin; or a MAC address.",
+          "oneOf": [{"const": "auto"}, {"type": "null"}, {"$ref": "#/$defs/mac"}],
+          "default": "auto"
+        },
+        "it": {
+          "description": "IT side: a static block or {vlan, dhcp: true}. vlan is used in trunk mode only; flat mode has no IT interface (null).",
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["address"],
+              "properties": {
+                "vlan": {"$ref": "#/$defs/vlan_or_null"},
+                "address": {"$ref": "#/$defs/ipv4_cidr"},
+                "gateway": {"oneOf": [{"$ref": "#/$defs/ipv4"}, {"type": "null"}], "default": null},
+                "dns": {"type": "array", "items": {"$ref": "#/$defs/ipv4"}, "maxItems": 3, "default": []},
+                "dhcp": {"const": false, "default": false}
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["dhcp"],
+              "properties": {
+                "vlan": {"$ref": "#/$defs/vlan_or_null"},
+                "dhcp": {"const": true}
+              }
+            }
+          ],
+          "default": null
+        },
+        "bms": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["address"],
+          "properties": {
+            "vlan": {"$ref": "#/$defs/vlan_or_null"},
+            "address": {"$ref": "#/$defs/ipv4_cidr"},
+            "nic_mac": {"oneOf": [{"$ref": "#/$defs/mac"}, {"type": "null"}], "default": null, "description": "USB NIC for bms0; dual mode only."}
+          }
+        },
+        "sources": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "admin": {"$ref": "#/$defs/source_list", "description": "SSH"},
+            "ui": {"$ref": "#/$defs/source_list", "description": "HTTPS"},
+            "backup": {"$ref": "#/$defs/source_list", "description": "SFTP backup hosts (egress)"},
+            "bbmd": {"$ref": "#/$defs/source_list", "description": "BACnet BBMD peers outside the BMS subnet"}
+          },
+          "default": {}
+        }
+      }
+    },
+    "time": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "servers": {"type": "array", "items": {"$ref": "#/$defs/host"}, "uniqueItems": true, "default": [], "description": "Upstream NTP on the IT side; empty = isolated site."},
+        "nts": {"type": "array", "items": {"$ref": "#/$defs/host"}, "uniqueItems": true, "default": [], "description": "NTS servers (tcp 4460 egress)."},
+        "serve": {"type": "boolean", "default": true}
+      },
+      "default": {}
+    },
+    "services": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dhcp": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean", "default": false},
+            "range": {"type": "array", "items": {"$ref": "#/$defs/ipv4"}, "maxItems": 2, "default": [], "description": "First and last address of the pool; both are required when enabled."},
+            "lease": {"type": "string", "pattern": "^([0-9]{1,6}[smhdw]?|infinite)$", "default": "12h"}
+          },
+          "default": {}
+        },
+        "syslog": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {"enabled": {"type": "boolean", "default": true}},
+          "default": {}
+        },
+        "mqtt": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "topic_root": {"$ref": "#/$defs/topic_root", "default": "bacnet-uc"},
+            "extra_roots": {"type": "array", "items": {"$ref": "#/$defs/topic_root"}, "uniqueItems": true, "default": []},
+            "broker_name": {"oneOf": [{"$ref": "#/$defs/fqdn"}, {"type": "null"}], "default": null, "description": "Default mqtt.<site.domain>."},
+            "expected_devices": {"type": ["integer", "null"], "minimum": 0, "default": null, "description": "Default: active entries in devices.yaml."},
+            "third_party_listener": {"type": "boolean", "default": false}
+          },
+          "default": {}
+        },
+        "history": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "expected_points": {"type": "integer", "minimum": 1, "maximum": 1000000, "default": 2000},
+            "raw_days": {"type": "integer", "minimum": 1, "maximum": 36500, "default": 400},
+            "log_days": {"type": "integer", "minimum": 1, "maximum": 36500, "default": 180},
+            "event_days": {"type": "integer", "minimum": 1, "maximum": 36500, "default": 3650},
+            "budget_percent": {"type": "integer", "minimum": 5, "maximum": 90, "default": 60}
+          },
+          "default": {}
+        },
+        "hub": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean", "default": true},
+            "users": {
+              "type": "array",
+              "default": [],
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["user", "roles"],
+                "properties": {
+                  "user": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$"},
+                  "roles": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["viewer", "operator", "commissioner", "admin"]}}
+                }
+              }
+            },
+            "llm": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {"provider": {"enum": ["none", "zai"], "default": "none"}},
+              "default": {}
+            },
+            "manifest": {"type": ["string", "null"], "minLength": 1, "default": null, "description": "Initial hub site.yaml; relative paths are relative to this file."},
+            "overrides": {"type": "object", "default": {}, "description": "Merged into the rendered hub.yaml drivers section. Free-form by design (the hub validates it)."}
+          },
+          "default": {}
+        },
+        "ui": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "names": {"type": "array", "items": {"$ref": "#/$defs/host"}, "uniqueItems": true, "default": []},
+            "cert": {"enum": ["site", "provided"], "default": "site"}
+          },
+          "default": {}
+        },
+        "updates": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "online": {"type": "boolean", "default": true},
+            "auto_security": {"type": "boolean", "default": true}
+          },
+          "default": {}
+        }
+      },
+      "default": {}
+    },
+    "backup": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "recipients": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 1000}, "uniqueItems": true, "default": [], "description": "age recipients (public keys only)."},
+        "targets": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["type", "url"],
+                "properties": {
+                  "type": {"const": "sftp"},
+                  "url": {"$ref": "#/$defs/sftp_url"}
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["type"],
+                "properties": {
+                  "type": {"const": "usb"},
+                  "label": {"type": "string", "pattern": "^[A-Z0-9_-]{1,11}$", "default": "UCBACKUP"}
+                }
+              }
+            ]
+          }
+        },
+        "history_repo": {"oneOf": [{"$ref": "#/$defs/sftp_url"}, {"type": "null"}], "default": null},
+        "at": {"type": "string", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$", "default": "02:15"}
+      },
+      "default": {}
+    },
+    "admins": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "keys"],
+        "properties": {
+          "name": {"type": "string", "pattern": "^[a-z_][a-z0-9_-]{0,31}$"},
+          "keys": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/ssh_pubkey"}}
+        }
+      }
+    },
+    "ssh_user_ca": {"type": "array", "items": {"$ref": "#/$defs/ssh_pubkey"}, "uniqueItems": true, "default": []}
+  },
+  "$defs": {
+    "ipv4": {"type": "string", "pattern": "^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$"},
+    "ipv4_cidr": {"type": "string", "pattern": "^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])/([0-9]|[12][0-9]|3[0-2])$"},
+    "ipv4_or_cidr": {"type": "string", "pattern": "^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(/([0-9]|[12][0-9]|3[0-2]))?$"},
+    "source_list": {"type": "array", "items": {"$ref": "#/$defs/ipv4_or_cidr"}, "uniqueItems": true, "default": []},
+    "mac": {"type": "string", "pattern": "^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$"},
+    "vlan_or_null": {"type": ["integer", "null"], "minimum": 1, "maximum": 4094, "default": null},
+    "label": {"type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"},
+    "fqdn": {"type": "string", "maxLength": 253, "pattern": "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"},
+    "host": {"type": "string", "maxLength": 253, "pattern": "^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$", "description": "DNS name or IPv4 address."},
+    "topic_root": {"type": "string", "pattern": "^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*$", "maxLength": 64},
+    "sftp_url": {"type": "string", "pattern": "^sftp://[A-Za-z0-9._-]+@[A-Za-z0-9.-]+(:[0-9]{1,5})?/[A-Za-z0-9._/-]*$"},
+    "ssh_pubkey": {"type": "string", "maxLength": 16384, "pattern": "^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\\.com|sk-ecdsa-sha2-nistp256@openssh\\.com) [A-Za-z0-9+/]+={0,2}( [^\\n\\r]*)?$"}
+  }
+}

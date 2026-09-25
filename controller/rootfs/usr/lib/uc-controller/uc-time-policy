@@ -1,0 +1,144 @@
+#!/usr/bin/python3
+"""uc-time-policy: may chrony serve its local reference? (DESIGN.md §7)
+
+Runs as ExecStartPre of chrony.service. The RTC is valid when
+  1. /dev/rtc0 exists,
+  2. it can be read (<sysfs>/class/rtc/rtc0/since_epoch; the DS3231 driver
+     fails the read while the oscillator-stop flag is set),
+  3. its time is at least the image build time ("built=<epoch>" in
+     /etc/uc-controller/release, else that file's mtime), and
+  4. at least the fake-hwclock saved time (/etc/fake-hwclock.data) minus 1 h.
+
+It writes /run/uc-controller/chrony-local.conf:
+  RTC valid:   local stratum 10               (an isolated site keeps serving)
+  RTC invalid: local stratum 10 activate 0.5  (serve only after a real sync)
+
+It always exits 0 when writing, so chrony starts whatever happens here.
+
+  --check   decide only; exit 0 if the RTC is valid, 1 if not; write nothing
+  --json    print the decision as JSON
+  --sysfs   sysfs root (default $UC_ROOT/sys); UC_ROOT prefixes every path (tests)
+
+Python standard library only.
+"""
+
+import argparse
+import calendar
+import json
+import os
+import sys
+import time
+
+FAKE_HWCLOCK_SLACK_S = 3600
+OUTPUT = "/run/uc-controller/chrony-local.conf"
+
+
+def rooted(path):
+    return os.environ.get("UC_ROOT", "").rstrip("/") + path
+
+
+def iso(epoch):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch)) if epoch is not None else None
+
+
+def build_time():
+    """(epoch, source) of the image build, or (None, reason)."""
+    path = rooted("/etc/uc-controller/release")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return None, "no /etc/uc-controller/release"
+    for line in text.splitlines():
+        key, _, value = line.partition("=")
+        if key.strip() == "built":
+            try:
+                return int(value.strip().strip('"')), "release built="
+            except ValueError:
+                break
+    return int(os.stat(path).st_mtime), "release mtime"
+
+
+def fake_hwclock_time():
+    """Saved time of fake-hwclock ("YYYY-MM-DD HH:MM:SS", UTC) or None."""
+    try:
+        with open(rooted("/etc/fake-hwclock.data"), encoding="utf-8") as fh:
+            text = fh.read().strip()
+        return calendar.timegm(time.strptime(text, "%Y-%m-%d %H:%M:%S"))
+    except (OSError, ValueError):
+        return None
+
+
+def rtc_time(sysfs):
+    """(epoch, None) or (None, reason)."""
+    if not os.path.exists(rooted("/dev/rtc0")):
+        return None, "no /dev/rtc0"
+    try:
+        with open(os.path.join(sysfs, "class/rtc/rtc0/since_epoch"), encoding="utf-8") as fh:
+            return int(fh.read().strip()), None
+    except OSError as exc:
+        return None, f"rtc0 cannot be read ({exc.strerror or exc})"
+    except ValueError:
+        return None, "rtc0 returned garbage"
+
+
+def decide(sysfs):
+    rtc, why = rtc_time(sysfs)
+    built, built_src = build_time()
+    saved = fake_hwclock_time()
+    info = {"rtc_time": iso(rtc), "build_time": iso(built), "build_time_source": built_src,
+            "fake_hwclock_time": iso(saved)}
+    if rtc is None:
+        return False, why, info
+    if built is not None and rtc < built:
+        return False, f"rtc {iso(rtc)} is before the build time {iso(built)}", info
+    if saved is not None and rtc < saved - FAKE_HWCLOCK_SLACK_S:
+        return False, f"rtc {iso(rtc)} is more than 1 h before the fake-hwclock time {iso(saved)}", info
+    return True, "rtc valid", info
+
+
+def write_output(valid, reason):
+    path = rooted(OUTPUT)
+    os.makedirs(os.path.dirname(path), mode=0o755, exist_ok=True)
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    if valid:
+        body = f"# Written by uc-time-policy at {stamp}: {reason}.\nlocal stratum 10\n"
+    else:
+        body = (f"# Written by uc-time-policy at {stamp}: RTC invalid: {reason}.\n"
+                "# Serve time only after a real synchronisation since boot.\n"
+                "local stratum 10 activate 0.5\n")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(body)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, path)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="decide chrony's local reference policy from the RTC")
+    ap.add_argument("--sysfs", default=None, help="sysfs root (default $UC_ROOT/sys)")
+    ap.add_argument("--check", action="store_true", help="exit 0 if the RTC is valid, 1 otherwise; write nothing")
+    ap.add_argument("--json", action="store_true", help="print the decision as JSON")
+    args = ap.parse_args(argv)
+    sysfs = args.sysfs or rooted("/sys")
+    try:
+        valid, reason, info = decide(sysfs)
+    except Exception as exc:  # never keep chrony from starting
+        valid, reason, info = False, f"policy error: {exc}", {}
+    if args.json:
+        print(json.dumps({"rtc_valid": valid, "reason": reason, **info}, sort_keys=True))
+    if args.check:
+        return 0 if valid else 1
+    try:
+        write_output(valid, reason)
+    except OSError as exc:
+        print(f"uc-time-policy: cannot write {rooted(OUTPUT)}: {exc}", file=sys.stderr)
+    if not args.json:
+        print(f"uc-time-policy: {'local stratum 10' if valid else 'local stratum 10 activate 0.5'} ({reason})")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

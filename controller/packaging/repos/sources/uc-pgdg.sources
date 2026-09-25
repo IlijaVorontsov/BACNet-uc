@@ -1,0 +1,6 @@
+# PostgreSQL 18 and pgBackRest from PGDG (DESIGN.md §4.10). Installed by add-repos.sh.
+Types: deb
+URIs: https://apt.postgresql.org/pub/repos/apt
+Suites: trixie-pgdg
+Components: main
+Signed-By: /etc/apt/keyrings/uc-pgdg.asc

@@ -1,0 +1,29 @@
+# uc-test-trixie: Debian trixie with the Python packages uc-controller uses
+# (Debian packages only, as on the target). Test image only: it trusts the
+# build proxy's CA (extra-ca.crt, empty when there is none).
+# Build: . controller/tests/lib/ctr.sh; ctr_build controller/tests/lib/Dockerfile.trixie uc-test-trixie
+FROM debian:trixie
+ARG HTTPS_PROXY=
+COPY extra-ca.crt /usr/local/share/ca-certificates/uc-test-extra-ca.crt
+RUN set -eu; \
+    ca=/usr/local/share/ca-certificates/uc-test-extra-ca.crt; \
+    if [ -n "$HTTPS_PROXY" ]; then \
+        printf 'Acquire::https::Proxy "%s";\n' "$HTTPS_PROXY" > /etc/apt/apt.conf.d/90uc-test-proxy; \
+    fi; \
+    if [ -s "$ca" ]; then \
+        printf 'Acquire::https::CaInfo "%s";\n' "$ca" > /etc/apt/apt.conf.d/91uc-test-ca-bootstrap; \
+    else \
+        rm -f "$ca"; \
+        apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates >/dev/null; \
+    fi; \
+    sed -i 's#http://deb.debian.org#https://deb.debian.org#g' /etc/apt/sources.list.d/debian.sources; \
+    apt-get update -qq; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+        ca-certificates python3 python3-yaml python3-jinja2 python3-jsonschema python3-pytest \
+        python3-paho-mqtt python3-asyncpg python3-aiohttp \
+        iproute2 procps curl gnupg openssl openssh-client >/dev/null; \
+    update-ca-certificates >/dev/null 2>&1; \
+    rm -f /etc/apt/apt.conf.d/91uc-test-ca-bootstrap; \
+    rm -rf /var/lib/apt/lists/*
+ENV LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1
+CMD ["bash"]

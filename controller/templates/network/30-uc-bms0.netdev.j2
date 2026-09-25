@@ -1,0 +1,8 @@
+# Rendered by uc-ctl (network role). Do not edit.
+# trunk mode: BMS zone = VLAN {{ d.bms_vlan }} on {{ d.parent }}.
+[NetDev]
+Name={{ d.bms_if }}
+Kind=vlan
+
+[VLAN]
+Id={{ d.bms_vlan }}

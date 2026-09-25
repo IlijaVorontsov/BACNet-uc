@@ -1,0 +1,29 @@
+# Rendered by uc-ctl (network role). Do not edit.
+# IT zone ({{ "VLAN %d on %s" % (d.it_vlan, d.parent) if d.it_vlan else "renamed " + d.parent }}).
+[Match]
+Name={{ d.it_if }}
+
+[Link]
+# Supervision must not wait for the IT side at boot (network-online.target
+# is reached through bms0, see 50-uc-bms0.network).
+RequiredForOnline=no
+
+[Network]
+{% if d.it_dhcp %}
+DHCP=ipv4
+{% else %}
+Address={{ d.it_address }}
+{% if d.it_gateway %}
+Gateway={{ d.it_gateway }}
+{% endif %}
+{% for dns in d.it_dns %}
+DNS={{ dns }}
+{% endfor %}
+{% endif %}
+IPv6AcceptRA=no
+{% if d.it_dhcp %}
+
+[DHCPv4]
+UseDomains=no
+UseNTP=no
+{% endif %}

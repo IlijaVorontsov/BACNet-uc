@@ -1,0 +1,17 @@
+# Rendered by uc-ctl (time role). Do not edit. DESIGN.md §7.
+# "local stratum 10" or "local stratum 10 activate 0.5", written by
+# uc-time-policy before chronyd starts. A glob, so a missing file is no error.
+include /run/uc-controller/chrony-local*.conf
+{% for server in site.time.servers %}
+server {{ server }} iburst
+{% endfor %}
+{% for server in site.time.nts %}
+server {{ server }} iburst nts
+{% endfor %}
+{% if site.time.serve %}
+allow {{ d.chrony_allow }}
+{% endif %}
+# uc-ctl time set -> chronyc settime (isolated sites)
+manual
+ratelimit interval 1 burst 16
+log tracking

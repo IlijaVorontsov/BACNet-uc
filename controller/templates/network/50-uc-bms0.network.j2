@@ -1,0 +1,15 @@
+# Rendered by uc-ctl (network role). Do not edit.
+# BMS zone ({{ bms_origin }}): static, no gateway. Configured without carrier
+# so mosquitto, chrony, syslog and BACnet/IP can always bind {{ d.bms_ip }}.
+[Match]
+Name={{ d.bms_if }}
+
+[Link]
+# network-online.target means "bms0 is configured", with or without carrier.
+RequiredForOnline=no-carrier
+
+[Network]
+Address={{ d.bms_cidr }}
+ConfigureWithoutCarrier=yes
+IgnoreCarrierLoss=yes
+IPv6AcceptRA=no

@@ -1,0 +1,14 @@
+# Rendered by uc-ctl (network role). Do not edit.
+# trunk mode: {{ d.parent }} carries only the tagged VLANs and has no address.
+[Match]
+Name={{ d.parent }}
+
+[Link]
+RequiredForOnline=no
+
+[Network]
+VLAN={{ d.it_if }}
+VLAN={{ d.bms_if }}
+LinkLocalAddressing=no
+IPv6AcceptRA=no
+ConfigureWithoutCarrier=yes

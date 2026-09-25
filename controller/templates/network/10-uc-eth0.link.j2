@@ -1,0 +1,16 @@
+# Rendered by uc-ctl (network role). Do not edit.
+# Onboard NIC: {{ purpose }}.
+# .link files apply when the device appears (boot or re-plug), not on reload.
+[Match]
+OriginalName={{ d.parent }}
+{% if site.controller.hardware == "pi4" %}
+Driver=bcmgenet
+{% endif %}
+
+[Link]
+{% if name %}
+Name={{ name }}
+{% endif %}
+{% if d.pinned_mac %}
+MACAddress={{ d.pinned_mac }}
+{% endif %}

@@ -1,0 +1,6 @@
+# Primary-key fingerprints of the third-party apt repositories (DESIGN.md §4.10).
+# add-repos.sh refuses to install a keyring whose primary key differs.
+# name         fingerprint                                source
+pgdg           B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8   https://www.postgresql.org/media/keys/ACCC4CF8.asc
+timescaledb    1005FB68604CE9B8F6879CF759F18EDF47F24417   https://packagecloud.io/timescale/timescaledb/gpgkey (fetched 2026-09-25)
+mosquitto      8277CCB49EC5B595F2D2C71361611AE430993623   https://repo.mosquitto.org/debian/mosquitto-repo.gpg (binary; stored ASCII-armored)

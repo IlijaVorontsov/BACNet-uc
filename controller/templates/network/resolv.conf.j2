@@ -1,0 +1,5 @@
+# Rendered by uc-ctl (network role) from network.it.dns. Do not edit.
+{% for dns in d.it_dns %}
+nameserver {{ dns }}
+{% endfor %}
+options timeout:2 attempts:2

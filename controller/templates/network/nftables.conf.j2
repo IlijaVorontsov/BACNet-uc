@@ -1,0 +1,102 @@
+#!/usr/sbin/nft -f
+# Rendered by uc-ctl (network role) from controller.yaml. Do not edit.
+# DESIGN.md §6.3. Mode {{ site.network.mode }}{{ ", HOLD: the BMS zone only drops" if hold else "" }}.
+flush ruleset
+
+table inet uc {
+{% for name, key in (("admin_v4", "admin"), ("ui_v4", "ui"), ("backup_v4", "backup"), ("bbmd_v4", "bbmd")) %}
+{% set elements = sources[key] %}
+  set {{ "%-9s" % name }} { type ipv4_addr; flags interval;{% if elements %} elements = { {{ elements | join(", ") }} }{% endif %} }
+{% endfor %}
+
+  chain input {
+    type filter hook input priority 0; policy drop;
+    ct state established,related accept
+    ct state invalid drop
+    iif lo accept
+    fib saddr . iif oif missing drop                        # strict reverse path
+    icmp type { echo-request, destination-unreachable, time-exceeded } limit rate 10/second accept
+    icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert, destination-unreachable, packet-too-big } accept
+{% if flat %}
+    iifname "{{ d.bms_if }}" jump in_it                             # flat mode: bms0 jumps to both chains
+    iifname "{{ d.bms_if }}" jump in_bms
+{% else %}
+    iifname "{{ d.it_if }}"  jump in_it
+    iifname "{{ d.bms_if }}" jump in_bms
+{% endif %}
+    limit rate 5/minute log prefix "uc-drop-in " level info
+  }
+  chain in_it {
+    tcp dport { 80, 443 } ip saddr @ui_v4 accept
+    tcp dport 22 ip saddr @admin_v4 meter ssh4 { ip saddr limit rate 6/minute burst 6 packets } accept
+{% if d.it_dhcp %}
+    udp sport 67 udp dport 68 accept                       # it.dhcp
+{% endif %}
+  }
+{% if hold %}
+  chain in_bms {                                          # hold mode
+    drop
+  }
+{% else %}
+  chain in_bms {
+    tcp dport 8883 ip saddr {{ d.bms_net }} meter mqtt4 { ip saddr limit rate 30/minute burst 60 packets } accept
+{% if site.time.serve %}
+    udp dport 123 ip saddr {{ d.bms_net }} accept               # time.serve
+{% endif %}
+{% if site.services.syslog.enabled %}
+    udp dport 514 ip saddr {{ d.bms_net }} accept               # syslog.enabled
+{% endif %}
+    udp dport 47808 ip saddr {{ d.bms_net }} accept
+    udp dport 47808 ip saddr @bbmd_v4 accept
+    udp sport 1337 ip saddr {{ d.bms_net }} accept              # replies to the SMP discovery broadcast
+{% if site.services.dhcp.enabled %}
+    udp dport 67 accept                                    # dhcp.enabled
+    udp dport 53 ip saddr {{ d.bms_net }} accept                # dhcp.enabled
+    tcp dport 53 ip saddr {{ d.bms_net }} accept                # dhcp.enabled
+{% endif %}
+  }
+{% endif %}
+  chain output {
+    type filter hook output priority 0; policy drop;
+    ct state established,related accept
+    oif lo accept
+    icmp type { echo-request } accept
+    icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit } accept
+{% if flat %}
+    oifname "{{ d.bms_if }}" jump out_it                            # flat mode: bms0 jumps to both chains
+    oifname "{{ d.bms_if }}" jump out_bms
+{% else %}
+    oifname "{{ d.it_if }}"  jump out_it
+    oifname "{{ d.bms_if }}" jump out_bms
+{% endif %}
+    limit rate 5/minute log prefix "uc-drop-out " level info
+  }
+  chain out_it {
+    udp dport { 53, 123 } accept
+    tcp dport 53 accept
+{% if site.time.nts %}
+    tcp dport 4460 accept                                  # NTS-KE (time.nts)
+{% endif %}
+{% if https_egress %}
+    tcp dport 443 accept                                   # {{ https_egress }}
+{% endif %}
+    tcp dport 22 ip daddr @backup_v4 accept                # SFTP backup targets
+{% if d.it_dhcp %}
+    udp sport 68 udp dport 67 accept                       # it.dhcp
+{% endif %}
+  }
+{% if hold %}
+  chain out_bms {                                         # hold mode
+    drop
+  }
+{% else %}
+  chain out_bms {
+    udp dport { 1337, 47808 } ip daddr { {{ d.bms_net }}, 255.255.255.255 } accept
+    udp dport 47808 ip daddr @bbmd_v4 accept
+{% if site.services.dhcp.enabled %}
+    udp sport 67 udp dport 68 accept                       # dnsmasq replies (dhcp.enabled)
+{% endif %}
+  }
+{% endif %}
+  chain forward { type filter hook forward priority 0; policy drop; }
+}
