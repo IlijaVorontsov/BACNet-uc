@@ -1,5 +1,0 @@
-west:
-  command: /home/user/.venv-z44/bin/west build -p --sysbuild -b nucleo_f767zi -- -DFILE_SUFFIX=mcuboot
-    -d /home/user/bb-f767sb .
-  topdir: /home/user
-  version: 1.5.0

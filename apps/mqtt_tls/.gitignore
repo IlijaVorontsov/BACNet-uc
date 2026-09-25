@@ -4,3 +4,4 @@ certs/dev/
 *.key
 *.p12
 *.pfx
+build/
