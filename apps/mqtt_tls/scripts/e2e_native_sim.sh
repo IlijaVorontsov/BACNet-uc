@@ -28,12 +28,23 @@
 #     authenticates over mutual TLS, an RSA broker certificate works over
 #     TLS 1.3 (RSA-PSS), and overlay-tls12-rsa.conf reaches a TLS-1.2-only RSA
 #     broker.
+# 10. Runtime configuration (M5): config_get/config_set/config_reset, secrets
+#     masked, immediate vs next-connect keys, topic root change + reconnect,
+#     persistence across restarts, fallback to the last known good after a
+#     broken broker setting.
+# 11. Logs over MQTT (M6): WRN lines on <root>/<id>/log (including lines from
+#     before the connection), the logs command, and the log_level setting.
+# 12. SMP on UDP 1337 (M4/M5): echo, settings read (secret masked), write +
+#     save + restart, factory reset; info announces mgmt/boot. (Image upload
+#     and MCUboot confirmation need real hardware.)
 #
 # Not covered: loss of the network interface (the NSOS target has no Zephyr-
 # managed interface) and the STM32 watchdog; both need the board.
 #
-# Requirements: west workspace with Zephyr 3.7 (see docs/SESSION_NOTES.md) and
-# its venv active, host gcc, mosquitto, mosquitto-clients, openssl.
+# Requirements: west workspace with Zephyr 4.4 (see docs/SESSION_NOTES.md) and
+# its venv active, host gcc, mosquitto, mosquitto-clients, openssl, and a
+# Python with smpclient for the SMP steps (`pip install smpmgr`; point
+# SMP_PYTHON at it, default python3).
 #
 #   apps/mqtt_tls/scripts/e2e_native_sim.sh [WORK_DIR]
 #
@@ -54,6 +65,9 @@ ROOT="e2e"
 DEV="${ROOT}/${CLIENT_ID}"
 KEEPALIVE=5
 MOSQUITTO="${MOSQUITTO:-$(command -v mosquitto || echo /usr/sbin/mosquitto)}"
+SMP_PYTHON="${SMP_PYTHON:-python3}"
+ALT_ROOT="e2e-alt"
+ALT="${ALT_ROOT}/${CLIENT_ID}"
 
 BROKER_PID=""
 OBSERVER_PID=""
@@ -140,7 +154,7 @@ start_broker() {
 	BROKER_PID=$!
 	wait_for "${BROKER_LOG}" 0 "mosquitto version [0-9.]+ running" 10 &&
 		kill -0 "${BROKER_PID}" 2>/dev/null || fail "broker did not start"
-	mosquitto_sub -h 127.0.0.1 -p "${PLAIN_PORT}" -t "${ROOT}/#" -v -q 1 \
+	mosquitto_sub -h 127.0.0.1 -p "${PLAIN_PORT}" -t "${ROOT}/#" -t "${ALT_ROOT}/#" -v -q 1 \
 		>>"${WORK}/observer.log" 2>&1 &
 	OBSERVER_PID=$!
 	wait_for "${BROKER_LOG}" 0 "Received SUBSCRIBE from auto-" 10 || fail "observer did not subscribe"
@@ -153,9 +167,9 @@ stop_broker() {
 	BROKER_PID=""
 }
 
-start_device() { # start_device BUILD_NAME
+start_device() { # start_device BUILD_NAME  (settings persist in flash-NAME.bin)
 	DEVICE_LOG="${WORK}/device-$1.log"
-	"${WORK}/build-$1/zephyr/zephyr.exe" >"${DEVICE_LOG}" 2>&1 &
+	"${WORK}/build-$1/zephyr/zephyr.exe" -flash="${WORK}/flash-$1.bin" >>"${DEVICE_LOG}" 2>&1 &
 	DEVICE_PID=$!
 }
 
@@ -169,11 +183,14 @@ stop_device() {
 for t in west openssl mosquitto_sub mosquitto_pub "${MOSQUITTO}"; do
 	command -v "${t}" >/dev/null || fail "${t} not found"
 done
+"${SMP_PYTHON}" -c "import smpclient" 2>/dev/null ||
+	fail "smpclient not importable by ${SMP_PYTHON} (pip install smpmgr; set SMP_PYTHON)"
+smp() { "${SMP_PYTHON}" "${APP_DIR}/scripts/smp_tool.py" 127.0.0.1 "$@" 2>/dev/null; }
 
 mkdir -p "${WORK}"
 WORK="$(cd "${WORK}" && pwd)"
 chmod 0755 "${WORK}"
-rm -f "${WORK}"/*.log
+rm -f "${WORK}"/*.log "${WORK}"/flash-*.bin
 log "Work directory: ${WORK}"
 
 log "Generating PKI"
@@ -237,7 +254,7 @@ log "1. Mutual TLS, retained status/info, periodic telemetry"
 start_device good
 wait_for "${OBS}" 0 "^${DEV}/status online$" 30 || fail "device never came online"
 wait_for "${OBS}" 0 "^${DEV}/info \{\"fw\":\"[0-9]+\.[0-9]+\.[0-9]+\",\"board\":\"native_sim" 10 || fail "no info message"
-grep -Eq "^${DEV}/info .*\"hwid\":\"[^\"]+\".*\"caps\":\{\"cmds\":\[\"ping\",\"led\",\"identify\"\]" "${OBS}" ||
+grep -Eq "^${DEV}/info .*\"hwid\":\"[^\"]+\".*\"caps\":\{\"cmds\":\[\"ping\",\"led\",\"identify\"," "${OBS}" ||
 	fail "info lacks hwid or caps"
 wait_for "${OBS}" 0 "^${DEV}/telemetry \{\"seq\":2," 15 || fail "telemetry not periodic"
 grep -Eq "New client connected .* as ${CLIENT_ID} .*u'${CLIENT_ID}'" "${BROKER_LOG}" ||
@@ -409,6 +426,139 @@ s_server_check rsa13 1_3 "${R}" rsasrv 'TLS_AES_(128|256)_GCM_SHA(256|384)'
 
 log "9c. TLS-1.2-only RSA broker with overlay-tls12-rsa.conf"
 s_server_check rsa12 1_2 "${R}" rsa12 'ECDHE-RSA-AES(128|256)-GCM-SHA(256|384)'
+
+# cmd_to ROOT_DEV MESSAGE; ev_wait MARK REGEX [TIMEOUT]: event reply after MARK
+cmd_to() { pub -t "$1/cmd" -m "$2"; }
+ev_wait() { wait_for "${OBS}" "$1" "$2" "${3:-10}"; }
+online_after() { wait_for "${OBS}" "$1" "^$2/status online$" "${3:-30}"; }
+
+log "10. Runtime configuration (M5)"
+rm -f "${WORK}/flash-good.bin"
+mo=$(mark "${OBS}")
+start_device good
+online_after "$mo" "${DEV}" || fail "config: device not online"
+mo=$(mark "${OBS}")
+cmd_to "${DEV}" config_get
+ev_wait "$mo" "^${DEV}/event \{\"ok\":true,\"config\":\{\"broker_host\":\"127\.0\.0\.1\",\"broker_port\":${TLS_PORT},.*\"password\":\"\",\"topic_root\":\"${ROOT}\",\"publish_interval\":2,\"keepalive\":${KEEPALIVE},\"log_level\":\"wrn\"\}\}" ||
+	fail "config_get: unexpected configuration"
+cmd_to "${DEV}" '{"id":"c1","cmd":"config_set","arg":"password=s3cret"}'
+ev_wait "$mo" "^${DEV}/event \{\"id\":\"c1\",\"ok\":true,\"key\":\"password\",\"applies\":\"next_connect\"\}" ||
+	fail "config_set password"
+cmd_to "${DEV}" "config_get password"
+ev_wait "$mo" "^${DEV}/event \{\"ok\":true,\"key\":\"password\",\"value\":\"\*\*\*\"\}" || fail "secret not masked"
+# The secret may only appear in the command itself, never in a reply.
+grep "s3cret" "${OBS}" | grep -vq "^${DEV}/cmd " && fail "secret leaked on MQTT"
+cmd_to "${DEV}" "config_set topic_root=bad+root"
+ev_wait "$mo" "^${DEV}/event \{\"ok\":false,\"error\":\"bad value\"\}" || fail "invalid topic root accepted"
+cmd_to "${DEV}" "config_set no_such_key=1"
+ev_wait "$mo" "^${DEV}/event \{\"ok\":false,\"error\":\"unknown key\"\}" || fail "unknown key accepted"
+cmd_to "${DEV}" "config_set password="
+ev_wait "$mo" "^${DEV}/event \{\"ok\":true,\"key\":\"password\"" || fail "clearing password"
+
+# publish_interval applies immediately
+cmd_to "${DEV}" "config_set publish_interval=1"
+ev_wait "$mo" "^${DEV}/event \{\"ok\":true,\"key\":\"publish_interval\",\"applies\":\"now\"\}" ||
+	fail "config_set publish_interval"
+mt=$(mark "${OBS}")
+sleep 4
+n=$(tail -n +"$((mt + 1))" "${OBS}" | grep -c "^${DEV}/telemetry ")
+((n >= 3)) || fail "publish_interval=1 not applied immediately ($n telemetry in 4 s)"
+
+# topic root: next connect; reconnect applies it
+cmd_to "${DEV}" "config_set topic_root=${ALT_ROOT}"
+ev_wait "$mo" "^${DEV}/event \{\"ok\":true,\"key\":\"topic_root\",\"applies\":\"next_connect\"\}" ||
+	fail "config_set topic_root"
+ma=$(mark "${OBS}")
+cmd_to "${DEV}" reconnect
+ev_wait "$mo" "^${DEV}/event \{\"ok\":true,\"reconnect\":true\}" || fail "reconnect reply"
+online_after "$ma" "${ALT}" || fail "not online under the new topic root"
+cmd_to "${ALT}" ping
+ev_wait "$ma" "^${ALT}/event \{\"ok\":true,\"pong\":" || fail "no pong under the new topic root"
+
+# persistence across a restart
+stop_device
+ma=$(mark "${OBS}")
+start_device good
+online_after "$ma" "${ALT}" || fail "topic root not persisted across restart"
+cmd_to "${ALT}" "config_get publish_interval"
+ev_wait "$ma" "^${ALT}/event \{\"ok\":true,\"key\":\"publish_interval\",\"value\":\"1\"\}" ||
+	fail "publish_interval not persisted"
+cmd_to "${ALT}" "config_set topic_root=${ROOT}"
+ev_wait "$ma" "^${ALT}/event \{\"ok\":true,\"key\":\"topic_root\"" || fail "restore topic root"
+mo=$(mark "${OBS}")
+cmd_to "${ALT}" reconnect
+online_after "$mo" "${DEV}" || fail "not back under the original root"
+
+# a broken broker setting falls back to the last known good
+md=$(mark "${DEVICE_LOG}")
+cmd_to "${DEV}" "config_set broker_port=1"
+ev_wait "$mo" "^${DEV}/event \{\"ok\":true,\"key\":\"broker_port\",\"applies\":\"next_connect\"\}" ||
+	fail "config_set broker_port"
+mf=$(mark "${OBS}")
+cmd_to "${DEV}" reconnect
+wait_for "${DEVICE_LOG}" "$md" "fell back to the last known good configuration" 60 ||
+	fail "no fallback after a broken broker setting"
+online_after "$mf" "${DEV}" 30 || fail "not online again after fallback"
+fails=$(tail -n +"$((md + 1))" "${DEVICE_LOG}" | grep -c "Broker 127.0.0.1 -> 127.0.0.1:1$")
+((fails == 5)) || fail "expected 5 attempts with the broken setting, saw ${fails}"
+mo=$(mark "${OBS}")
+cmd_to "${DEV}" "config_get broker_port"
+ev_wait "$mo" "^${DEV}/event \{\"ok\":true,\"key\":\"broker_port\",\"value\":\"${TLS_PORT}\"\}" ||
+	fail "broker_port not rolled back"
+
+log "11. Logs over MQTT (M6)"
+# The fallback warning was logged while offline; it must arrive now.
+wait_for "${OBS}" "$mf" "^${DEV}/log \{\"t\":[0-9]+,\"lvl\":\"wrn\",\"src\":\"app\",\"msg\":\"New connection settings failed 5 times: fell back to the last known good configuration\"\}" 15 ||
+	fail "warning from before the connection not published on the log topic"
+mo=$(mark "${OBS}")
+cmd_to "${DEV}" "$(head -c 300 /dev/zero | tr '\0' 'z')"
+wait_for "${OBS}" "$mo" "^${DEV}/log \{\"t\":[0-9]+,\"lvl\":\"wrn\",\"src\":\"app\",\"msg\":\"Command of 300 bytes discarded \(max 128\)\"\}" 10 ||
+	fail "WRN not published on the log topic"
+cmd_to "${DEV}" '{"id":"l1","cmd":"logs","arg":"3"}'
+ev_wait "$mo" "^${DEV}/event \{\"id\":\"l1\",\"ok\":true,\"logs\":\[.*Command of 300 bytes discarded.*\]\}" ||
+	fail "logs command"
+tail -n +"$((mo + 1))" "${OBS}" | grep -q "^${DEV}/log .*\"lvl\":\"inf\"" && fail "INF published at level wrn"
+cmd_to "${DEV}" "config_set log_level=inf"
+ev_wait "$mo" "^${DEV}/event \{\"ok\":true,\"key\":\"log_level\",\"applies\":\"now\"\}" || fail "config_set log_level"
+wait_for "${OBS}" "$mo" "^${DEV}/log \{\"t\":[0-9]+,\"lvl\":\"inf\",\"src\":\"app\",\"msg\":\"Published telemetry #" 10 ||
+	fail "log_level=inf not applied"
+cmd_to "${DEV}" '{"id":"l2","cmd":"config_set","arg":"password=t0psecret"}'
+ev_wait "$mo" "^${DEV}/event \{\"id\":\"l2\",\"ok\":true" || fail "config_set password at log_level inf"
+sleep 2
+grep "t0psecret" "${OBS}" | grep -vq "^${DEV}/cmd " && fail "secret leaked on the log topic"
+grep -q "t0psecret" "${DEVICE_LOG}" && fail "secret leaked in the device log"
+cmd_to "${DEV}" "config_set log_level=wrn"
+
+log "12. SMP on UDP 1337 (M4/M5)"
+[ "$(smp echo hello)" = "hello" ] || fail "SMP echo"
+[ "$(smp read mqtt/broker_host)" = "127.0.0.1" ] || fail "SMP settings read"
+mo=$(mark "${OBS}")
+cmd_to "${DEV}" "config_set password=pw"
+ev_wait "$mo" "^${DEV}/event \{\"ok\":true,\"key\":\"password\"" || fail "config_set password"
+[ "$(smp read mqtt/password)" = "***" ] || fail "SMP read of a secret not masked"
+grep -Eq "^${DEV}/info .*\"mgmt\":\{\"smp\":\"udp:1337\"\},\"boot\":\"none\".*\"caps\":\{\"cmds\":\[\"ping\",\"led\",\"identify\",\"config\",\"reconnect\",\"logs\"\],\"config\":\[\"broker_host\"" "${OBS}" ||
+	fail "info lacks mgmt/boot or caps.config"
+[ "$(smp write mqtt/publish_interval 4)" = "ok" ] || fail "SMP settings write"
+[ "$(smp save)" = "ok" ] || fail "SMP settings save"
+cmd_to "${DEV}" "config_get publish_interval"
+ev_wait "$mo" "^${DEV}/event \{\"ok\":true,\"key\":\"publish_interval\",\"value\":\"4\"\}" || fail "SMP write not applied"
+stop_device
+mo=$(mark "${OBS}")
+start_device good
+online_after "$mo" "${DEV}" || fail "not online after restart"
+cmd_to "${DEV}" "config_get publish_interval"
+ev_wait "$mo" "^${DEV}/event \{\"ok\":true,\"key\":\"publish_interval\",\"value\":\"4\"\}" || fail "SMP save not persisted"
+[ "$(smp factory-reset)" = "ok" ] || fail "SMP factory reset"
+sleep 1
+cmd_to "${DEV}" config_get
+ev_wait "$mo" "^${DEV}/event \{\"ok\":true,\"config\":\{.*\"password\":\"\",.*\"publish_interval\":2," || fail "factory reset did not restore the defaults"
+stop_device
+mo=$(mark "${OBS}")
+start_device good
+online_after "$mo" "${DEV}" || fail "not online after factory reset + restart"
+cmd_to "${DEV}" "config_get publish_interval"
+ev_wait "$mo" "^${DEV}/event \{\"ok\":true,\"key\":\"publish_interval\",\"value\":\"2\"\}" || fail "factory reset not persisted"
+stop_device
 
 log "PASS"
 echo "Observer transcript (first lines):"

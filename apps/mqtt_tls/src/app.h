@@ -7,8 +7,61 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <zephyr/kernel.h>
 #include <zephyr/net/tls_credentials.h>
+
+/* config.c ------------------------------------------------------------------ */
+
+/** Longest string setting, including the terminating NUL. */
+#define APP_CFG_STR_LEN 64
+
+/** Runtime configuration: Kconfig defaults overlaid with stored settings. */
+struct app_config {
+	char broker_host[APP_CFG_STR_LEN];
+	char tls_hostname[APP_CFG_STR_LEN]; /* empty: use broker_host */
+	char username[APP_CFG_STR_LEN];
+	char password[APP_CFG_STR_LEN];
+	char topic_root[APP_CFG_STR_LEN];
+	uint32_t publish_interval; /* seconds */
+	uint16_t broker_port;
+	uint16_t keepalive;        /* seconds */
+	uint8_t log_level;         /* LOG_LEVEL_* threshold for the MQTT log topic */
+};
+
+/** Load stored settings on top of the Kconfig defaults. */
+int app_config_init(void);
+
+/** Snapshot of the current configuration. */
+void app_config_get(struct app_config *out);
+
+/**
+ * Validate, store and apply one key. @p next_connect tells whether the change
+ * takes effect only on the next connection. Returns 0, -ENOENT (unknown key),
+ * -EINVAL or -ENAMETOOLONG (bad value) or a settings error.
+ */
+int app_config_set(const char *name, const char *value, bool *next_connect);
+
+/** Current value of one key as text; secrets read as "***". */
+int app_config_get_value(const char *name, char *buf, size_t len);
+
+/** Delete all stored settings: back to the Kconfig defaults. */
+int app_config_reset(void);
+
+/** The whole configuration as a JSON object (secrets masked). Length or -ENOMEM. */
+int app_config_json(char *buf, size_t len);
+
+/** Comma-separated JSON strings of all key names, for caps.config. */
+void app_config_key_list(char *buf, size_t len);
+
+/**
+ * Call before each connection attempt. Counts down a trial of new connection
+ * settings; returns true if it just fell back to the last known good.
+ */
+bool app_config_attempt(void);
+
+/** Call when a session reached "online": the configuration becomes the LKG. */
+void app_config_online(void);
 
 /* net_wait.c ---------------------------------------------------------------- */
 
@@ -73,6 +126,61 @@ int app_mqtt_init(void);
  * @return negative errno describing why the session ended.
  */
 int app_mqtt_run_session(bool *was_connected);
+
+/* log_mqtt.c ---------------------------------------------------------------- */
+
+/** One log line captured for the MQTT log topic. */
+struct app_log_line {
+	uint32_t t_ms;   /* uptime */
+	uint8_t level;   /* LOG_LEVEL_ERR .. LOG_LEVEL_DBG */
+	char src[20];    /* log module */
+	char msg[120];
+};
+
+/** Threshold for lines captured by the MQTT log backend (LOG_LEVEL_*). */
+void app_log_set_level(uint8_t level);
+
+/**
+ * Fetch the next line after @p cursor (a running line number, 0 = first ever).
+ * @p lost is set to the number of lines that fell out of the ring before they
+ * were read. Returns false when there is nothing new.
+ */
+bool app_log_next(uint32_t *cursor, struct app_log_line *out, uint32_t *lost);
+
+/** Number of lines captured since boot. */
+uint32_t app_log_count(void);
+
+const char *app_log_level_name(uint8_t level);
+
+/** One line as a JSON object. Length, or -ENOMEM. */
+int app_log_line_json(const struct app_log_line *line, uint32_t lost, char *buf, size_t len);
+
+/** Copy @p src into @p dst as the body of a JSON string. Returns the length. */
+size_t app_json_escape(char *dst, size_t len, const char *src);
+
+/* mgmt.c -------------------------------------------------------------------- */
+
+/** Note whether this is an unconfirmed MCUboot test image. */
+void app_mgmt_init(void);
+
+/** The device reached "online": confirm a test image. */
+void app_mgmt_online(void);
+
+/** Call periodically: reboots (reverting a test image) if it never got online. */
+void app_mgmt_poll(void);
+
+/** The "mgmt" and "boot" members of the info message (no braces). */
+int app_mgmt_info_json(char *buf, size_t len);
+
+/* mqtt_app.c (continued) ------------------------------------------------------ */
+
+/** End the current session after the pending reply; reconnect with new settings. */
+void app_mqtt_request_reconnect(void);
+
+/* (log_mqtt.c) The last @p n log lines as a JSON array member
+ * "logs":[...] into @p buf, as many as fit. Returns the number of lines.
+ */
+int app_log_last_json(size_t n, char *buf, size_t len);
 
 /* commands.c ---------------------------------------------------------------- */
 

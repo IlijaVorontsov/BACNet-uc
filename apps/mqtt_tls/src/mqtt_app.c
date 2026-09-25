@@ -24,6 +24,7 @@
 #include <zephyr/net/mqtt.h>
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/socket.h>
+#include <zephyr/sys/atomic.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/version.h>
 #include <zephyr/app_version.h>
@@ -41,7 +42,7 @@ LOG_MODULE_DECLARE(app, CONFIG_APP_LOG_LEVEL);
 /* Time to wait for PINGRESP before declaring the connection dead. Also the
  * bound for any single blocking socket read or write inside a session.
  */
-#define PINGRESP_TIMEOUT_MS (MIN(CONFIG_MQTT_KEEPALIVE, 30) * MSEC_PER_SEC)
+#define PINGRESP_TIMEOUT_MS ((int)MIN(cfg.keepalive, 30) * MSEC_PER_SEC)
 #define SOCKET_IO_TIMEOUT_MS PINGRESP_TIMEOUT_MS
 
 /* A session must stay up this long before the caller resets its back-off,
@@ -78,14 +79,22 @@ static struct mqtt_utf8 will_message = {
 	.utf8 = (const uint8_t *)STATUS_OFFLINE,
 	.size = sizeof(STATUS_OFFLINE) - 1,
 };
-static struct mqtt_utf8 username = {
-	.utf8 = (const uint8_t *)CONFIG_APP_MQTT_USERNAME,
-	.size = sizeof(CONFIG_APP_MQTT_USERNAME) - 1,
-};
-static struct mqtt_utf8 password = {
-	.utf8 = (const uint8_t *)CONFIG_APP_MQTT_PASSWORD,
-	.size = sizeof(CONFIG_APP_MQTT_PASSWORD) - 1,
-};
+static struct mqtt_utf8 username;
+static struct mqtt_utf8 password;
+static char topic_log[TOPIC_LEN];
+
+/* Configuration snapshot for the current session (see config.c). */
+static struct app_config cfg;
+
+static atomic_t reconnect_requested;
+
+/* Log lines already published (running line number, see log_mqtt.c). It
+ * survives reconnects, so every line is published once, including those
+ * from before the first connection.
+ */
+static uint32_t log_cursor;
+static int log_tokens = CONFIG_APP_LOG_MQTT_BURST;
+static int64_t log_refill_at;
 
 #if defined(CONFIG_APP_MQTT_TLS)
 static const sec_tag_t sec_tags[] = { APP_TLS_SEC_TAG };
@@ -166,11 +175,12 @@ static void link_addr_str(struct net_if *iface, char *buf, size_t len)
  */
 static int publish_info(void)
 {
-	static char payload[512];
+	static char payload[1024];
 	char ip[NET_IPV4_ADDR_LEN] = "unknown";
 	char mac[18];
 	char hwid[33];
-	char caps[192];
+	char caps[384];
+	char mgmt[80];
 	struct net_if *iface = net_if_get_default();
 	struct net_in_addr *addr = NULL;
 	int len;
@@ -184,12 +194,13 @@ static int publish_info(void)
 	link_addr_str(iface, mac, sizeof(mac));
 	app_hwid_get(hwid, sizeof(hwid));
 	app_commands_caps(caps, sizeof(caps));
+	app_mgmt_info_json(mgmt, sizeof(mgmt));
 
 	len = snprintk(payload, sizeof(payload),
 		       "{\"fw\":\"%s\",\"board\":\"%s\",\"zephyr\":\"%s\","
-		       "\"hwid\":\"%s\",\"mac\":\"%s\",\"ip\":\"%s\",\"tls\":%s,\"caps\":%s}",
+		       "\"hwid\":\"%s\",\"mac\":\"%s\",\"ip\":\"%s\",\"tls\":%s,%s,\"caps\":%s}",
 		       APP_VERSION_STRING, CONFIG_BOARD, KERNEL_VERSION_STRING, hwid, mac, ip,
-		       IS_ENABLED(CONFIG_APP_MQTT_TLS) ? "true" : "false", caps);
+		       IS_ENABLED(CONFIG_APP_MQTT_TLS) ? "true" : "false", mgmt, caps);
 	if (len >= (int)sizeof(payload)) {
 		return -ENOMEM;
 	}
@@ -285,7 +296,8 @@ static int read_payload(const struct mqtt_publish_param *pub)
 static void handle_publish(const struct mqtt_publish_param *pub)
 {
 	const struct mqtt_utf8 *topic = &pub->message.topic.topic;
-	char reply[128];
+	/* MQTT thread only; leave room in tx_buffer for the topic and header. */
+	static char reply[CONFIG_APP_MQTT_BUFFER_SIZE - 192];
 	int len;
 	int ret;
 
@@ -344,7 +356,10 @@ static void handle_publish(const struct mqtt_publish_param *pub)
 			pub->message.payload.len, CONFIG_APP_MQTT_MAX_PAYLOAD_SIZE);
 		snprintk(reply, sizeof(reply), "{\"ok\":false,\"error\":\"payload too large\"}");
 	} else {
-		LOG_INF("Command: %s", (const char *)payload_buf);
+		/* Never log secrets (the log may be published on MQTT). */
+		LOG_INF("Command: %s", strstr((const char *)payload_buf, "password") != NULL
+					       ? "(redacted, contains a password)"
+					       : (const char *)payload_buf);
 		app_handle_command((char *)payload_buf, reply, sizeof(reply));
 	}
 
@@ -462,11 +477,11 @@ static int resolve_broker(void)
 	char addr_str[NET_IPV4_ADDR_LEN];
 	int ret;
 
-	snprintk(port, sizeof(port), "%d", CONFIG_APP_MQTT_BROKER_PORT);
+	snprintk(port, sizeof(port), "%u", cfg.broker_port);
 
-	ret = zsock_getaddrinfo(CONFIG_APP_MQTT_BROKER_HOSTNAME, port, &hints, &res);
+	ret = zsock_getaddrinfo(cfg.broker_host, port, &hints, &res);
 	if (ret != 0 || res == NULL) {
-		LOG_ERR("Cannot resolve %s: %d", CONFIG_APP_MQTT_BROKER_HOSTNAME, ret);
+		LOG_ERR("Cannot resolve %s: %d", cfg.broker_host, ret);
 		return -EHOSTUNREACH;
 	}
 
@@ -474,10 +489,10 @@ static int resolve_broker(void)
 	memcpy(&broker, res->ai_addr, MIN(res->ai_addrlen, sizeof(broker)));
 	zsock_freeaddrinfo(res);
 
-	LOG_INF("Broker %s -> %s:%d", CONFIG_APP_MQTT_BROKER_HOSTNAME,
+	LOG_INF("Broker %s -> %s:%u", cfg.broker_host,
 		net_addr_ntop(NET_AF_INET, &net_sin(net_sad(&broker))->sin_addr,
 			      addr_str, sizeof(addr_str)),
-		CONFIG_APP_MQTT_BROKER_PORT);
+		cfg.broker_port);
 
 	return 0;
 }
@@ -491,7 +506,7 @@ static void client_setup(void)
 	client.client_id.utf8 = (const uint8_t *)client_id;
 	client.client_id.size = strlen(client_id);
 	client.protocol_version = MQTT_VERSION_3_1_1;
-	client.keepalive = CONFIG_MQTT_KEEPALIVE;
+	client.keepalive = cfg.keepalive;
 	/* The application keeps no state across connections (it
 	 * re-subscribes and does not resend in-flight messages), so it
 	 * always asks for a clean session.
@@ -502,8 +517,17 @@ static void client_setup(void)
 	client.will_message = &will_message;
 	client.will_retain = 1U;
 
+	username.utf8 = (const uint8_t *)cfg.username;
+	username.size = strlen(cfg.username);
+	password.utf8 = (const uint8_t *)cfg.password;
+	password.size = strlen(cfg.password);
 	client.user_name = (username.size > 0U) ? &username : NULL;
 	client.password = (password.size > 0U) ? &password : NULL;
+	if (client.password != NULL && client.user_name == NULL) {
+		/* MQTT 3.1.1 [MQTT-3.1.2-22] */
+		LOG_WRN("Password configured without a user name: not sent");
+		client.password = NULL;
+	}
 
 	client.rx_buf = rx_buffer;
 	client.rx_buf_size = sizeof(rx_buffer);
@@ -522,9 +546,7 @@ static void client_setup(void)
 	tls->sec_tag_list = sec_tags;
 	tls->sec_tag_count = ARRAY_SIZE(sec_tags);
 	/* Used for SNI and for matching the broker certificate. */
-	tls->hostname = (sizeof(CONFIG_APP_MQTT_TLS_HOSTNAME) > 1)
-				? CONFIG_APP_MQTT_TLS_HOSTNAME
-				: CONFIG_APP_MQTT_BROKER_HOSTNAME;
+	tls->hostname = (cfg.tls_hostname[0] != '\0') ? cfg.tls_hostname : cfg.broker_host;
 	tls->cert_nocopy = ZSOCK_TLS_CERT_NOCOPY_NONE;
 #else
 	client.transport.type = MQTT_TRANSPORT_NON_SECURE;
@@ -654,7 +676,7 @@ static int check_liveness(int64_t now)
 	}
 
 	if (!s.ping_outstanding &&
-	    now - s.last_rx >= (int64_t)CONFIG_MQTT_KEEPALIVE * MSEC_PER_SEC) {
+	    now - s.last_rx >= (int64_t)cfg.keepalive * MSEC_PER_SEC) {
 		ret = mqtt_ping(&client);
 		if (ret < 0) {
 			LOG_ERR("PINGREQ failed: %d", ret);
@@ -665,18 +687,57 @@ static int check_liveness(int64_t now)
 	}
 
 	if (s.ping_outstanding && now - s.ping_sent_at >= PINGRESP_TIMEOUT_MS) {
-		LOG_ERR("No PINGRESP within %d ms, connection is dead",
-			(int)PINGRESP_TIMEOUT_MS);
+		LOG_ERR("No PINGRESP within %d ms, connection is dead", PINGRESP_TIMEOUT_MS);
 		return -ETIMEDOUT;
 	}
 
 	return 0;
 }
 
+/* Publish captured log lines, rate-limited by a token bucket
+ * (APP_LOG_MQTT_RATE lines per second, bursts up to APP_LOG_MQTT_BURST).
+ */
+static int publish_logs(int64_t now)
+{
+	static char payload[320];
+	struct app_log_line line;
+	uint32_t lost;
+	int ret;
+
+	if (now >= log_refill_at) {
+		log_tokens = MIN(log_tokens + CONFIG_APP_LOG_MQTT_RATE, CONFIG_APP_LOG_MQTT_BURST);
+		log_refill_at = now + MSEC_PER_SEC;
+	}
+
+	while (log_tokens > 0 && app_log_next(&log_cursor, &line, &lost)) {
+		ret = app_log_line_json(&line, lost, payload, sizeof(payload));
+		if (ret < 0) {
+			continue;
+		}
+		ret = publish(topic_log, payload, ret, MQTT_QOS_0_AT_MOST_ONCE, false);
+		if (ret < 0) {
+			/* Re-read this line in the next session. */
+			log_cursor--;
+			return ret;
+		}
+		log_tokens--;
+	}
+
+	return 0;
+}
+
+static int64_t publish_interval_ms(void)
+{
+	struct app_config now_cfg;
+
+	/* Applies immediately, unlike the connection settings. */
+	app_config_get(&now_cfg);
+
+	return (int64_t)now_cfg.publish_interval * MSEC_PER_SEC;
+}
+
 static int serve(void)
 {
-	const int64_t interval_ms =
-		(int64_t)CONFIG_APP_MQTT_PUBLISH_INTERVAL_SEC * MSEC_PER_SEC;
 	int64_t next_publish = k_uptime_get();
 	int ret;
 
@@ -694,19 +755,36 @@ static int serve(void)
 			return -ENETDOWN;
 		}
 
+		if (atomic_cas(&reconnect_requested, 1, 0)) {
+			LOG_INF("Reconnecting on request");
+			return -ECONNRESET;
+		}
+
 		if (now >= next_publish) {
+			int64_t interval_ms = publish_interval_ms();
+
 			ret = publish_telemetry();
 			if (ret < 0) {
 				LOG_ERR("Telemetry publish failed: %d", ret);
 				return ret;
 			}
 			next_publish += interval_ms;
+			if (next_publish > now + interval_ms) {
+				/* The interval was shortened: don't wait out the old one. */
+				next_publish = now + interval_ms;
+			}
 			if (next_publish <= now) {
 				/* Fell behind (e.g. a long TLS stall): skip
 				 * the missed slots instead of bursting.
 				 */
 				next_publish = now + interval_ms;
 			}
+		}
+
+		ret = publish_logs(now);
+		if (ret < 0) {
+			LOG_ERR("Log publish failed: %d", ret);
+			return ret;
 		}
 
 		ret = check_liveness(now);
@@ -747,14 +825,9 @@ int app_mqtt_init(void)
 		return ret;
 	}
 
-	/* The root may contain '/' (several levels) but no wildcards, and must
-	 * not start with '$' (reserved for broker topics). The client id is a
-	 * single topic level.
-	 */
-	if (!is_valid_topic_level(CONFIG_APP_MQTT_TOPIC_ROOT, "+#") ||
-	    CONFIG_APP_MQTT_TOPIC_ROOT[0] == '$' ||
-	    !is_valid_topic_level(client_id, "+#/")) {
-		LOG_ERR("Topic root or client ID contains '+', '#', '/' or a leading '$'");
+	/* The client id is also a topic level. */
+	if (!is_valid_topic_level(client_id, "+#/")) {
+		LOG_ERR("Client ID contains '+', '#' or '/'");
 		return -EINVAL;
 	}
 
@@ -763,13 +836,27 @@ int app_mqtt_init(void)
 			"accept 23", (unsigned int)strlen(client_id));
 	}
 
+	LOG_INF("Client ID: %s", client_id);
+
+#if defined(CONFIG_APP_MQTT_TLS) && !defined(CONFIG_APP_MQTT_TLS_PEER_VERIFY)
+	LOG_WRN("Broker certificate is NOT verified: the connection can be intercepted");
+#endif
+
+	return 0;
+}
+
+/* Topics depend on the (runtime) topic root, so they are rebuilt for each
+ * session. The root is validated when it is set (config.c).
+ */
+static int build_topics(void)
+{
 #define MAKE_TOPIC(buf, leaf)                                                   \
-	(snprintk(buf, sizeof(buf), "%s/%s/" leaf, CONFIG_APP_MQTT_TOPIC_ROOT,  \
-		  client_id) >= (int)sizeof(buf))
+	(snprintk(buf, sizeof(buf), "%s/%s/" leaf, cfg.topic_root, client_id) >= \
+	 (int)sizeof(buf))
 
 	if (MAKE_TOPIC(topic_status, "status") || MAKE_TOPIC(topic_info, "info") ||
-	    MAKE_TOPIC(topic_telemetry, "telemetry") ||
-	    MAKE_TOPIC(topic_cmd, "cmd") || MAKE_TOPIC(topic_event, "event")) {
+	    MAKE_TOPIC(topic_telemetry, "telemetry") || MAKE_TOPIC(topic_cmd, "cmd") ||
+	    MAKE_TOPIC(topic_event, "event") || MAKE_TOPIC(topic_log, "log")) {
 		LOG_ERR("Topic root too long");
 		return -ENAMETOOLONG;
 	}
@@ -779,15 +866,12 @@ int app_mqtt_init(void)
 	will_topic.topic.size = strlen(topic_status);
 	will_topic.qos = MQTT_QOS_1_AT_LEAST_ONCE;
 
-	LOG_INF("Client ID: %s", client_id);
-	LOG_INF("Topics: %s/%s/{status,info,telemetry,cmd,event}",
-		CONFIG_APP_MQTT_TOPIC_ROOT, client_id);
-
-#if defined(CONFIG_APP_MQTT_TLS) && !defined(CONFIG_APP_MQTT_TLS_PEER_VERIFY)
-	LOG_WRN("Broker certificate is NOT verified: the connection can be intercepted");
-#endif
-
 	return 0;
+}
+
+void app_mqtt_request_reconnect(void)
+{
+	atomic_set(&reconnect_requested, 1);
 }
 
 int app_mqtt_run_session(bool *was_connected)
@@ -797,6 +881,18 @@ int app_mqtt_run_session(bool *was_connected)
 	int ret;
 
 	*was_connected = false;
+
+	/* Counts down a trial of new connection settings, and rolls back to
+	 * the last known good once it is used up.
+	 */
+	(void)app_config_attempt();
+	app_config_get(&cfg);
+	atomic_clear(&reconnect_requested);
+
+	ret = build_topics();
+	if (ret < 0) {
+		return ret;
+	}
 
 	app_wdt_feed();
 	ret = resolve_broker();
@@ -811,9 +907,9 @@ int app_mqtt_run_session(bool *was_connected)
 	s.subscribe_failed = false;
 	s.ping_outstanding = false;
 
-	LOG_INF("Connecting to %s:%d (%s)", CONFIG_APP_MQTT_BROKER_HOSTNAME,
-		CONFIG_APP_MQTT_BROKER_PORT,
-		IS_ENABLED(CONFIG_APP_MQTT_TLS) ? "TLS" : "plain TCP");
+	LOG_INF("Connecting to %s:%u (%s), topics %s/%s/...", cfg.broker_host,
+		cfg.broker_port, IS_ENABLED(CONFIG_APP_MQTT_TLS) ? "TLS" : "plain TCP",
+		cfg.topic_root, client_id);
 
 	/* Blocks for the TCP connect (CONFIG_NET_SOCKETS_CONNECT_TIMEOUT) and
 	 * then the full TLS handshake (CONFIG_NET_SOCKETS_TLS_CONNECT_TIMEOUT),
@@ -869,6 +965,10 @@ int app_mqtt_run_session(bool *was_connected)
 		LOG_ERR("Failed to publish status: %d", ret);
 		goto out;
 	}
+
+	/* Online: this configuration works, and so does this image. */
+	app_config_online();
+	app_mgmt_online();
 
 	ret = serve();
 

@@ -118,7 +118,19 @@ the harness session reads this file on your branch.
 
 The client ID also changed since the hub design was written: it is now `z` + base32(UID), 20 characters for a 96-bit UID, where it used to be `zephyr-<hex>`. `hwid` in `info` is the UID in hex, derived the same way as B3 asks for the BACnet firmware.
 
-### MQTT session status for M4-M7 (planned; FW-06 announcement)
+### MQTT session status for M4-M7
+
+**M4, M5, M6: done** (fw 0.3.0 -> commit after 9bb255e). M7: deferred (user decision), with HIL FW-12.
+
+| # | Status | Details |
+|---|---|---|
+| M4 | **done** | SMP on UDP 1337 in every build (OS group incl. MCUmgr params, settings group). The MCUboot variant is `west build --sysbuild ... -- -DFILE_SUFFIX=mcuboot` (image group, dev-signed): F767 app 279 KB in a 768 KB slot, MCXN947 290 KB in 984 KB. A test image confirms itself on `online`, otherwise it reboots after 600 s and MCUboot reverts. `info` adds `"mgmt":{"smp":"udp:1337"},"boot":"none"\|"mcuboot"`. Image upload is build-verified only (no hardware yet). |
+| M5 | **done** | Keys and semantics as announced below. MQTT commands: `config_get [key]`, `config_set key=value` (reply `"applies":"now"\|"next_connect"`), `config_reset`, **plus `reconnect`** to apply next-connect changes immediately. SMP: settings read/write/save on `mqtt/<key>`; factory reset = write `mqtt/factory_reset`. Fallback: new connection settings get `APP_CONFIG_FALLBACK_ATTEMPTS` (5) attempts, then roll back to the LKG (or the Kconfig defaults). `caps.cmds` adds `"config","reconnect"`, and `caps.config` lists the keys. Values containing `"` or `\` are rejected. |
+| M6 | **done** | `<root>/<id>/log`: `{"t":<uptime ms>,"lvl":"wrn","src":"<module>","msg":"..."}` (+ `"lost":N` after ring overflow), QoS 0, 5/s with bursts of 20, and the ring (32 lines) keeps boot messages. `logs [n]` (n <= 50) replies `{"ok":true,"logs":[...]}` on `event`. `log_level` is a runtime setting. Command payloads containing a password are redacted in the log. `caps.cmds` adds `"logs"`. |
+
+The e2e suite (`apps/mqtt_tls/scripts/e2e_native_sim.sh`) now covers M4 (SMP echo/settings/factory reset), M5 and M6 on native_sim. It passes (9 min).
+
+#### FW-06 announcement (made before the code landed)
 
 The user approved **M4, M5 and M6 now, M7 later**. Per HIL FW-06, these are the interface and layout changes *before* the code lands:
 
@@ -127,6 +139,7 @@ The user approved **M4, M5 and M6 now, M7 later**. Per HIL FW-06, these are the 
 | M4 build variants | The plain `west build` stays the release artifact (unchanged behaviour, no bootloader). The MCUboot variant is `west build --sysbuild -b <board> apps/mqtt_tls -- -DFILE_SUFFIX=mcuboot`. It reuses the BACnet sysbuild settings: F767 swap-using-scratch, MCXN947 swap-using-offset, ECDSA-P256, dev key only. `sysbuild.conf`, `Kconfig.sysbuild`, `sysbuild/mcuboot.conf`, `sysbuild/mqtt_tls.conf`. |
 | M4 partitions | Board MCUboot partitions are used unchanged (F767: boot 0-64K, slot0 @0x40000 768K, slot1 @0x100000 768K, scratch @0x1C0000 256K; MCXN947: boot 0-80K, slot0/1 984K each). |
 | **New UDP listener** | **SMP (MCUmgr) on UDP 1337** in *all* builds. OS group (echo, reset, info) and settings group (M5) everywhere; the image group only in the MCUboot variant. Unauthenticated, same as the BACnet firmware, so keep it on the management VLAN. Kconfig `APP_SMP` (default y) turns it off. |
+| native_sim | MCUmgr's UDP transport selects the connection manager, so native_sim now sets `APP_WAIT_FOR_NETWORK=n` and (BACnet pitfall 5) `MCUMGR_TRANSPORT_NETBUF_USER_DATA_SIZE=112`. |
 | M4 confirm | A test image confirms itself once it reaches retained `online`. If it doesn't within `APP_MCUBOOT_CONFIRM_TIMEOUT_SEC` (default 600 s), it reboots and MCUboot reverts it. |
 | **M5 settings storage** (partition change) | ZMS backend, chosen `zephyr,settings-partition`. **nucleo_f767zi plain:** new `settings_partition` @0x180000 512K (sectors 10-11), and the plain overlay deletes slot1/scratch (unused without MCUboot). The plain image at 0x0 overlaps the board's `storage_partition`, so that one can't be used. **nucleo_f767zi MCUboot:** `storage_partition` @0x10000 64K. **frdm_mcxn947:** `settings_partition` = first 64K of the external W25Q64 (replaces the board's 8 MB `storage_partition` node, which the MQTT app doesn't otherwise use), in both variants. native_sim: the board's `storage_partition`. |
 | M5 `APP_MQTT_*` symbols | **No existing symbol is renamed or changes meaning.** Kconfig values are the defaults. A stored setting overrides one only after it was written explicitly (MQTT `config_set` or SMP settings write+save). `config_reset` (MQTT) or writing `mqtt/factory_reset` over SMP deletes everything and returns to the Kconfig values. New symbols: `APP_SMP`, `APP_CONFIG_FALLBACK_ATTEMPTS`, `APP_MCUBOOT_CONFIRM_TIMEOUT_SEC`, `APP_LOG_MQTT*`. |

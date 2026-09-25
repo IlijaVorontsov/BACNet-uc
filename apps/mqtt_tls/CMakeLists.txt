@@ -11,6 +11,9 @@ target_sources(app PRIVATE
   src/mqtt_app.c
   src/device_id.c
   src/commands.c
+  src/config.c
+  src/log_mqtt.c
+  src/mgmt.c
 )
 target_sources_ifdef(CONFIG_APP_WATCHDOG app PRIVATE src/watchdog.c)
 

@@ -4,3 +4,26 @@
 &spi1 {
 	status = "disabled";
 };
+
+/* Runtime settings (plain build, no MCUboot): the image is linked at the
+ * start of the flash and covers the board's storage_partition, so settings go
+ * to the last two 256 KiB sectors instead. slot1/scratch are only used with
+ * MCUboot (the MCUboot variant uses boards/nucleo_f767zi_mcuboot.overlay).
+ */
+/delete-node/ &slot1_partition;
+/delete-node/ &scratch_partition;
+
+&flash0 {
+	partitions {
+		settings_partition: partition@180000 {
+			label = "settings";
+			reg = <0x00180000 DT_SIZE_K(512)>;
+		};
+	};
+};
+
+/ {
+	chosen {
+		zephyr,settings-partition = &settings_partition;
+	};
+};

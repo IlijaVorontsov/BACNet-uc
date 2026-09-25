@@ -101,8 +101,8 @@ config APP_MQTT_RECONNECT_MAX_MS
 
 config APP_MQTT_BUFFER_SIZE
 	int "MQTT RX and TX buffer size (bytes)"
-	default 1024
-	range 256 65535
+	default 2048
+	range 1024 65535
 	help
 	  Upper bound for one outgoing MQTT packet and for the fixed and
 	  variable header of an incoming one. Incoming payloads are read
@@ -205,6 +205,86 @@ config APP_WATCHDOG_TIMEOUT_SEC
 	depends on APP_WATCHDOG
 	default 120
 	range 60 3600
+
+config APP_CONFIG_FALLBACK_ATTEMPTS
+	int "Connection attempts before new settings fall back"
+	default 5
+	range 1 100
+	help
+	  After a change of the broker, credentials, TLS host name, topic root
+	  or keep-alive (MQTT config_set or SMP settings), the new configuration
+	  is on trial. If it does not reach "online" within this many
+	  connection attempts, the stored settings roll back to the last known
+	  good configuration (or to the Kconfig defaults if none has worked
+	  yet). The counter survives reboots.
+
+config APP_LOG_MQTT_LEVEL
+	int "Default level of the MQTT log topic (1=err 2=wrn 3=inf 4=dbg)"
+	default 2
+	range 1 4
+	help
+	  Log lines at or above this level are captured in RAM and published
+	  on <root>/<id>/log. Changeable at run time (mqtt/log_level).
+
+config APP_LOG_MQTT_RING_SIZE
+	int "Log lines kept in RAM"
+	default 32
+	range 4 256
+
+config APP_LOG_MQTT_RATE
+	int "Log lines published per second (sustained)"
+	default 5
+	range 1 100
+
+config APP_LOG_MQTT_BURST
+	int "Log lines published in a burst"
+	default 20
+	range 1 256
+
+config APP_SMP
+	bool "Remote management over SMP (MCUmgr) on UDP"
+	default y
+	depends on NET_UDP && NET_SOCKETS
+	imply NET_BUF
+	imply ZCBOR
+	imply MCUMGR
+	imply MCUMGR_TRANSPORT_UDP
+	imply MCUMGR_TRANSPORT_UDP_IPV4
+	imply MCUMGR_GRP_OS
+	imply MCUMGR_GRP_OS_INFO
+	imply MCUMGR_GRP_OS_MCUMGR_PARAMS
+	imply MCUMGR_GRP_SETTINGS
+	help
+	  SMP server on UDP port 1337 (CONFIG_MCUMGR_TRANSPORT_UDP_PORT), as
+	  in the BACnet firmware: OS group (echo, reset, info), settings group
+	  (runtime configuration, subtree mqtt/) and, in the MCUboot variant,
+	  the image group for firmware updates. SMP over UDP is not
+	  authenticated: keep it on the management network.
+
+if APP_SMP && MCUMGR
+
+configdefault MCUMGR_TRANSPORT_UDP_MTU
+	default 1024
+
+configdefault MCUMGR_TRANSPORT_NETBUF_SIZE
+	default 1152
+
+configdefault MCUMGR_TRANSPORT_WORKQUEUE_STACK_SIZE
+	default 3072
+
+configdefault MCUMGR_GRP_SETTINGS_NAME_LEN
+	default 32
+
+configdefault MCUMGR_GRP_SETTINGS_VALUE_LEN
+	default 64
+
+endif
+
+config APP_MCUBOOT_CONFIRM_TIMEOUT_SEC
+	int "Seconds a test image has to reach online before it is reverted"
+	depends on BOOTLOADER_MCUBOOT
+	default 600
+	range 60 86400
 
 config APP_DHCPV4
 	bool "Start DHCPv4 on the default interface"

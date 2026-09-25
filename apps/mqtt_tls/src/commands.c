@@ -3,8 +3,11 @@
  *
  * Commands received on <root>/<id>/cmd, in either form:
  *
- *   plain text   "ping" | "led on|off|toggle" | "identify [seconds]"
+ *   plain text   "<cmd>[ <arg>]", e.g. "identify 30", "config_set keepalive=30"
  *   JSON         {"id":"<=16 chars","cmd":"led","arg":"on"}
+ *
+ * Commands: ping, led on|off|toggle, identify [s], config_get [key],
+ * config_set key=value, config_reset, reconnect, logs [n].
  *
  * Replies go to <root>/<id>/event as JSON: {"ok":true,...} or
  * {"ok":false,"error":"..."}; a JSON request's "id" is echoed so a client
@@ -119,13 +122,100 @@ static int identify(uint32_t seconds)
 	return 0;
 }
 
+#define LOGS_DEFAULT 10
+#define LOGS_MAX 50
+
 struct result {
 	bool ok;
 	const char *error;
-	char detail[48]; /* extra JSON members, without braces */
+	char *detail;      /* extra JSON members, without braces */
+	size_t detail_len;
 };
 
-static void execute(const char *cmd, const char *arg, struct result *r)
+static const char *config_error(int err)
+{
+	switch (err) {
+	case -ENOENT:
+		return "unknown key";
+	case -EINVAL:
+		return "bad value";
+	case -ENAMETOOLONG:
+		return "value too long";
+	default:
+		return "storage error";
+	}
+}
+
+static void execute_config(const char *cmd, char *arg, struct result *r)
+{
+	int ret;
+
+	if (strcmp(cmd, "config_get") == 0) {
+		if (arg == NULL) {
+			int n = snprintk(r->detail, r->detail_len, "\"config\":");
+
+			ret = app_config_json(&r->detail[n], r->detail_len - n);
+			if (ret < 0) {
+				r->error = "reply too long";
+				return;
+			}
+		} else {
+			char value[APP_CFG_STR_LEN];
+
+			ret = app_config_get_value(arg, value, sizeof(value));
+			if (ret < 0) {
+				r->error = config_error(ret);
+				return;
+			}
+			snprintk(r->detail, r->detail_len, "\"key\":\"%s\",\"value\":\"%s\"",
+				 arg, value);
+		}
+		r->ok = true;
+		return;
+	}
+
+	if (strcmp(cmd, "config_set") == 0) {
+		char *value = (arg != NULL) ? strchr(arg, '=') : NULL;
+		bool next_connect;
+
+		if (value == NULL) {
+			r->error = "bad argument";
+			return;
+		}
+		*value++ = '\0';
+		ret = app_config_set(arg, value, &next_connect);
+		if (ret < 0) {
+			r->error = config_error(ret);
+			return;
+		}
+		if (strcmp(arg, "log_level") == 0) {
+			struct app_config c;
+
+			app_config_get(&c);
+			app_log_set_level(c.log_level);
+		}
+		r->ok = true;
+		snprintk(r->detail, r->detail_len, "\"key\":\"%s\",\"applies\":\"%s\"", arg,
+			 next_connect ? "next_connect" : "now");
+		return;
+	}
+
+	if (strcmp(cmd, "config_reset") == 0 && arg == NULL) {
+		struct app_config c;
+
+		(void)app_config_reset();
+		app_config_get(&c);
+		app_log_set_level(c.log_level);
+		r->ok = true;
+		snprintk(r->detail, r->detail_len,
+			 "\"config\":\"defaults\",\"applies\":\"next_connect\"");
+		return;
+	}
+
+	r->error = "unknown command";
+}
+
+static void execute(const char *cmd, char *arg, struct result *r)
 {
 	int ret;
 
@@ -133,9 +223,43 @@ static void execute(const char *cmd, const char *arg, struct result *r)
 	r->error = NULL;
 	r->detail[0] = '\0';
 
+	if (strncmp(cmd, "config_", 7) == 0) {
+		execute_config(cmd, arg, r);
+		return;
+	}
+
+	if (strcmp(cmd, "reconnect") == 0 && arg == NULL) {
+		/* The reply goes out first; the session ends afterwards. */
+		app_mqtt_request_reconnect();
+		r->ok = true;
+		snprintk(r->detail, r->detail_len, "\"reconnect\":true");
+		return;
+	}
+
+	if (strcmp(cmd, "logs") == 0) {
+		unsigned long n = LOGS_DEFAULT;
+
+		if (arg != NULL) {
+			char *end;
+
+			n = strtoul(arg, &end, 10);
+			if (*arg == '\0' || *end != '\0' || n == 0 || n > LOGS_MAX) {
+				r->error = "bad argument";
+				return;
+			}
+		}
+		ret = app_log_last_json(n, r->detail, r->detail_len);
+		if (ret < 0) {
+			r->error = "reply too long";
+			return;
+		}
+		r->ok = true;
+		return;
+	}
+
 	if (strcmp(cmd, "ping") == 0 && arg == NULL) {
 		r->ok = true;
-		snprintk(r->detail, sizeof(r->detail), "\"pong\":%u", k_uptime_seconds());
+		snprintk(r->detail, r->detail_len, "\"pong\":%u", k_uptime_seconds());
 		return;
 	}
 
@@ -158,7 +282,7 @@ static void execute(const char *cmd, const char *arg, struct result *r)
 			return;
 		}
 		r->ok = true;
-		snprintk(r->detail, sizeof(r->detail), "\"led\":%s", on ? "true" : "false");
+		snprintk(r->detail, r->detail_len, "\"led\":%s", on ? "true" : "false");
 		return;
 	}
 
@@ -180,7 +304,7 @@ static void execute(const char *cmd, const char *arg, struct result *r)
 			return;
 		}
 		r->ok = true;
-		snprintk(r->detail, sizeof(r->detail), "\"identify\":%lu", seconds);
+		snprintk(r->detail, r->detail_len, "\"identify\":%lu", seconds);
 		return;
 	}
 
@@ -241,7 +365,9 @@ static void format_reply(char *reply, size_t reply_len, const char *id,
 
 void app_handle_command(char *payload, char *reply, size_t reply_len)
 {
-	struct result r;
+	/* Commands run on the MQTT thread only, one at a time. */
+	static char detail[CONFIG_APP_MQTT_BUFFER_SIZE - 256];
+	struct result r = { .detail = detail, .detail_len = sizeof(detail) };
 
 	if (payload[0] == '{') {
 		struct json_request req = { 0 };
@@ -256,6 +382,7 @@ void app_handle_command(char *payload, char *reply, size_t reply_len)
 			id = req.id;
 		}
 		r.ok = false;
+		detail[0] = '\0';
 		if (fields < 0) {
 			r.error = "invalid json";
 		} else if ((fields & BIT(0)) && id == NULL) {
@@ -263,7 +390,7 @@ void app_handle_command(char *payload, char *reply, size_t reply_len)
 		} else if (!(fields & BIT(1))) {
 			r.error = "missing cmd";
 		} else {
-			execute(req.cmd, (fields & BIT(2)) ? req.arg : NULL, &r);
+			execute(req.cmd, (fields & BIT(2)) ? (char *)req.arg : NULL, &r);
 		}
 		format_reply(reply, reply_len, id, &r);
 		return;
@@ -281,9 +408,14 @@ void app_handle_command(char *payload, char *reply, size_t reply_len)
 
 void app_commands_caps(char *buf, size_t len)
 {
+	char keys[192];
+
+	app_config_key_list(keys, sizeof(keys));
+
 	/* Commands the harness can offer; LED commands only with an LED. */
 	snprintk(buf, len,
-		 "{\"cmds\":[\"ping\"%s],"
+		 "{\"cmds\":[\"ping\"%s,\"config\",\"reconnect\",\"logs\"],"
+		 "\"config\":[%s],"
 		 "\"telemetry\":{\"seq\":\"count\",\"uptime_s\":\"s\",\"sessions\":\"count\"}}",
-		 led_ready ? ",\"led\",\"identify\"" : "");
+		 led_ready ? ",\"led\",\"identify\"" : "", keys);
 }

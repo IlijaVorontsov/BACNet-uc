@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Sysbuild Kconfig (west build --sysbuild only). Same as the BACnet firmware:
+# on NUCLEO-F767ZI the image slots consist of three 256 KiB sectors. In the
+# default swap-using-offset mode the secondary slot must hold one extra
+# sector; swap using the board's scratch partition keeps the full 768 KiB.
+
+choice MCUBOOT_MODE
+	default MCUBOOT_MODE_SWAP_SCRATCH if BOARD_NUCLEO_F767ZI
+endchoice
+
+source "share/sysbuild/Kconfig"
