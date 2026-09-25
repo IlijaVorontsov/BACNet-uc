@@ -1,0 +1,236 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bacnet-uc.local/schemas/site.schema.json",
+  "title": "uc-hub site manifest (site.yaml)",
+  "description": "Desired state of one building: spaces, device placement, the BACnet-uc System document (embedded unchanged), third-party BACnet/IP and MQTT devices the hub maps but does not configure, gateway bridges, semantic tags, safety classes and the agent policy. Rules the schema cannot express (unique device names, references between sections) are checked by uc_hub.manifest.validate.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "metadata"],
+  "properties": {
+    "apiVersion": {"const": "bacnet-uc/v1"},
+    "kind": {"const": "Site"},
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {"$ref": "#/$defs/siteName"},
+        "description": {"type": "string", "maxLength": 200}
+      }
+    },
+    "spaces": {
+      "type": "array",
+      "maxItems": 2000,
+      "items": {"$ref": "#/$defs/space"}
+    },
+    "placement": {
+      "description": "Device name -> space id, for devices of any protocol.",
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/deviceName"},
+      "additionalProperties": {"$ref": "#/$defs/spaceId"}
+    },
+    "system": {"$ref": "system.schema.json"},
+    "external_devices": {
+      "type": "array",
+      "maxItems": 2000,
+      "items": {"$ref": "#/$defs/externalDevice"}
+    },
+    "bridges": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {"$ref": "#/$defs/bridge"}
+    },
+    "tags": {
+      "description": "Point id (site-relative device/object or site/device/object) -> semantic tags.",
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/pointId"},
+      "additionalProperties": {
+        "type": "array",
+        "maxItems": 32,
+        "uniqueItems": true,
+        "items": {"$ref": "#/$defs/tag"}
+      }
+    },
+    "safety": {
+      "description": "Point id -> safety class. Life-safety points are never writable by the agent.",
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/pointId"},
+      "additionalProperties": {"enum": ["critical", "life-safety"]}
+    },
+    "policy": {"$ref": "#/$defs/policy"}
+  },
+  "$defs": {
+    "siteName": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+    },
+    "spaceId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,30}$"
+    },
+    "deviceName": {
+      "description": "Same pattern as system.nodes[].name, so every device name is also a valid point id segment.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,30}$"
+    },
+    "pointId": {
+      "description": "'<device>/<object>' or '<site>/<device>/<object>'; BACnet objects are '<type-name>:<instance>', MQTT points their configured id.",
+      "type": "string",
+      "pattern": "^([a-z0-9][a-z0-9-]{0,62}/)?[a-z0-9][a-z0-9-]{0,30}/[A-Za-z0-9_.:-]{1,64}$"
+    },
+    "objectRef": {
+      "type": "string",
+      "pattern": "^[a-z][a-z-]*:[0-9]+$"
+    },
+    "tag": {
+      "description": "Brick class (Zone_Air_Temperature_Sensor) or a marker such as space:r204.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_:./-]{0,63}$"
+    },
+    "space": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name"],
+      "properties": {
+        "id": {"$ref": "#/$defs/spaceId"},
+        "name": {"type": "string", "minLength": 1, "maxLength": 80},
+        "parent": {"$ref": "#/$defs/spaceId"}
+      }
+    },
+    "externalDevice": {
+      "type": "object",
+      "required": ["name", "protocol"],
+      "properties": {
+        "name": {"$ref": "#/$defs/deviceName"},
+        "protocol": {"enum": ["bacnet-ip", "mqtt"]},
+        "description": {"type": "string", "maxLength": 200},
+        "equipment": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"}
+      },
+      "allOf": [
+        {
+          "if": {"required": ["protocol"], "properties": {"protocol": {"const": "bacnet-ip"}}},
+          "then": {"$ref": "#/$defs/bacnetIpDevice"}
+        },
+        {
+          "if": {"required": ["protocol"], "properties": {"protocol": {"const": "mqtt"}}},
+          "then": {"$ref": "#/$defs/mqttDevice"}
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "bacnetIpDevice": {
+      "required": ["address"],
+      "properties": {
+        "address": {
+          "description": "host or host:port (default port 47808).",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9.-]{0,252}(:[0-9]{1,5})?$"
+        },
+        "device_instance": {"type": "integer", "minimum": 0, "maximum": 4194302},
+        "points": {
+          "description": "Optional allow-list; default = every object in the device's object-list (max 256).",
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["obj"],
+            "properties": {
+              "obj": {"$ref": "#/$defs/objectRef"},
+              "name": {"type": "string", "maxLength": 80},
+              "units": {"type": "string", "maxLength": 47},
+              "description": {"type": "string", "maxLength": 200}
+            }
+          }
+        }
+      }
+    },
+    "mqttDevice": {
+      "properties": {
+        "profile": {"enum": ["mqtt_tls", "generic-json"], "default": "mqtt_tls"}
+      },
+      "if": {"required": ["profile"], "properties": {"profile": {"const": "generic-json"}}},
+      "then": {"$ref": "#/$defs/genericJsonDevice"},
+      "else": {"$ref": "#/$defs/mqttTlsDevice"}
+    },
+    "mqttTlsDevice": {
+      "description": "This repository's apps/mqtt_tls: topics <topic_root>/<client_id>/{status,info,telemetry,cmd,event}.",
+      "required": ["client_id"],
+      "properties": {
+        "client_id": {"type": "string", "pattern": "^[^/#+\\s]{1,64}$"},
+        "topic_root": {
+          "type": "string",
+          "pattern": "^[^/#+\\s]([^#+\\s]{0,126}[^/#+\\s])?$",
+          "default": "bacnet-uc"
+        }
+      }
+    },
+    "genericJsonDevice": {
+      "required": ["topic", "points"],
+      "properties": {
+        "topic": {"description": "Topic filter; + and # wildcards are allowed.", "type": "string", "minLength": 1, "maxLength": 256},
+        "command_topic": {"type": "string", "pattern": "^[^#+]{1,256}$"},
+        "points": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id"],
+            "properties": {
+              "id": {"type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,64}$"},
+              "path": {"description": "JSONPath into the payload, default $['<id>'].", "type": "string", "minLength": 1},
+              "name": {"type": "string", "maxLength": 80},
+              "units": {"type": "string", "maxLength": 47},
+              "datatype": {"enum": ["real", "int", "bool", "enum", "string"], "default": "real"},
+              "kind": {"enum": ["input", "output", "value"]},
+              "writable": {"type": "boolean", "default": false},
+              "command_topic": {"type": "string", "pattern": "^[^#+]{1,256}$"},
+              "description": {"type": "string", "maxLength": 200},
+              "tags": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/tag"}}
+            }
+          }
+        }
+      }
+    },
+    "bridge": {
+      "description": "Cross-protocol copy run by the gateway. The destination must be a BACnet object on a bacnet-uc or bacnet-ip device.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to"],
+      "properties": {
+        "from": {"$ref": "#/$defs/pointId"},
+        "to": {"$ref": "#/$defs/pointId"},
+        "max_age_s": {
+          "description": "The destination is relinquished when the source value is older than this.",
+          "type": "integer", "minimum": 1, "maximum": 86400, "default": 300
+        },
+        "scale": {"type": "number", "default": 1.0},
+        "offset": {"type": "number", "default": 0.0},
+        "priority": {
+          "description": "Write priority for commandable destinations; default policy.agent_write_priority. Never 1..8 (manual operator and above).",
+          "type": "integer", "minimum": 9, "maximum": 16
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agent_write_priority": {"type": "integer", "minimum": 9, "maximum": 16, "default": 12},
+        "default_lease_s": {"type": "integer", "minimum": 1, "maximum": 86400, "default": 300},
+        "max_lease_s": {"type": "integer", "minimum": 1, "maximum": 604800, "default": 3600},
+        "deny": {
+          "description": "fnmatch patterns over point ids (site-relative or full); matching points are read-only for the agent.",
+          "type": "array",
+          "maxItems": 500,
+          "items": {"type": "string", "minLength": 1, "maxLength": 200}
+        },
+        "max_writes_per_minute": {"type": "integer", "minimum": 1, "maximum": 10000, "default": 30},
+        "max_devices_per_stage": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 5},
+        "approval_ttl_s": {"type": "integer", "minimum": 60, "maximum": 604800, "default": 1800}
+      }
+    }
+  }
+}

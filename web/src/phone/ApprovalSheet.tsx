@@ -26,9 +26,11 @@ export function ApprovalSheet({ approval, onDecided }: { approval: Approval; onD
   const pending = local.state === "pending";
   const verb = local.tool === "apply" ? "apply" : "approve";
 
-  const run = async (decision: "approve" | "reject"): Promise<void> => {
+  /** Resolves to false when the request failed, so the hold can be repeated. */
+  const run = async (decision: "approve" | "reject"): Promise<boolean> => {
     const res = await decide(decision);
     if (res) onDecided(res);
+    return res !== null;
   };
 
   return (
@@ -63,7 +65,7 @@ export function ApprovalSheet({ approval, onDecided }: { approval: Approval; onD
               label={`Hold to ${verb}`}
               doneLabel={verb === "apply" ? "Applying…" : "Approving…"}
               disabled={!allowed || busy}
-              onConfirm={() => void run("approve")}
+              onConfirm={() => run("approve")}
             />
           ) : (
             <button type="button" className="btn primary big" disabled={!allowed || busy} onClick={() => void run("approve")}>

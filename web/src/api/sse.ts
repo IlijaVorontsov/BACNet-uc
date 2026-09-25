@@ -26,14 +26,18 @@ export class SseParser {
   private data = "";
   private hasData = false;
   private eventType = "";
+  /** The `id:` of the event being read; it only counts once that event is complete. */
+  private idBuffer: string;
   private lastId: string;
   /** Reconnection delay requested by the server with `retry:`, in ms. */
   retry: number | null = null;
 
   constructor(lastEventId = "") {
+    this.idBuffer = lastEventId;
     this.lastId = lastEventId;
   }
 
+  /** Id of the last complete event, i.e. the point to resume after. */
   get lastEventId(): string {
     return this.lastId;
   }
@@ -70,6 +74,7 @@ export class SseParser {
 
   private processLine(line: string, out: SseMessage[]): void {
     if (line === "") {
+      this.lastId = this.idBuffer;
       if (this.hasData) {
         out.push({ id: this.lastId, event: this.eventType || "message", data: this.data });
       }
@@ -99,7 +104,7 @@ export class SseParser {
         this.hasData = true;
         break;
       case "id":
-        if (!value.includes("\u0000")) this.lastId = value;
+        if (!value.includes("\u0000")) this.idBuffer = value;
         break;
       case "retry":
         if (/^[0-9]+$/.test(value)) this.retry = Number(value);

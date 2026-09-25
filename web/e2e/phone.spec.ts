@@ -70,3 +70,10 @@ test("site tab shows rooms with live temperatures", async ({ page }) => {
   await room.click();
   await expect(page.locator(".roomdetail")).toContainText("R205 Reheat valve");
 });
+
+test("starts on a site network where the font server never answers", async ({ page }) => {
+  // Registered after the fixture's abort route, so it wins: font requests hang.
+  await page.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, () => undefined);
+  await page.goto(MOCK_URL, { waitUntil: "commit" });
+  await expect(page.getByRole("tablist", { name: "Sections" })).toBeVisible();
+});

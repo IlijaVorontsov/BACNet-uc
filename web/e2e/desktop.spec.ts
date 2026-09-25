@@ -85,4 +85,26 @@ test.describe("PWA", () => {
     expect(cached).toEqual(expect.arrayContaining(["/", "/index.html", "/icon.svg"]));
     expect(cached.some((p) => p.startsWith("/api"))).toBe(false);
   });
+
+  // Offline starts need every script and stylesheet of the page in the cache
+  // after the first visit, although they load before the worker takes over.
+  // (Playwright cannot cut the worker's own network, so an offline reload
+  // would not prove it.)
+  test("caches the page's scripts and styles on the first visit", async ({ page }) => {
+    await page.goto(MOCK_URL);
+    const { loaded, cached } = await page.evaluate(async () => {
+      await navigator.serviceWorker.ready;
+      const refs = document.querySelectorAll<HTMLScriptElement | HTMLLinkElement>(
+        'script[src], link[rel="stylesheet"][href], link[rel="modulepreload"][href]',
+      );
+      const urls = [...refs].map((el) => new URL(el instanceof HTMLScriptElement ? el.src : el.href));
+      const cache = await caches.open("uc-hub-shell-v1");
+      return {
+        loaded: urls.filter((u) => u.origin === location.origin).map((u) => u.pathname),
+        cached: (await cache.keys()).map((r) => new URL(r.url).pathname),
+      };
+    });
+    expect(loaded.length).toBeGreaterThanOrEqual(2);
+    expect(cached).toEqual(expect.arrayContaining(loaded));
+  });
 });

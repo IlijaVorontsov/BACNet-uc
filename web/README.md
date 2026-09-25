@@ -106,9 +106,13 @@ public/sw.js          service worker (production builds only)
   nothing.
 - **Layouts**: at 1024 px and wider the three panes; below that the phone
   layout (portrait tablets get it too, in a centred column).
-- **PWA**: `public/sw.js` caches the app shell (network first for pages,
-  cache first for hashed assets) and never touches `/api`, so live values,
-  runs and approvals always come from the gateway.
+- **PWA**: `public/sw.js` caches the app shell when it installs (index.html
+  and the scripts and styles it loads, so the app starts offline after the
+  first visit), serves pages network first and hashed assets cache first, and
+  never touches `/api`, so live values, runs and approvals always come from
+  the gateway.
+- **Fonts**: the Google Fonts stylesheet does not block rendering; on a site
+  network without internet the app starts at once with the fallback fonts.
 - **Scanner**: the Field tab scans QR labels with `BarcodeDetector` where the
   browser has it (Chrome on Android, macOS and ChromeOS); elsewhere, or when
   the camera is refused, it asks for the device id. A label may hold the device name, its

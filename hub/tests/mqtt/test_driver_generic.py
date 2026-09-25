@@ -163,3 +163,31 @@ async def test_generic_stale_and_broker_loss(
     await eventually(lambda: rec.is_online("r204-co2"), what="online after the next message")
     (co2,) = await driver.read([ref("co2")])
     assert co2.quality is Quality.GOOD
+
+
+async def test_device_added_on_a_shared_topic_gets_the_retained_value(
+    broker: Broker, make_driver: DriverFactory,
+) -> None:
+    """One retained topic mapped to two devices; the second is added while the
+    driver runs, when the topic is already subscribed."""
+
+    def spec(path: str) -> dict[str, Any]:
+        return {"profile": "generic-json", "topic": "multi/state",
+                "points": [{"id": "v", "path": path}]}
+
+    async with aiomqtt.Client(broker.host, broker.port, identifier="multi") as client:
+        await client.publish("multi/state", b'{"a": 1, "b": 2}', qos=1, retain=True)
+    driver, rec = await make_driver(broker.settings(), [(record("dev-a"), spec("$.a"))])
+    await eventually(lambda: rec.last("hq/dev-a/v"), what="retained value of dev-a")
+    await driver.add_device(record("dev-b"), spec("$.b"))
+    await eventually(lambda: rec.last("hq/dev-b/v"), what="retained value of dev-b")
+    b, a = await driver.read([ref("v", "dev-b"), ref("v", "dev-a")])
+    assert (b.value, b.quality, a.value) == (2.0, Quality.GOOD, 1.0)
+    # Removing one of the two keeps the topic subscribed for the other.
+    await driver.remove_device("dev-b")
+    count = len(rec.readings)
+    async with aiomqtt.Client(broker.host, broker.port, identifier="multi") as client:
+        await client.publish("multi/state", b'{"a": 5, "b": 6}', qos=1)
+    await eventually(lambda: (r := rec.last("hq/dev-a/v")) is not None and r.value == 5.0,
+                     what="dev-a still updated")
+    assert all(r.ref.device == "dev-a" for r in rec.readings[count:])

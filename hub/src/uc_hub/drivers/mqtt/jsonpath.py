@@ -4,8 +4,9 @@ one value out of an MQTT payload.
 A path is ``$`` followed by any number of segments: ``.key``, ``['key']`` or
 ``["key"]`` (a backslash escapes the next character) and ``[n]`` (a list
 index; negative ``n`` counts from the end). There are no wildcards, filters or
-slices, because a point maps to exactly one value. A path without the leading
-``$`` is taken relative to the root, so ``ppm`` means ``$.ppm``.
+slices, because a point maps to exactly one value; ``.*`` is an error, not a
+key named ``*``. A path without the leading ``$`` is taken relative to the
+root, so ``ppm`` means ``$.ppm``.
 """
 
 from __future__ import annotations
@@ -82,7 +83,12 @@ def _parse(text: str) -> tuple[Segment, ...]:
                 j += 1
             if j == i + 1:
                 raise JsonPathError(f"{text!r}: empty key after '.' at position {i}")
-            segs.append(path[i + 1:j])
+            key = path[i + 1:j]
+            if "*" in key:
+                # Meant as a wildcard, it would silently never match; a literal
+                # '*' key is still reachable as ['*'].
+                raise JsonPathError(f"{text!r}: wildcards are not supported")
+            segs.append(key)
             i = j
         elif c == "[":
             if i + 1 < n and path[i + 1] in "'\"":

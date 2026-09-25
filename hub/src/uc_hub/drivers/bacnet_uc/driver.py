@@ -25,7 +25,7 @@ import math
 import random
 import socket
 import time
-from collections.abc import Awaitable, Iterable, Mapping
+from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
 
@@ -59,7 +59,7 @@ from ...core.types import (
 )
 from . import names
 from .api import GROUP_UC_NODE, NODE_INFO, NodeApi
-from .client import DEFAULT_PORT, SmpNodeClient, format_address, parse_address
+from .client import DEFAULT_MAX_INFLIGHT, DEFAULT_PORT, SmpNodeClient, format_address, parse_address
 from .smp import (
     OP_READ,
     OP_READ_RSP,
@@ -139,6 +139,13 @@ def wire_value(type_name: str, value: Value) -> Value:
     return int(number)
 
 
+def _positive(settings: Mapping[str, Any], key: str, default: float) -> float:
+    value = float(settings.get(key, default))
+    if not value > 0:
+        raise ValueError(f"bacnet_uc setting {key} must be a positive number of seconds, not {value!r}")
+    return value
+
+
 def _target(ref: PointRef) -> tuple[str, int]:
     target = ref.bacnet
     if target is None or target[0] not in POINT_TYPES:
@@ -151,6 +158,10 @@ class _Node:
     record: DeviceRecord
     spec: dict[str, Any]
     client: SmpNodeClient | None
+    #: This node's share of the driver-wide read limit, as many as the client
+    #: keeps in flight: reads that pass it are sent at once, so after a
+    #: timeout the rest of a batch can still be answered OFFLINE unsent.
+    read_slots: asyncio.Semaphore
     #: Why the node cannot be reached at all (no transport), else None.
     unavailable: str | None = None
     #: (object, owner, name) -> (monotonic time, units)
@@ -185,11 +196,15 @@ class BacnetUcDriver(Driver):
     def __init__(self, ctx: DriverContext) -> None:
         super().__init__(ctx)
         s = ctx.settings
-        self.poll_interval_s = float(s.get("poll_interval_s", DEFAULT_POLL_INTERVAL_S))
-        self.refresh_s = float(s.get("refresh_s", DEFAULT_REFRESH_S))
-        self.heartbeat_s = float(s.get("heartbeat_s", DEFAULT_HEARTBEAT_S))
+        self.poll_interval_s = _positive(s, "poll_interval_s", DEFAULT_POLL_INTERVAL_S)
+        self.refresh_s = _positive(s, "refresh_s", DEFAULT_REFRESH_S)
+        self.heartbeat_s = _positive(s, "heartbeat_s", DEFAULT_HEARTBEAT_S)
         self.units_cache_s = float(s.get("units_cache_s", DEFAULT_UNITS_CACHE_S))
-        self._read_limit = asyncio.Semaphore(int(s.get("read_concurrency", DEFAULT_READ_CONCURRENCY)))
+        read_concurrency = int(s.get("read_concurrency", DEFAULT_READ_CONCURRENCY))
+        self._node_reads = int(s.get("max_inflight", DEFAULT_MAX_INFLIGHT))
+        if read_concurrency < 1 or not 1 <= self._node_reads <= 255:
+            raise ValueError("bacnet_uc settings read_concurrency must be >= 1 and max_inflight 1..255")
+        self._read_limit = asyncio.Semaphore(read_concurrency)
         self._nodes: dict[str, _Node] = {}
         self._started = False
 
@@ -201,7 +216,7 @@ class BacnetUcDriver(Driver):
         client, reason = self._make_client(record.name, spec)
         if client is not None:
             record.address = client.address
-        node = _Node(record, dict(spec), client, reason)
+        node = _Node(record, dict(spec), client, asyncio.Semaphore(self._node_reads), reason)
         self._nodes[record.name] = node
         if reason is not None:
             logger.warning("%s: %s", record.name, reason)
@@ -477,27 +492,21 @@ class BacnetUcDriver(Driver):
             if cached is not None and now - cached[0] < self.units_cache_s:
                 point.units = cached[1]
                 return
-            if offline:
-                return
-            try:
-                raw = await client.prop_read(point.meta["type"], point.meta["instance"], names.PROP_UNITS)
-            except DeviceTimeout:
-                offline = True
-                return
-            except (DeviceError, NotFound, Unsupported, InvalidRequest) as e:
-                logger.debug("%s: units of %s: %s", node.name, point.ref.obj, e)
-                return
+            async with node.read_slots, self._read_limit:
+                if offline:
+                    return
+                try:
+                    raw = await client.prop_read(point.meta["type"], point.meta["instance"], names.PROP_UNITS)
+                except DeviceTimeout:
+                    offline = True
+                    return
+                except (DeviceError, NotFound, Unsupported, InvalidRequest) as e:
+                    logger.debug("%s: units of %s: %s", node.name, point.ref.obj, e)
+                    return
             point.units = names.units_name(raw)
             node.units[key] = (now, point.units)
 
-        await self._gather(one(p) for p in points if p.datatype == "real")
-
-    async def _gather(self, calls: Iterable[Awaitable[T]]) -> list[T]:
-        async def limited(call: Awaitable[T]) -> T:
-            async with self._read_limit:
-                return await call
-
-        return await asyncio.gather(*(limited(c) for c in calls))
+        await asyncio.gather(*(one(p) for p in points if p.datatype == "real"))
 
     # -- values ------------------------------------------------------------------------
     async def read(self, refs: list[PointRef]) -> list[Reading]:
@@ -507,7 +516,8 @@ class BacnetUcDriver(Driver):
         return readings
 
     async def _read_many(self, refs: list[PointRef]) -> list[Reading]:
-        results = await self._gather(self._read_one(ref) for ref in refs)
+        silent: set[str] = set()
+        results = await asyncio.gather(*(self._read_one(ref, silent) for ref in refs))
         answered: dict[str, bool] = {}
         for ref, (_, contact) in zip(refs, results, strict=True):
             if contact == _ANSWERED:
@@ -520,7 +530,10 @@ class BacnetUcDriver(Driver):
                 self._set_online(node, online)
         return [reading for reading, _ in results]
 
-    async def _read_one(self, ref: PointRef) -> tuple[Reading, str]:
+    async def _read_one(self, ref: PointRef, silent: set[str]) -> tuple[Reading, str]:
+        """One present value. ``silent`` collects the nodes that timed out
+        in this batch; their remaining points are not sent, so a node that
+        is down costs one timeout per batch, not one per point."""
         node = self._nodes.get(ref.device)
         if node is None:
             return Reading(ref, None, quality=Quality.FAULT,
@@ -529,14 +542,20 @@ class BacnetUcDriver(Driver):
             type_name, instance = _target(ref)
         except InvalidRequest as e:
             return Reading(ref, None, quality=Quality.FAULT, error=str(e)), _NOT_SENT
-        if node.client is None:
+        client = node.client
+        if client is None:
             return Reading(ref, None, quality=Quality.OFFLINE, error=node.unavailable), _NOT_SENT
-        try:
-            value = await node.client.prop_read(type_name, instance)
-        except DeviceTimeout as e:
-            return Reading(ref, None, quality=Quality.OFFLINE, error=str(e)), _TIMED_OUT
-        except (DeviceError, NotFound, Unsupported, InvalidRequest) as e:
-            return Reading(ref, None, quality=Quality.FAULT, error=str(e)), _ANSWERED
+        async with node.read_slots, self._read_limit:
+            if node.name in silent:
+                return Reading(ref, None, quality=Quality.OFFLINE,
+                               error=f"{node.name} did not answer"), _NOT_SENT
+            try:
+                value = await client.prop_read(type_name, instance)
+            except DeviceTimeout as e:
+                silent.add(node.name)
+                return Reading(ref, None, quality=Quality.OFFLINE, error=str(e)), _TIMED_OUT
+            except (DeviceError, NotFound, Unsupported, InvalidRequest) as e:
+                return Reading(ref, None, quality=Quality.FAULT, error=str(e)), _ANSWERED
         return Reading(ref, normalize_value(type_name, value)), _ANSWERED
 
     async def write(
@@ -669,6 +688,8 @@ class BacnetUcDriver(Driver):
 
     def _publish_changed(self, node: _Node, readings: list[Reading], full: bool) -> None:
         for reading in readings:
+            if reading.ref not in node.watched:
+                continue  # unwatched while the poll was in flight; keep ``last`` clean
             state = (reading.value, reading.quality)
             if full or node.last.get(reading.ref) != state:
                 node.last[reading.ref] = state

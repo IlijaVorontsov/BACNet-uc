@@ -24,7 +24,7 @@ function NewRunStart() {
         {PLAYBOOKS.map((p) => (
           <button key={p.id} type="button" className="fbtn" onClick={() => ui.askAgent(p.prompt({ scope: ui.scope, scopeName }), p.id)}>
             <b>{p.label}</b>
-            <small>{p.prompt({ scope: ui.scope, scopeName })}</small>
+            <small>{p.hint}</small>
           </button>
         ))}
       </div>

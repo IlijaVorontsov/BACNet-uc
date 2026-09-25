@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from typing import Any
 
 import pytest
@@ -56,15 +57,29 @@ def test_password_from_environment() -> None:
     {"tls": {"ca": 5}},
     {"tls": {"key": "k.pem"}},
     {"tls": {"cafile": "x"}},
+    {"tls": {"insecure": "false"}},     # would switch the host name check off
+    {"tls": {"insecure": 0}},
     {"password": "p"},
+    {"keepalive_s": 0.5},               # would become 0: keep-alive off
+    {"port": 1883.5},
+    {"timeout_s": math.nan},
+    {"reconnect_max_s": math.inf},
 ])
 def test_invalid_settings(settings: dict[str, Any]) -> None:
     with pytest.raises(InvalidRequest):
         BrokerSettings.from_settings(settings)
 
 
+def test_whole_numbers_and_null_insecure_are_accepted() -> None:
+    s = BrokerSettings.from_settings({"keepalive_s": 30.0, "port": 8883.0,
+                                      "tls": {"ca": None, "insecure": None}})
+    assert (s.keepalive_s, s.port) == (30, 8883)
+    assert s.tls is not None and s.tls.insecure is False
+
+
 @pytest.mark.parametrize("settings", [
     {"stale_after_s": 0}, {"command_timeout_s": "5"}, {"max_payload_bytes": -1},
+    {"max_payload_bytes": 0.5}, {"stale_after_s": math.nan},
 ])
 def test_invalid_driver_settings(settings: dict[str, Any]) -> None:
     with pytest.raises(InvalidRequest):

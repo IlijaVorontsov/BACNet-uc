@@ -27,7 +27,9 @@ function documentVisible(): boolean {
 /**
  * Loads `load` now, on `reload()`, when `deps` change and every `pollMs` while
  * the page is visible. Keeps the last good data while reloading or after an
- * error, and aborts requests that are no longer needed.
+ * error, and aborts requests that are no longer needed. A poll never restarts
+ * a request that is still in flight: with a hung gateway it must be allowed to
+ * time out, or the error would never show and stale data would look current.
  */
 export function useResource<T>(
   load: (signal: AbortSignal) => Promise<T>,
@@ -40,11 +42,13 @@ export function useResource<T>(
   const [tick, setTick] = useState(0);
   const loadRef = useRef(load);
   loadRef.current = load;
+  const inFlight = useRef(false);
 
   const reload = useCallback(() => setTick((t) => t + 1), []);
 
   useEffect(() => {
     const ctrl = new AbortController();
+    inFlight.current = true;
     setLoading(true);
     loadRef
       .current(ctrl.signal)
@@ -58,23 +62,23 @@ export function useResource<T>(
         setError(toApiError(err));
       })
       .finally(() => {
-        if (!ctrl.signal.aborted) setLoading(false);
+        if (ctrl.signal.aborted) return;
+        inFlight.current = false;
+        setLoading(false);
       });
     return () => ctrl.abort();
   }, [tick, ...deps]);
 
   useEffect(() => {
     if (pollMs <= 0) return;
-    const timer = setInterval(() => {
-      if (documentVisible()) reload();
-    }, pollMs);
-    const onVisible = (): void => {
-      if (documentVisible()) reload();
+    const poll = (): void => {
+      if (documentVisible() && !inFlight.current) reload();
     };
-    document.addEventListener("visibilitychange", onVisible);
+    const timer = setInterval(poll, pollMs);
+    document.addEventListener("visibilitychange", poll);
     return () => {
       clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisible);
+      document.removeEventListener("visibilitychange", poll);
     };
   }, [pollMs, reload]);
 

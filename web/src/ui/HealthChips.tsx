@@ -6,7 +6,8 @@ export function HealthChips({ compact = false }: { compact?: boolean }) {
   const hub = useHub();
   const site = hub.site.data;
   const offline = site ? site.summary.devices - site.summary.online : 0;
-  const down = hub.health.error !== null && !hub.health.loading;
+  // The error stays until a health check succeeds again, also while a retry is in flight.
+  const down = hub.health.error !== null;
   const unauthorized = hub.me.error?.status === 401 || hub.health.error?.status === 401;
 
   const status = unauthorized ? (

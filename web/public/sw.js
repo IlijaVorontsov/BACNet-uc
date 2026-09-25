@@ -1,6 +1,9 @@
 /*
  * uc-hub service worker: keeps the app shell available offline.
  *
+ * - Install: caches index.html and the scripts and styles it loads. The page
+ *   fetched them before this worker controlled it, so without this the app
+ *   could not start offline until a second online visit.
  * - Navigations: network first, falling back to the cached index.html.
  * - Same-origin static files (hashed /assets/*, icon, manifest): cache first.
  * - /api is never cached or intercepted: live data and SSE must always come
@@ -8,14 +11,22 @@
  */
 const CACHE = "uc-hub-shell-v1";
 const SHELL = ["/", "/index.html", "/manifest.webmanifest", "/icon.svg"];
+// Vite writes the entry's references as src="/assets/..." and href="/assets/...".
+const ASSET_REF = /(?:src|href)="(\/assets\/[^"]+)"/g;
+
+async function precache() {
+  const cache = await caches.open(CACHE);
+  // "reload" skips the HTTP cache: a stale index.html may name deleted builds.
+  await cache.addAll(SHELL.map((path) => new Request(path, { cache: "reload" })));
+  const index = await cache.match("/index.html");
+  const html = index ? await index.text() : "";
+  const assets = [...new Set(Array.from(html.matchAll(ASSET_REF), (m) => m[1]))];
+  await cache.addAll(assets.map((path) => new Request(path, { cache: "reload" })));
+  for (const path of assets) await pruneOlderBuilds(cache, path);
+}
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(
-    caches
-      .open(CACHE)
-      .then((cache) => cache.addAll(SHELL))
-      .then(() => self.skipWaiting()),
-  );
+  event.waitUntil(precache().then(() => self.skipWaiting()));
 });
 
 self.addEventListener("activate", (event) => {

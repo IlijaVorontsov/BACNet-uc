@@ -158,7 +158,7 @@ async def test_modern_json_commands(
     assert list(points) == ["status", "telemetry.seq", "telemetry.uptime_s",
                             "telemetry.sessions", "telemetry.temp_c", "led"]
     assert points["telemetry.temp_c"].units == "degrees-celsius"
-    assert desc.device.hwid == "cc22dd33" and desc.device.firmware == "0.2.0"
+    assert desc.device.hwid == "cc22dd33" and desc.device.firmware == "0.3.0"
     assert desc.extra["json_commands"] is True
     (temp,) = await driver.read([ref("r205-node", "telemetry.temp_c")])
     assert (temp.value, temp.quality) == (21.5, Quality.GOOD)
@@ -175,8 +175,10 @@ async def test_modern_json_commands(
     assert sorted(c["cmd"] for c in sent) == ["identify", "led", "ping"]
     assert len({c["id"] for c in sent}) == 3
 
-    with pytest.raises(DeviceError, match="unknown command"):
+    with pytest.raises(DeviceError, match="bad argument"):
         await driver.command("r205-node", "led", "blink")
+    with pytest.raises(DeviceError, match="bad argument"):
+        await driver.identify("r205-node", 3601)
     with pytest.raises(Unsupported):
         await driver.command("r205-node", "reboot")
 
@@ -319,6 +321,22 @@ async def test_discovery(broker: Broker, sims: Sims, make_driver: DriverFactory)
     assert all(d.protocol.value == "mqtt" and not d.bacnet_uc for d in found)
     # The driver's own session is untouched by the sweep.
     assert driver.connected
+
+
+async def test_discovery_applies_the_payload_limit(
+    broker: Broker, make_driver: DriverFactory,
+) -> None:
+    info = {"board": "b", "hwid": "01", "pad": "x" * 600}
+    async with aiomqtt.Client(broker.host, broker.port, identifier="big") as client:
+        await client.publish("big/node/info", json.dumps(info), qos=1, retain=True)
+        await client.publish("big/node/status", b"online", qos=1, retain=True)
+        await client.publish("small/node/info", b'{"board": "s"}', qos=1, retain=True)
+    driver, _ = await make_driver(broker.settings(max_payload_bytes=512))
+    found = {d.address: d for d in await driver.discover(0.3)}
+    assert set(found) == {"big/node", "small/node"}
+    big = found["big/node"]
+    assert (big.extra["info"], big.extra["status"], big.model) == (None, "online", "")
+    assert found["small/node"].model == "s"
 
 
 async def test_discovery_without_broker(broker: Broker, make_driver: DriverFactory) -> None:

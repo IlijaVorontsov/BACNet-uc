@@ -111,11 +111,16 @@ export class MockRun {
     if (this.abort.signal.aborted) this.abort = new AbortController();
   }
 
+  /** Stops the run; open gates close, so a late answer or expiry timer cannot reach them. */
   cancel(): void {
     this.abort.abort();
     const err = new Cancelled();
-    this.approvalGate?.reject(err);
-    this.questionGate?.reject(err);
+    const { approvalGate, questionGate } = this;
+    this.approvalGate = null;
+    this.questionGate = null;
+    if (approvalGate?.timer) clearTimeout(approvalGate.timer);
+    approvalGate?.reject(err);
+    questionGate?.reject(err);
   }
 
   /** Called by POST /api/approvals/{id}; the approval object is updated by the caller. */

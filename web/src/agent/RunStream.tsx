@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useHub } from "../state/hub";
-import type { RunView, ToolItem } from "../state/runReducer";
+import { acceptsAnswers, type RunView, type ToolItem } from "../state/runReducer";
 import { ApprovalCard } from "./ApprovalCard";
 import { AssistantMessage, ErrorLine, Notice, ThinkingBlock, ToolCard, UserMessage } from "./items";
 import { QuestionCard } from "./QuestionCard";
@@ -43,7 +43,7 @@ export function RunStream({ view, runId, variant }: { view: RunView; runId: stri
     if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   };
 
-  const questionsOpen = view.state === "waiting_answer" || view.state === "running";
+  const questionsOpen = acceptsAnswers(view.state);
   const blocks: ReactNode[] = [];
   let group: ToolItem[] = [];
   const flush = (): void => {

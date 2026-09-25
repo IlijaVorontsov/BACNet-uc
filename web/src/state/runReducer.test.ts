@@ -221,6 +221,20 @@ describe("runReducer", () => {
     expect((answered.items[0] as ToolItem).status).toBe("ok");
   });
 
+  it("stops counting a question as open once the run no longer waits for it", () => {
+    const asked = fold(
+      events(
+        { type: "question", question_id: "q1", call_id: "c9", text: "Is the valve open?", options: ["Yes"] },
+        { type: "run.state", state: "waiting_answer" },
+      ),
+    );
+    expect(openQuestions(asked)).toHaveLength(1);
+    for (const state of ["cancelled", "failed", "idle"] as const) {
+      const ended = foldEvents(asked, [{ type: "run.state", state, seq: 3, run_id: "r_1", ts: 1003 }]);
+      expect(openQuestions(ended)).toEqual([]);
+    }
+  });
+
   it("ignores an answer for an unknown question and non-array options", () => {
     const v = fold(
       events(

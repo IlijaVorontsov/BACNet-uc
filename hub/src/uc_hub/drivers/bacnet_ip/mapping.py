@@ -115,7 +115,8 @@ def object_identifier(type_name: str, instance: int) -> ObjectIdentifier:
 def present_value_type(type_name: str) -> type:
     """The bacpypes3 class of the standard present value of ``type_name``."""
     object_class = get_vendor_info(0).get_object_class(ObjectType(type_name))
-    return object_class.get_property_type("present-value")
+    value_type: type = object_class.get_property_type("present-value")
+    return value_type
 
 
 def obj_text(objid: Any) -> str | None:
@@ -141,13 +142,15 @@ def clean_text(value: Any, limit: int = _TEXT_LIMIT) -> str:
 
 
 def units_name(value: Any) -> str | None:
+    """The engineering unit name; None for no-units and for proprietary
+    unit numbers, which have no name."""
     if value is None:
         return None
     try:
         text = str(EngineeringUnits(value))
     except (TypeError, ValueError):
         return None
-    if text == "no-units":
+    if text == "no-units" or text.isdigit():
         return None
     return text
 

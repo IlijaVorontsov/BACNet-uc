@@ -8,6 +8,7 @@ import { foldEvents, initialRunView } from "../state/runReducer";
 import { UiProvider } from "../state/ui";
 import { argSummary } from "./argSummary";
 import { Composer } from "./Composer";
+import { PLAYBOOKS } from "./playbooks";
 import { RunStream } from "./RunStream";
 
 /** Answers requests from a table instead of the network and records them. */
@@ -169,7 +170,8 @@ describe("Composer", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "IO checkout" }));
     const box = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Message to the agent" });
-    await waitFor(() => expect(box.value).toBe("Run IO checkout for r204-ctl."));
+    await waitFor(() => expect(box.value).toBe("Run IO checkout for "));
+    fireEvent.change(box, { target: { value: `${box.value}r204-ctl.` } });
     fireEvent.keyDown(box, { key: "Enter" });
     await waitFor(() => expect(client.calls.some((c) => c.method === "POST" && c.path === "/api/runs")).toBe(true));
     expect(client.calls.find((c) => c.path === "/api/runs" && c.method === "POST")?.body).toEqual({
@@ -177,6 +179,18 @@ describe("Composer", () => {
       playbook: "io-checkout",
     });
     await waitFor(() => expect(box.value).toBe(""));
+  });
+
+  it("drafts playbook prompts that name only what is in scope, never the demo site", () => {
+    const prompt = (id: string, scope: Parameters<(typeof PLAYBOOKS)[number]["prompt"]>[0]) =>
+      PLAYBOOKS.find((p) => p.id === id)!.prompt(scope);
+    const site = { scope: { kind: "site" } as const, scopeName: "Plant B" };
+    for (const p of PLAYBOOKS) expect(p.prompt(site)).not.toMatch(/r20\d|room 205/i);
+    expect(prompt("io-checkout", { scope: { kind: "device", name: "ahu1-ctl" }, scopeName: "ahu1-ctl" })).toBe(
+      "Run IO checkout for ahu1-ctl.",
+    );
+    expect(prompt("troubleshoot", site)).toBe("Troubleshoot Plant B: ");
+    expect(prompt("troubleshoot", { scope: { kind: "space", id: "r3" }, scopeName: "Room 3" })).toBe("Troubleshoot Room 3: ");
   });
 
   it("explains why it cannot send while the open run waits for an answer", async () => {

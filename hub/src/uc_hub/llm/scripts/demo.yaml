@@ -1,0 +1,187 @@
+# Offline demo for the scripted LLM provider (llm.provider: scripted).
+#
+# Try "Commission room 204", "What is the temperature in room 204?" or "help".
+# Rules are checked top to bottom on every model call; the first match wins.
+# Only the conversation drives the script, so a run can be resumed after an
+# approval or a question like a real model run. The tool arguments follow
+# docs/ai-harness/DESIGN.md section 7; device r<room>-ctl and space r<room>
+# follow the example site in docs/ai-harness/SITE.md.
+
+model: scripted-demo
+delay_s: 0.015
+chunk_size: 12
+
+rules:
+  # Help ------------------------------------------------------------------------
+  - id: help
+    when:
+      user: '(?i)^\s*(help|hi|hello|what can you do)\W*$'
+      turn: 0
+    respond:
+      text: >-
+        This is the offline demo model. It can walk through commissioning a
+        room ("Commission room 204") or read a room temperature ("What is the
+        temperature in room 204?"). Every step uses the real tools, approvals
+        and tests of this hub.
+
+  # Commission a room -----------------------------------------------------------
+  - id: commission-search
+    when:
+      user: &commission '(?i)\bcommission\b.*?\broom\s*r?(?P<room>[0-9]+[a-z]?)\b'
+      turn: 0
+    respond:
+      thinking: >-
+        The user wants room ${room} commissioned. First find which devices are
+        placed in that space, then check the controller, its points and the
+        draft manifest before planning anything.
+      text: "I'll start by finding the devices in room ${room}."
+      tool_calls:
+        - name: site_search
+          args: {query: "room ${room}", filters: {space: "r${room}"}}
+
+  - id: commission-describe
+    when: {user: *commission, tool: site_search, ok: true}
+    respond:
+      thinking: The search returned the room's devices. Describe the controller to see its IO and apps.
+      tool_calls:
+        - name: device_describe
+          args: {device: "r${room}-ctl"}
+
+  - id: commission-read
+    when: {user: *commission, tool: device_describe, ok: true}
+    respond:
+      thinking: The controller is online. Read the room temperature input to confirm the sensor is wired.
+      tool_calls:
+        - name: point_read
+          args: {points: ["r${room}-ctl/analog-input:1"]}
+
+  - id: commission-manifest
+    when: {user: *commission, tool: point_read, ok: true}
+    respond:
+      thinking: The sensor reads a plausible value. Check what the draft manifest already says about tags and placement.
+      text: "The temperature sensor responds. Checking the site manifest next."
+      tool_calls:
+        - name: manifest_get
+          args: {path: /tags}
+
+  - id: commission-edit
+    when: {user: *commission, tool: manifest_get, ok: true}
+    respond:
+      thinking: >-
+        Place the controller in space r${room} and tag the temperature input
+        so links and reports can find it. This only changes the draft.
+      text: "I'll place r${room}-ctl in room ${room} and tag its temperature sensor in the draft."
+      tool_calls:
+        - name: manifest_edit
+          args:
+            json_patch:
+              - {op: add, path: "/placement/r${room}-ctl", value: "r${room}"}
+              - {op: add, path: "/tags/r${room}-ctl~1analog-input:1", value: [Zone_Air_Temperature_Sensor]}
+
+  - id: commission-plan
+    when: {user: *commission, tool: manifest_edit, ok: true}
+    respond:
+      thinking: The draft validates. Compute the plan so the user sees the exact diff.
+      tool_calls:
+        - name: plan
+          args: {}
+
+  - id: commission-apply
+    when:
+      user: *commission
+      tool: plan
+      ok: true
+      result: '"plan_id"\s*:\s*"(?P<plan_id>[^"]+)"'
+    respond:
+      thinking: The plan is ready. Applying it needs the user's approval; the approval card shows the diff.
+      text: "Plan ${plan_id} is ready: ${summary}. Please review and approve it so I can apply it."
+      tool_calls:
+        - name: apply
+          args: {plan_id: "${plan_id}"}
+
+  - id: commission-plan-empty
+    when: {user: *commission, tool: plan, ok: true}
+    respond:
+      text: "The live site already matches the draft (${summary}), so there is nothing to apply."
+
+  - id: commission-test
+    when: {user: *commission, tool: apply, ok: true}
+    respond:
+      thinking: Applied. Run the manifest tests on the live site to verify the room works end to end.
+      text: "Applied. Running the site tests for room ${room} now."
+      tool_calls:
+        - name: test_run
+          args: {}
+
+  - id: commission-done
+    when: {user: *commission, tool: test_run, ok: true}
+    respond:
+      text: "Room ${room} is commissioned: ${summary}"
+
+  - id: commission-test-failed
+    when: {user: *commission, tool: test_run, ok: false}
+    respond:
+      thinking: >-
+        A test failed. Simulate a cold room on the temperature input and ask
+        the technician on site whether the valve reacts, to separate wiring
+        from logic problems.
+      text: "A test failed (${summary}). I'll simulate a cold room on the sensor input to check the valve."
+      tool_calls:
+        - name: io_force
+          args: {node: "r${room}-ctl", channel: ai0, value: 650, lease_s: 120}
+
+  - id: commission-ask
+    when: {user: *commission, tool: io_force, ok: true}
+    respond:
+      tool_calls:
+        - name: ask_user
+          args:
+            question: "The sensor input of r${room}-ctl now reads cold. Is the valve in room ${room} opening?"
+            options: ["Yes", "No"]
+
+  # A failed question (expired, cancelled) falls through to tool-failed.
+  - id: commission-answer-yes
+    when:
+      user: *commission
+      tool: ask_user
+      ok: true
+      result: '(?i)"answer"\s*:\s*"y(es)?\b'
+    respond:
+      text: >-
+        Good: the wiring and the valve work, so the failed test points at the
+        control logic or its timing. The force is released when its lease
+        ends. I suggest reviewing the test's time limit before re-running it.
+
+  - id: commission-answer-no
+    when: {user: *commission, tool: ask_user, ok: true}
+    respond:
+      text: >-
+        The valve does not react while the controller demands heat, so check
+        the actuator wiring on the output of r${room}-ctl. The force is
+        released when its lease ends; re-run the tests after the fix.
+
+  # Read a room temperature -----------------------------------------------------
+  - id: temperature-read
+    when:
+      user: &temperature '(?i)\btemp(erature)?\b.*?\broom\s*r?(?P<room>[0-9]+[a-z]?)\b'
+      turn: 0
+    respond:
+      tool_calls:
+        - name: point_read
+          args: {points: ["r${room}-ctl/analog-input:1"]}
+
+  - id: temperature-answer
+    when: {user: *temperature, tool: point_read, ok: true}
+    respond:
+      text: "Room ${room}: ${summary}"
+
+  # Anything that failed --------------------------------------------------------
+  - id: tool-failed
+    when: {ok: false}
+    respond:
+      text: "The ${tool} call failed: ${summary}. I stopped here so you can decide how to continue."
+
+fallback:
+  text: >-
+    The offline demo model only knows a few scenarios. Try "Commission room
+    204" or "What is the temperature in room 204?".

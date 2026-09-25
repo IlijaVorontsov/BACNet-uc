@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import random
 from collections.abc import Mapping
@@ -36,6 +37,7 @@ from .api import (
     APP_START,
     APP_STATUS,
     APP_STOP,
+    CFG_DIR,
     GROUP_FS,
     GROUP_OS,
     GROUP_UC_APP,
@@ -54,11 +56,13 @@ from .api import (
     NodeApi,
 )
 from .smp import (
+    FS_CLOSE,
     FS_ERR_FILE_EMPTY,
     FS_ERR_FILE_OFFSET_NOT_VALID,
     FS_FILE,
     FS_HASH,
     HEADER_SIZE,
+    MGMT_ERR_EMSGSIZE,
     OP_READ,
     OP_WRITE,
     OS_ECHO,
@@ -84,6 +88,7 @@ DEFAULT_MAX_INFLIGHT = 4
 DEFAULT_OBJECTS_PAGE = 8
 
 RELOAD_DOCS = frozenset({"device", "io", "apps", "all"})
+APPS_JSON = f"{CFG_DIR}/apps.json"
 _MIN_MTU = 64
 _MAX_UPLOAD_RESYNCS = 3
 _MAX_OBJECT_PAGES = 4096
@@ -226,9 +231,12 @@ class SmpNodeClient(NodeApi):
         async with self._inflight:
             transport = await self._ensure_transport()
             seq = self._next_seq()
+            try:
+                data = encode_frame(op, group, command, seq, body or {})
+            except (ValueError, TypeError, cbor2.CBOREncodeError) as e:
+                raise InvalidRequest(f"{self._context(group, command)}: cannot encode request: {e}") from e
             future: asyncio.Future[SmpFrame] = asyncio.get_running_loop().create_future()
             self._pending[seq] = _Pending(response_op(op), group, command, future)
-            data = encode_frame(op, group, command, seq, body or {})
             attempts = self.retries + 1
             try:
                 for attempt in range(1, attempts + 1):
@@ -355,7 +363,10 @@ class SmpNodeClient(NodeApi):
         async with self._fs_lock:
             mtu = await self.mtu()
             off = 0
+            #: Resyncs since the upload last got further than ever before; each
+            #: lost answer costs one, so only a run without progress gives up.
             resyncs = 0
+            furthest = 0
             while True:
                 body: dict[str, Any] = {"name": path, "off": off}
                 if off == 0:
@@ -373,24 +384,47 @@ class SmpNodeClient(NodeApi):
                     error_code(rsp) == (GROUP_FS, FS_ERR_FILE_OFFSET_NOT_VALID)
                     and resyncs < _MAX_UPLOAD_RESYNCS
                     and isinstance(resync, int)
-                    and 0 < resync <= total
+                    and not isinstance(resync, bool)
+                    and 0 <= resync <= total
                 ):
-                    # A retried chunk the node had already written, or a stale
-                    # upload context: continue from the node's file length.
+                    # A retried chunk the node had already written: the node
+                    # closed its upload context and continues at its file length.
                     resyncs += 1
                     logger.debug("%s: upload %s resumes at %d", self.label, path, resync)
                     off = resync
                     continue
                 raise_for_error(rsp, context=f"{self.label}: upload {path}")
                 new_off = rsp.get("off")
-                if isinstance(new_off, bool) or not isinstance(new_off, int) or not 0 <= new_off <= total:
+                if isinstance(new_off, bool) or not isinstance(new_off, int):
                     raise self._malformed(f"upload {path}", rsp)
-                if chunk and new_off <= off:
-                    raise DeviceError(f"{self.label}: upload of {path} stalled at offset {off}")
+                if new_off != off + len(chunk):
+                    # Zephyr counts on from an upload context that is still
+                    # open when chunk 0 comes again (its answer was lost, or an
+                    # earlier upload of the file was cut short): the file no
+                    # longer matches the offsets. Close the context, start over.
+                    if resyncs >= _MAX_UPLOAD_RESYNCS:
+                        raise DeviceError(
+                            f"{self.label}: upload of {path} expected offset {off + len(chunk)}, "
+                            f"node reports {new_off}"
+                        )
+                    resyncs += 1
+                    logger.debug("%s: upload %s restarts, node reports offset %d", self.label, path, new_off)
+                    await self._fs_close()
+                    off = 0
+                    continue
+                if new_off > furthest:
+                    furthest, resyncs = new_off, 0
                 off = new_off
                 if off >= total:
                     break
             await self._verify_upload(path, data)
+
+    async def _fs_close(self) -> None:
+        """Drop the node's upload/download context (FS ``close``)."""
+        try:
+            await self.request(OP_WRITE, GROUP_FS, FS_CLOSE, {})
+        except Unsupported:
+            logger.debug("%s: node has no FS close; relying on its idle timeout", self.label)
 
     async def _verify_upload(self, path: str, data: bytes) -> None:
         try:
@@ -452,6 +486,8 @@ class SmpNodeClient(NodeApi):
 
     async def objects(self) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
+        #: The list shifts when apps create or delete objects between pages.
+        seen: set[tuple[str, str]] = set()
         offset = 0
         for _ in range(_MAX_OBJECT_PAGES):
             rsp = await self.request(
@@ -460,7 +496,11 @@ class SmpNodeClient(NodeApi):
             page, total = rsp.get("objects"), rsp.get("total")
             if not isinstance(page, list) or isinstance(total, bool) or not isinstance(total, int):
                 raise self._malformed("objects", rsp)
-            out.extend(o for o in page if isinstance(o, dict))
+            for obj in page:
+                key = (str(obj.get("type")), str(obj.get("instance"))) if isinstance(obj, dict) else None
+                if key is not None and key not in seen:
+                    seen.add(key)
+                    out.append(obj)
             offset += len(page)
             if not page or offset >= total:
                 return out
@@ -545,11 +585,41 @@ class SmpNodeClient(NodeApi):
 
     # -- uc_app -----------------------------------------------------------------
     async def app_list(self) -> list[dict[str, Any]]:
-        rsp = await self.request(OP_READ, GROUP_UC_APP, APP_LIST)
+        try:
+            rsp = await self.request(OP_READ, GROUP_UC_APP, APP_LIST)
+        except DeviceError as e:
+            if (e.group, e.rc) != (None, MGMT_ERR_EMSGSIZE):
+                raise
+            # ``list`` has no paging and a few app statuses fill the SMP buffer.
+            logger.info("%s: app list does not fit one SMP frame; reading statuses one by one",
+                        self.label)
+            return await self._app_statuses()
         apps = rsp.get("apps")
         if not isinstance(apps, list):
             raise self._malformed("app list", rsp)
         return [a for a in apps if isinstance(a, dict)]
+
+    async def _app_statuses(self) -> list[dict[str, Any]]:
+        """``<app status>`` of every app in apps.json, which the node writes
+        on install and remove. Entries it has not loaded are skipped."""
+        try:
+            raw = await self.file_download(APPS_JSON)
+        except NotFound:
+            return []
+        try:
+            entries = json.loads(raw)["apps"]
+            app_names = [entry["name"] for entry in entries]
+        except (ValueError, KeyError, TypeError) as e:
+            raise DeviceError(f"{self.label}: {APPS_JSON} is not an apps document: {e}") from e
+        out: list[dict[str, Any]] = []
+        for name in app_names:
+            if not isinstance(name, str):
+                raise DeviceError(f"{self.label}: {APPS_JSON} has an app without a name")
+            try:
+                out.append(await self.app_status(name))
+            except NotFound:
+                logger.info("%s: app %s is in %s but not loaded", self.label, name, APPS_JSON)
+        return out
 
     async def app_install(self, manifest: dict[str, Any]) -> None:
         await self.request(OP_WRITE, GROUP_UC_APP, APP_INSTALL, self.wire_manifest(manifest))
@@ -558,10 +628,11 @@ class SmpNodeClient(NodeApi):
     def wire_manifest(manifest: Mapping[str, Any]) -> dict[str, Any]:
         """``<app manifest>`` as the node expects it: ``params`` a map of
         strings (apps.json's ``[{"key", "value"}]`` list is accepted too) and
-        ``sha256`` 32 raw bytes (hex text is accepted)."""
+        ``sha256`` 32 raw bytes (hex text is accepted). Fields set to None
+        are left out: the optional fields are absent on the wire, not null."""
         if not isinstance(manifest.get("name"), str) or not isinstance(manifest.get("file"), str):
             raise InvalidRequest("app manifest needs text fields 'name' and 'file'")
-        body = dict(manifest)
+        body = {k: v for k, v in manifest.items() if v is not None}
         params = body.get("params")
         if params is not None:
             if isinstance(params, list):

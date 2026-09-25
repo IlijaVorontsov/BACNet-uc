@@ -62,6 +62,12 @@ def test_missing(path: str, doc: Any) -> None:
     assert JsonPath.compile(path).find(doc) == (False, None)
 
 
+def test_literal_star_key_needs_brackets() -> None:
+    compiled = JsonPath.compile("$['*']")
+    assert compiled.find({"*": 1}) == (True, 1)
+    assert str(compiled) == "$['*']"
+
+
 def test_root_of_scalar_and_list() -> None:
     assert JsonPath.compile("$").find(21.5) == (True, 21.5)
     assert JsonPath.compile("$[1]").find([1, 2]) == (True, 2)
@@ -71,6 +77,7 @@ def test_root_of_scalar_and_list() -> None:
 @pytest.mark.parametrize("path", [
     "", "   ", "$.", "$..ppm", "$.bat.", "$[", "$[1", "$[x]", "$[1.5]", "$['a'",
     "$['a]", "$['a'x]", "$['a\\", "$ .a", "$.a b", "$.a]", "$*", "$[*]", "$.a[]",
+    "$.*", "$.list.*", "$.a*", "*",     # wildcards, not keys named "*"
 ])
 def test_syntax_errors(path: str) -> None:
     with pytest.raises(JsonPathError):

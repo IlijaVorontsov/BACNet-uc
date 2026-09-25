@@ -114,7 +114,8 @@ export function DevicesPane({ scope }: { scope: Scope }) {
   const hub = useHub();
   const ui = useUi();
   const site = hub.site.data;
-  if (scope.kind === "device") return <DeviceDetail name={scope.name} />;
+  // Keyed so that another device never shows this one's details or identify state.
+  if (scope.kind === "device") return <DeviceDetail key={scope.name} name={scope.name} />;
   if (!site) return <p className="mute-t">Loading devices…</p>;
   const devices = scope.kind === "space" ? devicesIn(site, scope.id, true) : site.devices;
   if (devices.length === 0) return <p className="mute-t">No devices in this space.</p>;

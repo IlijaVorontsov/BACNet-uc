@@ -12,7 +12,11 @@ export interface HoldButtonProps {
   doneLabel?: string;
   durationMs?: number;
   disabled?: boolean;
-  onConfirm: () => void;
+  /**
+   * Runs when the hold completes. A promise resolving to false (or rejecting)
+   * means the action failed: the button returns to idle so it can be held again.
+   */
+  onConfirm: () => void | Promise<boolean>;
   className?: string;
 }
 
@@ -34,6 +38,7 @@ export function HoldButton({
   const raf = useRef(0);
   const started = useRef(0);
   const phaseRef = useRef<Phase>("idle");
+  const mounted = useRef(false);
   const onConfirmRef = useRef(onConfirm);
   onConfirmRef.current = onConfirm;
   const hintId = useId();
@@ -68,7 +73,14 @@ export function HoldButton({
       stopTimers();
       setFill(1);
       setPhaseBoth("done");
-      onConfirmRef.current();
+      const failed = (): void => {
+        if (!mounted.current || phaseRef.current !== "done") return;
+        setFill(0);
+        setPhaseBoth("idle");
+      };
+      onConfirmRef.current()?.then((ok) => {
+        if (!ok) failed();
+      }, failed);
     }, durationMs);
   }, [disabled, durationMs]);
 
@@ -80,7 +92,13 @@ export function HoldButton({
     setHint(true);
   }, []);
 
-  useEffect(() => stopTimers, []);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      stopTimers();
+    };
+  }, []);
   useEffect(() => {
     if (disabled) cancel();
   }, [disabled, cancel]);

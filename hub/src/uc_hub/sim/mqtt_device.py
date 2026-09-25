@@ -4,9 +4,11 @@
   retained ``online`` status with a retained ``offline`` last will, retained
   info, telemetry every ``telemetry_interval_s``, the text commands ``ping``
   and ``led on|off|toggle`` answered on the event topic, and reconnect with
-  back-off. ``modern=True`` adds what firmware requests M1-M3 ask for: ``fw``,
-  ``hwid`` and ``caps`` in the info, JSON commands whose replies echo the ID,
-  and ``identify``.
+  back-off. ``modern=True`` is firmware 0.3.0, which implements requests
+  M1-M3 (``src/commands.c`` on the MQTT firmware branch): ``fw``, ``hwid``,
+  ``mac`` and ``caps`` in the info, JSON commands whose replies echo the ID,
+  ``identify``, an ``ok`` member in every reply, and retained or empty
+  commands ignored.
 - ``SimJsonSensor`` is a third-party sensor publishing a JSON document (by
   default a CO2 sensor: ``{"ppm": ..., "bat": {"pct": ...}}``) that merges
   JSON objects received on its optional command topic into its state.
@@ -24,6 +26,7 @@ import hashlib
 import json
 import logging
 import random
+import re
 import secrets
 import signal
 import time
@@ -45,8 +48,12 @@ StateUpdate = Callable[[dict[str, Any], random.Random], None]
 
 #: Largest command the firmware processes (CONFIG_APP_MQTT_MAX_PAYLOAD_SIZE).
 MAX_COMMAND_PAYLOAD = 128
-#: The firmware's reply when the LED GPIO is missing (-ENODEV).
+#: The legacy firmware's reply code when the LED GPIO is missing (-ENODEV).
 _ENODEV = -19
+#: Firmware 0.3.0 limits (commands.c).
+_REQUEST_ID = re.compile(r"[A-Za-z0-9._:-]{1,16}")
+IDENTIFY_DEFAULT_S = 30
+IDENTIFY_MAX_S = 3600
 
 
 class _SimClient:
@@ -123,8 +130,9 @@ class SimMqttTlsDevice(_SimClient):
         board: str = "nucleo_h563zi",
         zephyr: str = "3.7.2",
         ip: str = "192.0.2.10",
-        fw: str = "0.2.0",
+        fw: str = "0.3.0",
         hwid: str | None = None,
+        mac: str | None = None,
         has_led: bool = True,
         extra_telemetry: Mapping[str, tuple[str, Value]] | None = None,
         reply_delay_s: float = 0.0,
@@ -140,6 +148,7 @@ class SimMqttTlsDevice(_SimClient):
         self.ip = ip
         self.fw = fw
         self.hwid = hwid or _hwid(client_id)
+        self.mac = mac or _mac(client_id)
         self.has_led = has_led
         self.reply_delay_s = reply_delay_s
         self.muted = False
@@ -175,14 +184,14 @@ class SimMqttTlsDevice(_SimClient):
         return self.identify_until is not None and time.monotonic() < self.identify_until
 
     def info(self) -> dict[str, Any]:
-        doc: dict[str, Any] = {"board": self.board, "zephyr": self.zephyr, "ip": self.ip,
-                               "tls": self._tls}
-        if self.modern:
-            cmds = ["ping", "led", "identify"] if self.has_led else ["ping", "identify"]
-            telemetry = {"seq": "count", "uptime_s": "s", "sessions": "count",
-                         **self._extra_units}
-            doc.update(fw=self.fw, hwid=self.hwid, caps={"cmds": cmds, "telemetry": telemetry})
-        return doc
+        if not self.modern:
+            return {"board": self.board, "zephyr": self.zephyr, "ip": self.ip, "tls": self._tls}
+        # led and identify both need the LED, so firmware 0.3.0 lists them together.
+        cmds = ["ping", "led", "identify"] if self.has_led else ["ping"]
+        telemetry = {"seq": "count", "uptime_s": "s", "sessions": "count", **self._extra_units}
+        return {"fw": self.fw, "board": self.board, "zephyr": self.zephyr, "hwid": self.hwid,
+                "mac": self.mac, "ip": self.ip, "tls": self._tls,
+                "caps": {"cmds": cmds, "telemetry": telemetry}}
 
     async def start(self) -> None:
         if not self._subscribed:
@@ -236,7 +245,9 @@ class SimMqttTlsDevice(_SimClient):
         if topic != self.topic("cmd"):
             return
         self.commands.append(payload)
-        if self.muted:
+        # Firmware 0.3.0 ignores stale retained commands and the empty
+        # message that clears one.
+        if self.muted or (self.modern and (retained or not payload)):
             return
         self._spawn(self._reply(self.execute(payload)))
 
@@ -250,14 +261,19 @@ class SimMqttTlsDevice(_SimClient):
 
     def execute(self, payload: bytes) -> dict[str, Any]:
         """The reply the firmware publishes for one command payload."""
+        if not self.modern:
+            if len(payload) > MAX_COMMAND_PAYLOAD:
+                return {"error": "payload too large"}
+            return self._legacy_command(payload.decode("utf-8", "replace"))
         if len(payload) > MAX_COMMAND_PAYLOAD:
-            return {"error": "payload too large"}
+            return {"ok": False, "error": "payload too large"}
         text = payload.decode("utf-8", "replace")
-        if self.modern and text.lstrip().startswith("{"):
+        if text.startswith("{"):
             return self._json_command(text)
-        return self._text_command(text)
+        cmd, space, arg = text.partition(" ")
+        return self._result(None, *self._execute(cmd, arg if space else None))
 
-    def _text_command(self, text: str) -> dict[str, Any]:
+    def _legacy_command(self, text: str) -> dict[str, Any]:
         # Exact matches, like the firmware's strcmp().
         if text == "ping":
             return {"pong": self.uptime_s}
@@ -266,27 +282,53 @@ class SimMqttTlsDevice(_SimClient):
                 return {"error": "led unavailable", "code": _ENODEV}
             self.led = {"led on": True, "led off": False}.get(text, not self.led)
             return {"led": self.led}
-        if self.modern and (text == "identify" or text.startswith("identify ")):
-            arg = text[len("identify"):].strip() or "30"
-            if not arg.isdigit():
-                return {"error": "bad argument"}
-            seconds = int(arg)
-            self.identify_until = time.monotonic() + seconds if seconds > 0 else None
-            return {"identify": seconds}
         return {"error": "unknown command"}
 
     def _json_command(self, text: str) -> dict[str, Any]:
         req = json_object(text.encode())
-        if req is None:
-            return {"ok": False, "error": "bad json"}
+        # Zephyr's json_obj_parse fails on a type mismatch in a known field.
+        if req is None or any(k in req and not isinstance(req[k], str)
+                              for k in ("id", "cmd", "arg")):
+            return self._result(None, None, "invalid json")
         cid = req.get("id")
-        if not isinstance(cid, str) or not 0 < len(cid) <= 16:
-            return {"ok": False, "error": "bad id"}
-        cmd, arg = req.get("cmd"), req.get("arg")
-        if not isinstance(cmd, str) or not (arg is None or isinstance(arg, (str, int))):
-            return {"id": cid, "ok": False, "error": "bad command"}
-        result = self._text_command(cmd if arg is None else f"{cmd} {arg}")
-        return {"id": cid, "ok": "error" not in result, **result}
+        if cid is not None and not _REQUEST_ID.fullmatch(cid):
+            return self._result(None, None, "invalid id")
+        if "cmd" not in req:
+            return self._result(cid, None, "missing cmd")
+        return self._result(cid, *self._execute(req["cmd"], req.get("arg")))
+
+    def _execute(self, cmd: str, arg: str | None) -> tuple[dict[str, Any] | None, str | None]:
+        """Firmware 0.3.0 ``execute()``: ``(detail, None)`` or ``(None, error)``."""
+        if cmd == "ping" and arg is None:
+            return {"pong": self.uptime_s}, None
+        if cmd == "led":
+            states = {"on": True, "off": False, "toggle": not self.led}
+            if arg is None or arg not in states:
+                return None, "bad argument"
+            if not self.has_led:
+                return None, "led unavailable"
+            self.led = states[arg]
+            self.identify_until = None      # an LED command ends identify
+            return {"led": self.led}, None
+        if cmd == "identify":
+            seconds = IDENTIFY_DEFAULT_S
+            if arg is not None:
+                if not re.fullmatch(r"[0-9]+", arg) or int(arg) > IDENTIFY_MAX_S:
+                    return None, "bad argument"
+                seconds = int(arg)
+            if not self.has_led:
+                return None, "led unavailable"
+            self.identify_until = time.monotonic() + seconds if seconds > 0 else None
+            return {"identify": seconds}, None
+        return None, "unknown command"
+
+    @staticmethod
+    def _result(cid: str | None, detail: dict[str, Any] | None,
+                error: str | None) -> dict[str, Any]:
+        head: dict[str, Any] = {"id": cid} if cid is not None else {}
+        if error is not None:
+            return {**head, "ok": False, "error": error}
+        return {**head, "ok": True, **(detail or {})}
 
 
 def co2_walk(state: dict[str, Any], rng: random.Random) -> None:
@@ -493,6 +535,12 @@ def _hwid(client_id: str) -> str:
     if head and tail and all(c in "0123456789abcdef" for c in tail):
         return tail
     return hashlib.sha256(client_id.encode()).hexdigest()[:16]
+
+
+def _mac(client_id: str) -> str:
+    """A stable, locally administered MAC address."""
+    digest = hashlib.sha256(b"mac:" + client_id.encode()).digest()
+    return ":".join(f"{b:02x}" for b in (0x02, *digest[:5]))
 
 
 def _dumps(doc: Mapping[str, Any]) -> bytes:

@@ -65,6 +65,16 @@ describe("SseParser", () => {
     expect(out.map((m) => m.id)).toEqual(["3", "4", "4"]);
   });
 
+  it("advances the last event id only when its event is dispatched", () => {
+    const p = new SseParser("1");
+    p.feed("id: 2\ndata: partial");
+    expect(p.lastEventId).toBe("1");
+    p.feed("\n\n");
+    expect(p.lastEventId).toBe("2");
+    p.feed("id: 3\n\n");
+    expect(p.lastEventId).toBe("3");
+  });
+
   it("an empty id resets the last event id", () => {
     const p = new SseParser("9");
     p.feed("id\ndata: a\n\n");
@@ -153,6 +163,27 @@ describe("openSse", () => {
     expect(calls[1]?.url).toBe("/events?after=2");
     expect(calls[1]?.headers["Last-Event-ID"]).toBe("2");
     expect(conn.lastEventId).toBe("3");
+    conn.close();
+    await conn.done;
+  });
+
+  it("resumes after the last complete event when the connection drops mid-event", async () => {
+    const { fn, calls } = fakeFetch((_call, n, signal) =>
+      n === 1
+        ? streamResponse(["id: 1\ndata: a\n\nid: 2\nevent: run.state\ndata: {\"seq\""])
+        : streamResponse(["id: 2\ndata: b\n\n"], { keepOpen: true, signal }),
+    );
+    const got: string[] = [];
+    const conn = openSse({
+      url: (last) => `/events?after=${last || 0}`,
+      fetch: fn,
+      initialDelayMs: 1,
+      random: () => 0,
+      onMessage: (m) => got.push(`${m.id}:${m.data}`),
+    });
+    await vi.waitFor(() => expect(got).toEqual(["1:a", "2:b"]));
+    expect(calls[1]?.url).toBe("/events?after=1");
+    expect(calls[1]?.headers["Last-Event-ID"]).toBe("1");
     conn.close();
     await conn.done;
   });

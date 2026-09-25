@@ -4,8 +4,8 @@
 The hub is a BACnet device of its own (instance ``device_instance``, name
 ``device_name``) with one UDP socket. Manifest entries give ``address``
 (``host[:port]``, IPv4, default port 47808), an optional ``device_instance``
-(the wildcard instance is used until the device reports its own) and an
-optional ``points`` allow-list (``[{obj, name?, units?}]``); without it every
+(otherwise learnt from the I-Am to a directed Who-Is) and an optional
+``points`` allow-list (``[{obj, name?, units?}]``); without it every
 point object of the ``object-list`` is mapped, up to ``max_objects``. Points
 and value conversion are described in ``mapping``.
 
@@ -51,6 +51,7 @@ from typing import Any, TypeVar
 
 from bacpypes3.apdu import ErrorRejectAbortNack, IAmRequest, SubscribeCOVRequest, WhoIsRequest
 from bacpypes3.basetypes import ErrorType, PropertyIdentifier, PropertyReference, PropertyValue, StatusFlags
+from bacpypes3.errors import AbortException, RejectException
 from bacpypes3.local.device import DeviceObject
 from bacpypes3.pdu import Address, GlobalBroadcast, IPv4Address
 from bacpypes3.primitivedata import ObjectIdentifier
@@ -88,6 +89,7 @@ from .mapping import (
 )
 from .stack import (
     DEFAULT_PORT,
+    ApplicationClosed,
     BacnetError,
     HubApplication,
     bacnet_error,
@@ -124,9 +126,24 @@ DEVICE_PROPS = (
 RENEW_FRACTION = 0.8
 #: Parallel ReadProperty requests when the object list is read element by element.
 _INDEX_WINDOW = 8
+#: Elements read at most that way, whatever the list's length says.
+_INDEX_LIMIT = 4096
+#: What bacpypes3 raises for an answer it cannot decode.
+_DECODE_ERRORS = (ValueError, TypeError, AttributeError, IndexError, KeyError, RejectException, AbortException)
 #: Discovered devices whose names are read; the rest only get instance and address.
 _PEEK_LIMIT = 64
 _FAULT_TEXT = "the device reports a fault (status-flags)"
+#: Abort and reject reasons of a ReadPropertyMultiple that asked for too much
+#: at once; other failures of a batch are about one of its properties.
+_TOO_BIG = frozenset({
+    "buffer-overflow", "segmentation-not-supported", "window-size-out-of-range",
+    "application-exceeded-reply-time", "out-of-resources", "tsm-timeout", "apdu-too-long",
+    "server-timeout", "too-many-arguments",
+})
+
+
+class NotStarted(HubError):
+    """The driver is not running (not started yet, or stopped meanwhile)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,10 +204,10 @@ class _Settings:
             device_instance=_int(s, "device_instance", 4194000, 0, MAX_INSTANCE),
             device_name=str(s.get("device_name", "uc-hub")) or "uc-hub",
             vendor_identifier=_int(s, "vendor_identifier", 999, 0, 65535),
-            timeout_s=_float(s, "timeout_s", 2.0),
+            timeout_s=_float(s, "timeout_s", 2.0, 60.0),
             retries=_int(s, "retries", 1, 0, 10),
-            poll_interval_s=_float(s, "poll_interval_s", 5.0),
-            refresh_s=_float(s, "refresh_s", 60.0),
+            poll_interval_s=_float(s, "poll_interval_s", 5.0, 86400.0),
+            refresh_s=_float(s, "refresh_s", 60.0, 86400.0),
             cov=bool(s.get("cov", True)),
             cov_lifetime_s=_int(s, "cov_lifetime_s", 300, 1, 86400),
             cov_confirmed=bool(s.get("cov_confirmed", False)),
@@ -205,13 +222,13 @@ def _int(s: Mapping[str, Any], key: str, default: int, low: int, high: int) -> i
     value = s.get(key, default)
     if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
         raise InvalidRequest(f"bacnet_ip.{key} must be an integer in {low}..{high}, not {value!r}")
-    return value
+    return int(value)
 
 
-def _float(s: Mapping[str, Any], key: str, default: float) -> float:
+def _float(s: Mapping[str, Any], key: str, default: float, high: float) -> float:
     value = s.get(key, default)
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not value > 0:
-        raise InvalidRequest(f"bacnet_ip.{key} must be a positive number, not {value!r}")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value <= high:
+        raise InvalidRequest(f"bacnet_ip.{key} must be a number in (0, {high:g}], not {value!r}")
     return float(value)
 
 
@@ -454,6 +471,8 @@ class BacnetIpDriver(Driver):
         dev = self._device(device)
         self._require_app()
         record = dev.record
+        if record.instance is None:
+            record.instance = await self._learn_instance(dev)
         asked = f"device:{record.instance if record.instance is not None else WILDCARD_DEVICE}"
         info = {prop: value for (_, prop), value in
                 (await self._read_props(dev, [(asked, p) for p in DEVICE_PROPS])).items()}
@@ -481,33 +500,30 @@ class BacnetIpDriver(Driver):
         missing: list[str] = []
         now = time.time()
         for obj in objs:
-            type_name, _ = parse_point_obj(obj)
-            info_t = POINT_TYPES[type_name]
+            type_name, obj_instance = parse_point_obj(obj)
+            type_info = POINT_TYPES[type_name]
             entry = (dev.allow or {}).get(obj, {})
-            name_raw = values.get((obj, "object-name"))
+
+            def known(name: str, obj: str = obj) -> Any:
+                value = values.get((obj, name))
+                return None if isinstance(value, _PropError) else value
+
             pv_raw = values.get((obj, PV))
-            if isinstance(name_raw, _PropError) and isinstance(pv_raw, _PropError):
+            if known("object-name") is None and isinstance(pv_raw, _PropError):
                 missing.append(obj)
-            units_raw = values.get((obj, "units"))
-            units = entry.get("units") or (
-                None if units_raw is None or isinstance(units_raw, _PropError) else units_name(units_raw)
-            )
-            description = values.get((obj, "description"))
             ref = PointRef(self.ctx.site, dev.name, obj)
             points.append(Point(
                 ref=ref,
-                name=clean_text(entry.get("name")) or (
-                    obj if isinstance(name_raw, _PropError) or name_raw is None else clean_text(name_raw) or obj
-                ),
-                kind=info_t.kind,
-                datatype=info_t.datatype,
-                units=units,
-                writable=info_t.kind is not PointKind.INPUT,
+                name=clean_text(entry.get("name")) or clean_text(known("object-name")) or obj,
+                kind=type_info.kind,
+                datatype=type_info.datatype,
+                units=clean_text(entry.get("units")) or units_name(known("units")),
+                writable=type_info.kind is not PointKind.INPUT,
                 commandable=obj in commandable,
-                description="" if isinstance(description, _PropError) else clean_text(description),
+                description=clean_text(known("description")),
                 source=f"bacnet-ip:{dev.key}",
                 space=record.space,
-                meta={"type": type_name, "instance": int(obj.rsplit(":", 1)[1])},
+                meta={"type": type_name, "instance": obj_instance},
             ))
             reading = self._reading(ref, type_name, pv_raw, None, now)
             dev.last[obj] = (reading.value, reading.quality)
@@ -539,6 +555,31 @@ class BacnetIpDriver(Driver):
         if missing:
             extra["missing_objects"] = missing
         return DeviceDescription(device=record, points=points, apps=[], extra=extra)
+
+    async def _learn_instance(self, dev: _Device) -> int | None:
+        """The device instance from the I-Am to a directed Who-Is. The
+        wildcard instance would do in one request, but not every device
+        honours it (bacpypes3-based ones do not)."""
+        app = self._require_app()
+        address = self._address(dev)
+        answer: asyncio.Future[int] = asyncio.get_running_loop().create_future()
+
+        def on_i_am(apdu: IAmRequest) -> None:
+            if format_address(apdu.pduSource) == dev.key and not answer.done():
+                answer.set_result(int(apdu.iAmDeviceIdentifier[1]))
+
+        app.i_am_listeners.add(on_i_am)
+        try:
+            await app.send_unconfirmed(WhoIsRequest(destination=address))
+            async with asyncio.timeout(self.settings.timeout_s):
+                return await answer
+        except TimeoutError:
+            logger.info("%s: no I-Am to a directed Who-Is; trying the wildcard device instance", dev.name)
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.warning("%s: Who-Is failed: %s", dev.name, e)
+        finally:
+            app.i_am_listeners.discard(on_i_am)
+        return None
 
     @staticmethod
     def _describe_props(info: TypeInfo) -> tuple[str, ...]:
@@ -583,9 +624,10 @@ class BacnetIpDriver(Driver):
             ids: list[Any] = list(await self._call(
                 dev, lambda: app.read_property(address, oid, "object-list"), track=False
             ))
+            total = len(ids)
         except (BacnetError, DeviceTimeout) as e:
             logger.info("%s: object-list unreadable as a whole (%s); reading it by index", dev.name, e)
-            ids = await self._object_list_by_index(dev, oid)
+            ids, total = await self._object_list_by_index(dev, oid)
         objs: list[str] = []
         skipped: Counter[str] = Counter()
         truncated = False
@@ -599,12 +641,16 @@ class BacnetIpDriver(Driver):
                 objs.append(obj)
             else:
                 truncated = True
-        return objs, len(ids), skipped, truncated
+        return objs, total, skipped, truncated or len(ids) < total
 
-    async def _object_list_by_index(self, dev: _Device, oid: ObjectIdentifier) -> list[Any]:
+    async def _object_list_by_index(self, dev: _Device, oid: ObjectIdentifier) -> tuple[list[Any], int]:
+        """Object identifiers read one by one, until more than ``max_objects``
+        point objects are known; and the length of the list."""
         app = self._require_app()
         address = self._address(dev)
         count = int(await self._call(dev, lambda: app.read_property(address, oid, "object-list", array_index=0)))
+        if count > _INDEX_LIMIT:
+            logger.warning("%s: object-list has %d entries; reading the first %d", dev.name, count, _INDEX_LIMIT)
 
         async def element(index: int) -> Any:
             try:
@@ -615,8 +661,9 @@ class BacnetIpDriver(Driver):
 
         ids: list[Any] = []
         points = 0
-        for start in range(1, count + 1, _INDEX_WINDOW):
-            window = range(start, min(count, start + _INDEX_WINDOW - 1) + 1)
+        last = min(count, _INDEX_LIMIT)
+        for start in range(1, last + 1, _INDEX_WINDOW):
+            window = range(start, min(last, start + _INDEX_WINDOW - 1) + 1)
             for raw in await _all(element(i) for i in window):
                 if raw is None:
                     continue
@@ -626,7 +673,7 @@ class BacnetIpDriver(Driver):
                     points += 1
             if points > self.settings.max_objects:
                 break
-        return ids
+        return ids, count
 
     # -- values -------------------------------------------------------------------
     async def read(self, refs: list[PointRef]) -> list[Reading]:
@@ -662,7 +709,7 @@ class BacnetIpDriver(Driver):
             return {obj: Reading(self._ref(dev, obj), None, now, Quality.OFFLINE, error=error) for obj in objs}
         try:
             return await self._read_objects_raw(dev, objs)
-        except DeviceTimeout as e:
+        except (DeviceTimeout, NotStarted) as e:
             return {obj: Reading(self._ref(dev, obj), None, now, Quality.OFFLINE, error=str(e)) for obj in objs}
 
     async def _read_objects_raw(self, dev: _Device, objs: Sequence[str]) -> dict[str, Reading]:
@@ -696,11 +743,14 @@ class BacnetIpDriver(Driver):
         if problem is not None:
             raise NotFound(f"{ref}: {problem}")
         type_name, instance = parse_point_obj(ref.obj)
-        if priority is not None and (isinstance(priority, bool) or not 1 <= priority <= 16):
+        if priority is not None and (isinstance(priority, bool) or not isinstance(priority, int)
+                                     or not 1 <= priority <= 16):
             raise InvalidRequest(f"priority must be 1..16, not {priority!r}")
         payload = to_bacnet(type_name, value)
         point = dev.points.get(ref.obj)
         if point is not None and not point.commandable:
+            if value is None:
+                raise InvalidRequest(f"{ref} has no priority array; there is nothing to relinquish")
             priority = None
         elif value is None and priority is None:
             priority = 16
@@ -808,9 +858,9 @@ class BacnetIpDriver(Driver):
         s = self.settings
         objs = list(dev.watched)
         if s.cov:
-            for obj in objs:
-                if obj not in dev.polled and loop.time() >= dev.cov.get(obj, 0.0):
-                    await self._subscribe(dev, obj, loop)
+            now = loop.time()
+            await _all(self._subscribe(dev, obj, loop) for obj in objs
+                       if obj not in dev.polled and now >= dev.cov.get(obj, 0.0))
         polled = [obj for obj in objs if not s.cov or obj in dev.polled]
         now = loop.time()
         due: list[str] = []
@@ -858,6 +908,11 @@ class BacnetIpDriver(Driver):
             lifetime=s.cov_lifetime_s,
             destination=self._address(dev),
         )
+        # Recorded before the request goes out: when the monitor is cancelled
+        # (unwatch, remove_device, stop) while the device is already creating
+        # the subscription, the cancellation that follows still covers it
+        # instead of leaving it in the device's subscription table.
+        dev.cov[obj] = loop.time() + s.cov_lifetime_s * RENEW_FRACTION
         try:
             await self._call(dev, lambda: app.request(request))
         except BacnetError as e:
@@ -866,6 +921,9 @@ class BacnetIpDriver(Driver):
             dev.polled.add(obj)
             dev.next_poll = 0.0
             return
+        except Exception:
+            dev.cov.pop(obj, None)
+            raise
         if obj in dev.watched:
             dev.cov[obj] = loop.time() + s.cov_lifetime_s * RENEW_FRACTION
         else:
@@ -937,11 +995,20 @@ class BacnetIpDriver(Driver):
                     logger.info("%s does not support ReadPropertyMultiple; using ReadProperty", dev.name)
                     dev.rpm = False
                     break
-                if e.kind != "error" and len(batch) > 1:
+                if e.kind in ("abort", "reject") and e.reason in _TOO_BIG and len(batch) > 1:
                     dev.max_props = max(1, len(batch) // 2)
                     logger.info("%s: %s; reading %d properties per request", dev.name, e, dev.max_props)
                     continue
-                out.update(await self._rp_batch(dev, batch))
+                if e.kind != "error" and len(batch) > 1:
+                    # One property the device or bacpypes3 chokes on (an
+                    # undecodable value, say): halve this batch only, so the
+                    # rest of the device keeps its batch size.
+                    logger.debug("%s: %s; splitting a batch of %d", dev.name, e, len(batch))
+                    half = len(batch) // 2
+                    out.update(await self._read_props(dev, batch[:half]))
+                    out.update(await self._read_props(dev, batch[half:]))
+                else:
+                    out.update(await self._rp_batch(dev, batch))
             i += len(batch)
         if i < len(pairs):
             out.update(await self._rp_batch(dev, pairs[i:]))
@@ -1010,9 +1077,9 @@ class BacnetIpDriver(Driver):
                 error = DeviceTimeout(f"{dev.name} did not answer")
             except ErrorRejectAbortNack as e:
                 error = bacnet_error(dev.name, e)
-            except HubError:
-                raise
-            except (ValueError, TypeError, AttributeError, IndexError, KeyError) as e:
+            except ApplicationClosed:
+                raise NotStarted(f"the bacnet-ip driver stopped before {dev.name} answered") from None
+            except _DECODE_ERRORS as e:
                 logger.debug("%s: undecodable answer", dev.name, exc_info=True)
                 error = BacnetError(f"{dev.name}: undecodable answer: {e}", "decode", type(e).__name__)
             else:
@@ -1026,7 +1093,7 @@ class BacnetIpDriver(Driver):
     # -- state --------------------------------------------------------------------
     def _require_app(self) -> HubApplication:
         if self._app is None:
-            raise HubError("the bacnet-ip driver is not started")
+            raise NotStarted("the bacnet-ip driver is not started")
         return self._app
 
     def _device(self, name: str) -> _Device:
@@ -1105,11 +1172,12 @@ async def _quietly(coros: Iterable[Coroutine[Any, Any, None]]) -> None:
 
 
 async def _all(coros: Iterable[Coroutine[Any, Any, T]]) -> list[T]:
-    """Run ``coros`` together; the first ``DeviceTimeout`` cancels the rest
-    (a silent device would only make each of them wait for its timeout)."""
+    """Run ``coros`` together; the first hub error (a ``DeviceTimeout``, or
+    ``NotStarted`` when the driver stops) cancels the rest, whose answers no
+    longer matter, and is raised as itself."""
     try:
         async with asyncio.TaskGroup() as group:
             tasks = [group.create_task(c) for c in coros]
-    except* DeviceTimeout as eg:
+    except* HubError as eg:
         raise eg.exceptions[0] from None
     return [t.result() for t in tasks]

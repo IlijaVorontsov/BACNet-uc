@@ -1,9 +1,11 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { foldEvents, initialRunView, type AssistantItem, type RunView } from "../../state/runReducer";
+import { foldEvents, initialRunView, openQuestions, type AssistantItem, type RunView } from "../../state/runReducer";
 import { ApiClient, ApiError } from "../client";
-import type { Reading, RunEvent } from "../types";
+import type { Approval, Reading, RunEvent } from "../types";
+import { MockRun, runScript, ScriptContext } from "./runs";
 import { MockServer } from "./server";
+import { MockSite } from "./site";
 
 const ORIGIN = "http://mock.local";
 let server: MockServer;
@@ -171,6 +173,51 @@ describe("MockServer", () => {
     await client.cancelRun(slow.id);
     const cancelled = await follow(slow.id, (v) => v.state === "cancelled");
     expect(cancelled.items.at(-1)).toMatchObject({ kind: "notice", state: "cancelled" });
+  });
+
+  it("closes the open question when the run is cancelled", async () => {
+    const { runs } = await client.runs();
+    const run = runs[0]!;
+    const view = await follow(run.id, (v) => v.state === "waiting_answer" && openQuestions(v).length === 1);
+    const question = openQuestions(view)[0]!;
+    await client.cancelRun(run.id);
+    await expect(client.answer(run.id, question.questionId, "Yes")).rejects.toMatchObject({ status: 409, code: "conflict" });
+    await follow(run.id, (v) => v.state === "cancelled");
+  });
+
+  it("keeps a cancelled approval rejected: its expiry timer is stopped", async () => {
+    const site = new MockSite({ now: () => Date.now() / 1000 });
+    const run = new MockRun("r_t", "t", "dev", Date.now() / 1000, "m");
+    let n = 0;
+    const approvals: Approval[] = [];
+    const ctx = new ScriptContext(run, {
+      site,
+      ids: { next: (prefix) => `${prefix}${++n}` },
+      addApproval: (a) => approvals.push(a),
+      user: "dev",
+      speed: 1000,
+      virtualStart: null,
+      approvalTtlS: 0.05,
+    });
+    // The gate is set synchronously right after this event, before the listener's continuation runs.
+    const waiting = new Promise<void>((resolve) =>
+      run.subscribe((ev) => {
+        if (ev.type === "run.state" && ev.state === "waiting_approval") resolve();
+      }),
+    );
+    const spec = { title: "Apply", summary: [], diff: "", rollback: "", planId: null };
+    const done = runScript(ctx, async (c) => {
+      await c.gatedTool("apply", "C", {}, spec, 0, () => ({ ok: true, summary: "applied" }));
+    });
+    await waiting;
+    expect(run.approvalGate).not.toBeNull();
+    run.cancel();
+    await done;
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(approvals[0]?.state).toBe("rejected");
+    expect(run.approvalGate).toBeNull();
+    expect(run.summary.state).toBe("cancelled");
+    site.stop();
   });
 
   it("streams live values, starting with the cached ones", async () => {

@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import os
 import random
 import socket
@@ -94,12 +95,14 @@ class BrokerSettings:
         reconnect_min_s = positive_number(settings, "reconnect_min_s", 0.5)
         return cls(
             host=_text(settings, "host", "127.0.0.1"),
-            port=int(positive_number(settings, "port", 8883 if tls else 1883, maximum=65535)),
+            port=int(positive_number(settings, "port", 8883 if tls else 1883,
+                                      maximum=65535, integer=True)),
             tls=tls,
             username=str(username) if username else None,
             password=str(password) if password is not None else None,
             client_id=_text(settings, "client_id", "uc-hub"),
-            keepalive_s=int(positive_number(settings, "keepalive_s", 30, maximum=65535)),
+            keepalive_s=int(positive_number(settings, "keepalive_s", 30,
+                                             maximum=65535, integer=True)),
             timeout_s=positive_number(settings, "timeout_s", 10.0),
             reconnect_min_s=reconnect_min_s,
             reconnect_max_s=max(reconnect_min_s,
@@ -146,7 +149,8 @@ class BrokerLink:
     ``on_message(topic, payload, retained)`` runs synchronously for every
     message, in arrival order. ``on_connect`` runs once the subscriptions are
     restored, while messages are already being delivered, and
-    ``on_disconnect`` runs when a session that was up has ended.
+    ``on_disconnect`` runs when a session that was up, or that delivered
+    messages, has ended.
     """
 
     def __init__(
@@ -231,15 +235,15 @@ class BrokerLink:
     # -- subscriptions and publishing ------------------------------------------
     async def subscribe(self, filters: Iterable[str]) -> None:
         """Add filters (reference counted). They are subscribed now when
-        connected, and again after every reconnect."""
-        new = []
-        for f in filters:
-            if self._filters[f] == 0:
-                new.append(f)
+        connected, and again after every reconnect. A filter that is already
+        held is subscribed again too: that makes the broker replay its
+        retained messages, which the new holder has not seen yet."""
+        wanted = list(filters)
+        for f in wanted:
             self._filters[f] += 1
         client, down = self._client, self._down
-        if new and client is not None and down is not None:
-            await self._send_subscribe(client, down, new)
+        if wanted and client is not None and down is not None:
+            await self._send_subscribe(client, down, list(dict.fromkeys(wanted)))
 
     async def unsubscribe(self, filters: Iterable[str]) -> None:
         gone = []
@@ -271,6 +275,7 @@ class BrokerLink:
     # -- connection loop --------------------------------------------------------
     async def _run(self) -> None:
         loop = asyncio.get_running_loop()
+        me = asyncio.current_task()
         backoff = self.settings.reconnect_min_s
         last_failure = ""
         while not self._closing:
@@ -278,6 +283,7 @@ class BrokerLink:
                 client_id=self.client_id, will=self._will, ssl_context=self._ssl,
             )
             up_since: float | None = None
+            delivered = False
             try:
                 async with client:
                     up_since = loop.time()
@@ -287,24 +293,32 @@ class BrokerLink:
                     setup = asyncio.create_task(self._setup(client, down))
                     try:
                         async for message in client.messages:
+                            delivered = True
                             self._deliver(message)
                     finally:
                         down.set_result(None)
                         setup.cancel()
                         await asyncio.gather(setup, return_exceptions=True)
-            except aiomqtt.MqttError as e:
-                if not self._closing:
+            except Exception as e:
+                if me is not None and me.cancelling():
+                    # aiomqtt's DISCONNECT on the way out failed (it raises when
+                    # the broker does not answer in time) while this task was
+                    # being cancelled: that must end the task, not reconnect.
+                    raise asyncio.CancelledError from e
+                if not isinstance(e, aiomqtt.MqttError):
+                    logger.exception("%s: MQTT session failed", self.client_id)
+                elif not self._closing:
                     what = "cannot connect to" if up_since is None else "connection lost to"
                     failure = f"{what} {self.settings.url}: {e.__cause__ or e}"
                     # While the broker stays away, say so once, not on every retry.
                     level = logging.DEBUG if failure == last_failure else logging.WARNING
                     logger.log(level, "%s: %s", self.client_id, failure)
                     last_failure = failure
-            except Exception:
-                logger.exception("%s: MQTT session failed", self.client_id)
             finally:
                 self._client = self._down = None
-                if self._up.is_set():
+                # Retained messages can arrive before the SUBACK; a session that
+                # ends in between still leaves state that must be marked down.
+                if self._up.is_set() or delivered:
                     self._up.clear()
                     self._notify_down()
             if self._closing:
@@ -440,8 +454,12 @@ def _tls(raw: Any) -> TlsSettings | None:
         paths[k] = os.fspath(os.path.expanduser(v)) if v is not None else None
     if paths["key"] and not paths["cert"]:
         raise InvalidRequest("MQTT: tls.key needs tls.cert")
+    insecure = raw.get("insecure")
+    # Strict: a quoted "false" must not switch the host name check off.
+    if insecure is not None and not isinstance(insecure, bool):
+        raise InvalidRequest(f"MQTT: tls.insecure must be true or false, not {insecure!r}")
     return TlsSettings(ca=paths["ca"], cert=paths["cert"], key=paths["key"],
-                       insecure=bool(raw.get("insecure", False)))
+                       insecure=bool(insecure))
 
 
 def _text(settings: Mapping[str, Any], key: str, default: str) -> str:
@@ -454,13 +472,18 @@ def _text(settings: Mapping[str, Any], key: str, default: str) -> str:
 
 
 def positive_number(
-    settings: Mapping[str, Any], key: str, default: float, *, maximum: float | None = None,
+    settings: Mapping[str, Any], key: str, default: float, *,
+    maximum: float | None = None, integer: bool = False,
 ) -> float:
+    """``integer`` rejects fractions, which callers would truncate (a
+    ``keepalive_s`` of 0.5 would become 0 and switch keep-alive off)."""
     v = settings.get(key)
     if v is None:
         return float(default)
-    if isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0:
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 < v < math.inf:
         raise InvalidRequest(f"MQTT: {key} must be a positive number, not {v!r}")
+    if integer and not float(v).is_integer():
+        raise InvalidRequest(f"MQTT: {key} must be a whole number, not {v!r}")
     if maximum is not None and v > maximum:
         raise InvalidRequest(f"MQTT: {key} must be at most {maximum:g}")
     return float(v)

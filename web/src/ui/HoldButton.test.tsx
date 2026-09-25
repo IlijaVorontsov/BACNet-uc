@@ -67,6 +67,36 @@ describe("HoldButton", () => {
     expect(second.onConfirm).not.toHaveBeenCalled();
   });
 
+  it("returns to idle when the confirmed action reports a failure, so the hold can be repeated", async () => {
+    const onConfirm = vi.fn(() => Promise.resolve(false));
+    const { button } = setup({ onConfirm });
+    fireEvent.pointerDown(button, { button: 0, pointerId: 1 });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1600);
+    });
+    fireEvent.pointerUp(button);
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+    expect(button.disabled).toBe(false);
+    expect(button.textContent).toBe("Hold to apply");
+
+    fireEvent.pointerDown(button, { button: 0, pointerId: 1 });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1600);
+    });
+    expect(onConfirm).toHaveBeenCalledTimes(2);
+  });
+
+  it("stays confirmed when the action succeeds", async () => {
+    const onConfirm = vi.fn(() => Promise.resolve(true));
+    const { button } = setup({ onConfirm, doneLabel: "Applying…" });
+    fireEvent.pointerDown(button, { button: 0, pointerId: 1 });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1600);
+    });
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toBe("Applying…");
+  });
+
   it("cancels when focus leaves and does nothing while disabled", () => {
     const { onConfirm, button } = setup();
     fireEvent.keyDown(button, { key: "Enter" });

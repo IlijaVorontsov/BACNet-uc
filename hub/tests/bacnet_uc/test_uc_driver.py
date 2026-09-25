@@ -171,6 +171,36 @@ async def test_read_offline_and_back(driver: BacnetUcDriver, node: SimNode, sink
     assert sink.online == [("r204-ctl", False), ("r204-ctl", True)]
 
 
+async def test_read_of_a_silent_node_costs_one_timeout(node: SimNode, sink: Sink) -> None:
+    drv = make_driver(sink, timeout_s=0.2, retries=0)
+    await drv.add_device(record(node.name), spec(node))
+    original = node.handle_datagram
+    sent = 0
+
+    def count(data: bytes) -> bytes | None:
+        nonlocal sent
+        sent += 1
+        return original(data)
+
+    node.handle_datagram = count  # type: ignore[method-assign]
+    node.online = False
+    try:
+        readings = await drv.read([ref("analog-input:1")] * 16)
+        assert {r.quality for r in readings} == {Quality.OFFLINE}
+        assert all(r.error for r in readings)
+        # One wave of max_inflight requests, not 16 / 4 waves of timeouts.
+        assert sent <= 4
+    finally:
+        await drv.stop()
+
+
+async def test_bad_settings_are_rejected(sink: Sink) -> None:
+    for bad in ({"read_concurrency": 0}, {"poll_interval_s": 0}, {"heartbeat_s": -1},
+                {"refresh_s": 0}, {"max_inflight": 0}):
+        with pytest.raises(ValueError):
+            make_driver(sink, **bad)
+
+
 async def test_write_relinquish_priority_array(driver: BacnetUcDriver) -> None:
     ao = ref("analog-output:1")
     result = await driver.write(ao, 42, 12)
@@ -250,6 +280,27 @@ async def test_watch_publishes_changes_and_tracks_online(driver: BacnetUcDriver,
     count = len(sink.readings)
     await asyncio.sleep(0.2)
     assert len(sink.readings) == count
+
+
+async def test_rewatch_after_unwatch_during_a_poll_publishes(driver: BacnetUcDriver, sink: Sink) -> None:
+    ai = ref("analog-input:1")
+    read_many = driver._read_many
+    unwatched = asyncio.Event()
+
+    async def unwatch_while_polling(refs: list[PointRef]) -> list[Reading]:
+        readings = await read_many(refs)
+        if not unwatched.is_set():
+            await driver.unwatch([ai])  # the poll is still in flight
+            unwatched.set()
+        return readings
+
+    driver._read_many = unwatch_while_polling  # type: ignore[method-assign]
+    await driver.start()
+    await driver.watch([ai])
+    await asyncio.wait_for(unwatched.wait(), 3)
+    count = len(sink.values("analog-input:1"))
+    await driver.watch([ai])  # unchanged value: a new watcher still gets it
+    await wait_until(lambda: len(sink.values("analog-input:1")) > count)
 
 
 async def test_watch_full_refresh(node: SimNode, sink: Sink) -> None:

@@ -45,7 +45,8 @@ async def next_on(client: aiomqtt.Client, topic: str, timeout_s: float = 3.0) ->
 
 async def command(client: aiomqtt.Client, payload: str | bytes) -> dict[str, Any]:
     await client.publish(f"{PREFIX}/cmd", payload, qos=1)
-    return json.loads(await next_on(client, f"{PREFIX}/event"))
+    reply: dict[str, Any] = json.loads(await next_on(client, f"{PREFIX}/event"))
+    return reply
 
 
 async def start(broker: Broker, sims: Sims, **options: Any) -> SimMqttTlsDevice:
@@ -88,11 +89,13 @@ async def test_legacy_node_on_the_wire(broker: Broker, sims: Sims) -> None:
 
 @pytest.mark.mosquitto
 async def test_modern_node_on_the_wire(broker: Broker, sims: Sims) -> None:
-    node = await start(broker, sims, modern=True, has_led=False,
-                       extra_telemetry={"co2": ("ppm", 450)})
+    """Firmware 0.3.0 (apps/mqtt_tls/src/commands.c on the MQTT firmware branch)."""
+    node = await start(broker, sims, modern=True, extra_telemetry={"co2": ("ppm", 450)})
     info = node.info()
-    assert info["hwid"] == "0a1b2c3d" and info["fw"] == "0.2.0"
-    assert info["caps"] == {"cmds": ["ping", "identify"],
+    assert list(info) == ["fw", "board", "zephyr", "hwid", "mac", "ip", "tls", "caps"]
+    assert info["hwid"] == "0a1b2c3d" and info["fw"] == "0.3.0"
+    assert info["mac"].startswith("02:") and len(info["mac"]) == 17
+    assert info["caps"] == {"cmds": ["ping", "led", "identify"],
                             "telemetry": {"seq": "count", "uptime_s": "s",
                                           "sessions": "count", "co2": "ppm"}}
     async with watcher(broker, f"{PREFIX}/event", f"{PREFIX}/telemetry") as client:
@@ -101,18 +104,64 @@ async def test_modern_node_on_the_wire(broker: Broker, sims: Sims) -> None:
         reply = await command(client, '{"id": "c1", "cmd": "identify", "arg": "7"}')
         assert reply == {"id": "c1", "ok": True, "identify": 7}
         assert node.identifying
-        reply = await command(client, '{"id": "c2", "cmd": "identify", "arg": 0}')
-        assert reply == {"id": "c2", "ok": True, "identify": 0} and not node.identifying
-        reply = await command(client, '{"id": "c3", "cmd": "led", "arg": "on"}')
-        assert reply == {"id": "c3", "ok": False, "error": "led unavailable", "code": -19}
-        assert await command(client, '{"cmd": "ping"}') == {"ok": False, "error": "bad id"}
-        assert await command(client, '{"id": "' + "x" * 17 + '", "cmd": "ping"}') == {
-            "ok": False, "error": "bad id"}
-        assert await command(client, "{not json") == {"ok": False, "error": "bad json"}
-        assert await command(client, '{"id": "c4", "cmd": ["x"]}') == {
-            "id": "c4", "ok": False, "error": "bad command"}
-        assert await command(client, "identify") == {"identify": 30}
-        assert await command(client, "identify soon") == {"error": "bad argument"}
+        # Any LED command ends identify.
+        reply = await command(client, '{"id": "r.2:x-_", "cmd": "led", "arg": "on"}')
+        assert reply == {"id": "r.2:x-_", "ok": True, "led": True} and not node.identifying
+        # The ID is optional; every reply carries "ok", plain text too.
+        assert await command(client, '{"cmd": "led", "arg": "toggle"}') == {
+            "ok": True, "led": False}
+        assert (await command(client, "ping"))["ok"] is True
+        assert await command(client, "identify") == {"ok": True, "identify": 30}
+        assert await command(client, "identify 0") == {"ok": True, "identify": 0}
+        assert not node.identifying
+        # Errors, with the ID echoed whenever it is valid.
+        for payload, reply in [
+            ('{"id": "c2", "cmd": "identify", "arg": 7}', {"ok": False, "error": "invalid json"}),
+            ('{"id": 5, "cmd": "ping"}', {"ok": False, "error": "invalid json"}),
+            ("{not json", {"ok": False, "error": "invalid json"}),
+            ('{"id": "' + "x" * 17 + '", "cmd": "ping"}', {"ok": False, "error": "invalid id"}),
+            ('{"id": "a b", "cmd": "ping"}', {"ok": False, "error": "invalid id"}),
+            ('{"id": "c3"}', {"id": "c3", "ok": False, "error": "missing cmd"}),
+            ('{"id": "c4", "cmd": "ping", "arg": "x"}',
+             {"id": "c4", "ok": False, "error": "unknown command"}),
+            ('{"id": "c5", "cmd": "led"}', {"id": "c5", "ok": False, "error": "bad argument"}),
+            ('{"id": "c6", "cmd": "identify", "arg": "3601"}',
+             {"id": "c6", "ok": False, "error": "bad argument"}),
+            ("identify soon", {"ok": False, "error": "bad argument"}),
+            ("identify ", {"ok": False, "error": "bad argument"}),
+            ("led dim", {"ok": False, "error": "bad argument"}),
+            ("reboot", {"ok": False, "error": "unknown command"}),
+            (' {"cmd": "ping"}', {"ok": False, "error": "unknown command"}),
+            (b"x" * 200, {"ok": False, "error": "payload too large"}),
+        ]:
+            assert await command(client, payload) == reply, payload
+
+
+@pytest.mark.mosquitto
+async def test_modern_node_without_led(broker: Broker, sims: Sims) -> None:
+    node = await start(broker, sims, modern=True, has_led=False)
+    assert node.info()["caps"]["cmds"] == ["ping"]
+    async with watcher(broker, f"{PREFIX}/event") as client:
+        assert await command(client, '{"id": "i", "cmd": "identify", "arg": "5"}') == {
+            "id": "i", "ok": False, "error": "led unavailable"}
+        assert await command(client, "led on") == {"ok": False, "error": "led unavailable"}
+    assert not node.identifying
+
+
+@pytest.mark.mosquitto
+async def test_modern_node_ignores_retained_and_empty_commands(
+    broker: Broker, sims: Sims,
+) -> None:
+    async with watcher(broker, f"{PREFIX}/event") as client:
+        # A stale command left on the broker reaches a new subscriber retained.
+        await client.publish(f"{PREFIX}/cmd", b"led on", qos=1, retain=True)
+        node = await start(broker, sims, modern=True)
+        await client.publish(f"{PREFIX}/cmd", b"", qos=1)
+        await eventually(lambda: len(node.commands) == 2, what="both commands delivered")
+        # Neither was answered: the first reply on the event topic is the ping's.
+        reply = await command(client, "ping")
+        assert reply["ok"] is True and "pong" in reply
+    assert sorted(node.commands[:2]) == [b"", b"led on"] and node.led is False
 
 
 @pytest.mark.mosquitto

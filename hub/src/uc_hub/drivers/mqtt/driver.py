@@ -65,7 +65,7 @@ class MqttDriver(Driver):
         self.command_timeout_s = positive_number(
             settings, "command_timeout_s", DEFAULT_COMMAND_TIMEOUT_S)
         self.max_payload_bytes = int(positive_number(
-            settings, "max_payload_bytes", DEFAULT_MAX_PAYLOAD_BYTES))
+            settings, "max_payload_bytes", DEFAULT_MAX_PAYLOAD_BYTES, integer=True))
         self._devices: dict[str, Profile] = {}
         self._exact: dict[str, list[Profile]] = {}
         self._wild: dict[str, list[Profile]] = {}
@@ -132,7 +132,10 @@ class MqttDriver(Driver):
                     async with asyncio.timeout(timeout_s):
                         async for message in client.messages:
                             payload = message.payload
-                            if isinstance(payload, (bytes, bytearray)):
+                            # Retained info comes from any device on the broker:
+                            # the same size limit as for live messages applies.
+                            if isinstance(payload, (bytes, bytearray)) \
+                                    and len(payload) <= self.max_payload_bytes:
                                 _collect(message.topic.value, bytes(payload), found)
         except aiomqtt.MqttError as e:
             raise DeviceError(f"MQTT discovery: cannot use broker {self.broker.url}: {e}") from e

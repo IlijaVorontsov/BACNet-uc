@@ -377,7 +377,14 @@ export function pendingApprovals(view: RunView): Approval[] {
   return view.items.flatMap((it) => (it.kind === "approval" && it.approval.state === "pending" ? [it.approval] : []));
 }
 
+/** True while the run's questions can still be answered (it may not have switched to waiting yet). */
+export function acceptsAnswers(state: RunState | null): boolean {
+  return state === "waiting_answer" || state === "running";
+}
+
+/** Unanswered questions the run still waits for; none once it ended or was cancelled. */
 export function openQuestions(view: RunView): QuestionItem[] {
+  if (!acceptsAnswers(view.state)) return [];
   return view.items.filter((it): it is QuestionItem => it.kind === "question" && it.answer === null);
 }
 

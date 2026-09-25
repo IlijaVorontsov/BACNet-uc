@@ -126,6 +126,72 @@ async def test_upload_resumes_after_lost_response(net: SimNetwork) -> None:
         await c.close()
 
 
+async def test_upload_survives_many_lost_responses(net: SimNetwork) -> None:
+    sim = SimNode(name="lossy", instance=10, mtu=256, network=net)
+    await sim.start()
+    c = make_client(sim, timeout_s=0.1, retries=4)
+    data = os.urandom(6000)
+    original = sim.handle_datagram
+    calls = 0
+
+    def lose_every_fourth_response(raw: bytes) -> bytes | None:
+        nonlocal calls
+        calls += 1
+        reply = original(raw)
+        return None if calls % 4 == 0 else reply
+
+    sim.handle_datagram = lose_every_fourth_response  # type: ignore[method-assign]
+    try:
+        await c.file_upload("/lfs/apps/lossy.bin", data)  # ~8 lost answers, never 3 in a row
+        assert sim.fs["/lfs/apps/lossy.bin"] == data
+    finally:
+        await c.close()
+
+
+async def test_lost_first_response_does_not_corrupt_upload(net: SimNetwork) -> None:
+    # Zephyr keeps counting from its open upload context when chunk 0 comes
+    # again, and without the FS hash nothing else would notice.
+    sim = SimNode(name="lossy", instance=10, mtu=256, network=net, features=SimFeatures(fs_hash=False))
+    await sim.start()
+    c = make_client(sim, timeout_s=0.1, retries=2)
+    data = os.urandom(2000)
+    original = sim.handle_datagram
+    calls = 0
+
+    def lose_first_chunk_response(raw: bytes) -> bytes | None:
+        nonlocal calls
+        calls += 1
+        reply = original(raw)
+        return None if calls == 2 else reply  # 1 = mcumgr_params, 2 = chunk 0
+
+    sim.handle_datagram = lose_first_chunk_response  # type: ignore[method-assign]
+    try:
+        await c.file_upload("/lfs/apps/lossy.bin", data)
+        assert sim.fs["/lfs/apps/lossy.bin"] == data
+    finally:
+        await c.close()
+
+
+async def test_unencodable_request_leaves_no_pending_sequence(client: SmpNodeClient) -> None:
+    with pytest.raises(InvalidRequest):
+        await client.echo("x" * 70000)  # CBOR payload over 65535 bytes
+    with pytest.raises(InvalidRequest):
+        await client.prop_write("analog-value", 1, object())
+    assert client._pending == {}
+    assert await client.echo("ok") == "ok"
+
+
+async def test_app_list_larger_than_one_frame(client: SmpNodeClient, node: SimNode) -> None:
+    await client.file_upload("/lfs/apps/idle.wasm", WASM)
+    names = [f"app-{i}" for i in range(8)]
+    for name in names:
+        await client.app_install({"name": name, "file": "/lfs/apps/idle.wasm",
+                                  "perms": ["bacnet.local", "bacnet.remote"], "params": {"a": "1"}})
+    apps = await client.app_list()  # 8 statuses do not fit a 1024 byte SMP buffer
+    assert [a["name"] for a in apps] == names
+    assert all(a["state"] == "running" for a in apps)
+
+
 async def test_empty_file_and_missing_file(client: SmpNodeClient, node: SimNode) -> None:
     await client.file_upload("/lfs/data/empty", b"")
     assert node.fs["/lfs/data/empty"] == b""
@@ -157,6 +223,24 @@ async def test_reload_io_and_objects_paging(client: SmpNodeClient, node: SimNode
                   "pv": pytest.approx(20.0)}
     with pytest.raises(InvalidRequest):
         await client.reload("everything")
+
+
+async def test_objects_created_while_paging_are_not_listed_twice(client: SmpNodeClient, node: SimNode) -> None:
+    list_objects = node._node_objects
+    pages = 0
+
+    def app_creates_object(body: dict[str, Any]) -> dict[str, Any]:
+        nonlocal pages
+        pages += 1
+        if pages == 4:  # an app starts after analog-input:1 was listed
+            node.create_object(0, 0, "early", "app:x")
+        return list_objects(body)
+
+    node._handlers[(66, 2)] = (app_creates_object, None)
+    client.objects_page = 1
+    keys = [(o["type"], o["instance"]) for o in await client.objects()]
+    assert len(keys) == len(set(keys))
+    assert ("analog-input", 1) in keys
 
 
 async def test_reload_invalid_document(client: SmpNodeClient) -> None:
@@ -492,6 +576,10 @@ def test_wire_manifest_conversions() -> None:
     })
     assert body["params"] == {"a": "1.5"}
     assert body["sha256"] == bytes(32)
+    # Optional fields are absent on the wire, never CBOR null.
+    body = SmpNodeClient.wire_manifest({"name": "t", "file": "/lfs/apps/t.wasm", "sha256": None,
+                                        "params": None, "period_ms": None})
+    assert body == {"name": "t", "file": "/lfs/apps/t.wasm"}
 
 
 async def test_client_rejects_bad_settings() -> None:

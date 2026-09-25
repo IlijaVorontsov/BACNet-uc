@@ -16,6 +16,7 @@ Abort PDU raised as an exception; those derive from ``BaseException``, so
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ipaddress
 import logging
 import socket
@@ -136,6 +137,11 @@ def bind_udp(host: str, port: int) -> socket.socket:
     return sock
 
 
+class ApplicationClosed(Exception):
+    """A confirmed request was still waiting for its answer when the
+    application was closed."""
+
+
 class BoundApplication(Application):
     """An ``Application`` whose link layer runs on a socket bound by us."""
 
@@ -144,6 +150,13 @@ class BoundApplication(Application):
     bound: tuple[str, int] = ("0.0.0.0", 0)
 
     def close(self) -> None:
+        """Stop the transactions in flight, then close the socket. bacpypes3
+        would otherwise keep retrying them on the closed socket, and every
+        retry fails in a detached task."""
+        asap = getattr(self, "asap", None)
+        if asap is not None:
+            for ssm in (*asap.clientTransactions, *asap.serverTransactions):
+                ssm.stop_timer()
         super().close()
         if self._sock is not None:
             self._sock.close()
@@ -167,6 +180,17 @@ class HubApplication(BoundApplication):
         self.i_am_listeners: set[Callable[[IAmRequest], None]] = set()
         self.cov_handler: CovHandler | None = None
 
+    def close(self) -> None:
+        """Also fail the confirmed requests still waiting for an answer, so
+        their callers learn at once that the hub stopped instead of waiting
+        for a timeout that would look like a silent device. (Every request
+        of the hub has a caller awaiting it.)"""
+        pending = [future for requests in self._requests.values() for _, future in requests]
+        super().close()
+        for future in pending:
+            if not future.done():
+                future.set_exception(ApplicationClosed("the BACnet/IP application was closed"))
+
     async def do_IAmRequest(self, apdu: IAmRequest) -> None:
         await super().do_IAmRequest(apdu)
         await self.device_info_cache.set_device_info(apdu)
@@ -176,14 +200,10 @@ class HubApplication(BoundApplication):
             except Exception:  # one broken listener must not starve the others
                 logger.exception("I-Am listener failed")
 
-    async def do_UnconfirmedCOVNotificationRequest(  # type: ignore[override]
-        self, apdu: UnconfirmedCOVNotificationRequest
-    ) -> None:
+    async def do_UnconfirmedCOVNotificationRequest(self, apdu: UnconfirmedCOVNotificationRequest) -> None:
         self._dispatch_cov(apdu)
 
-    async def do_ConfirmedCOVNotificationRequest(  # type: ignore[override]
-        self, apdu: ConfirmedCOVNotificationRequest
-    ) -> None:
+    async def do_ConfirmedCOVNotificationRequest(self, apdu: ConfirmedCOVNotificationRequest) -> None:
         if not self._dispatch_cov(apdu):
             raise ServicesError(errorCode="unknownSubscription")
         await self.response(SimpleAckPDU(context=apdu))
@@ -217,6 +237,7 @@ async def open_application(
     fresh socket bound to (host, port) and wait until it can send."""
     sock = bind_udp(host, port)
     app: A | None = None
+    link: NormalLinkLayer | None = None
     try:
         app = cls.from_object_list(list(objects))
         app._sock = sock
@@ -226,12 +247,24 @@ async def open_application(
         link.server.broadcast_address = broadcast
         app.link_layers[_LINK_ID] = link
         app.nsap.bind(link, address=address)
-        async with asyncio.timeout(ready_timeout_s):
-            while link.server.local_transport is None:
-                await asyncio.sleep(0.005)
+        await _transport_ready(link, ready_timeout_s)
     except BaseException:
+        if link is not None:
+            # bacpypes3 creates the transport in a task of its own. Closing the
+            # socket before that task is done leaves a transport registered on
+            # the dead file descriptor, and the next socket that gets the same
+            # number cannot be used by asyncio; so let it finish (briefly, even
+            # when cancelled) for app.close() to close the transport as well.
+            with contextlib.suppress(TimeoutError, asyncio.CancelledError):
+                await _transport_ready(link, 0.5)
         if app is not None:
             app.close()
         sock.close()
         raise
     return app
+
+
+async def _transport_ready(link: NormalLinkLayer, timeout_s: float) -> None:
+    async with asyncio.timeout(timeout_s):
+        while link.server.local_transport is None:
+            await asyncio.sleep(0.005)

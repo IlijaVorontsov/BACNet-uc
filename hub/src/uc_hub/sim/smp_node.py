@@ -166,6 +166,8 @@ P_SYSTEM_STATUS, P_UNITS, P_VENDOR_ID, P_VENDOR_NAME = 112, 117, 120, 121
 OWNER_SYSTEM, OWNER_IO = "system", "io"
 UC_API_VERSION = 0x00010000
 FS_TOTAL = 1 << 20
+#: CONFIG_MCUMGR_GRP_FS_FILE_AUTOMATIC_IDLE_CLOSE_TIME (Zephyr default).
+FS_IDLE_CLOSE_S = 4.0
 APP_MAX_FILE_SIZE = 256 * 1024
 APPS_MAX = 8
 BUF_COUNT = 4
@@ -536,9 +538,13 @@ class _Binding:
 
 @dataclass(slots=True)
 class _Upload:
+    """Zephyr's fs_mgmt upload context. ``off`` is the offset it expects
+    next; chunk 0 of the same file does not reset it."""
+
     path: str
-    total: int | None
-    data: bytearray
+    touched: float
+    off: int = 0
+    total: int | None = None
 
 
 @dataclass(slots=True)
@@ -1463,39 +1469,47 @@ class SimNode:
         return sum(len(v) for v in self.fs.values())
 
     def _fs_upload(self, body: dict[str, Any]) -> dict[str, Any]:
+        """fs_mgmt_file_upload() of Zephyr 3.7, quirks included: chunk 0 of
+        an open upload truncates the file but keeps counting from the old
+        offset, an empty chunk 0 does not truncate, and a wrong offset
+        closes the context and reports the expected one as ``len``."""
         name = self._fs_name(body)
         off = _get_uint(body, "off", legacy=True)
         data = body.get("data", b"")
         if not isinstance(data, bytes):
             raise _invalid("'data' must be a byte string", legacy=True)
-        if not name.startswith("/lfs/"):
-            raise RcError(FS_ERR_MOUNT_POINT_NOT_FOUND, f"{name} is not on a mounted file system")
-        if off == 0:
-            total = _get_uint(body, "len", legacy=True)
-            self._upload = _Upload(name, total, bytearray())
-        elif self._upload is None or self._upload.path != name:
-            existing = self.fs.get(name)
-            if existing is None:
-                raise RcError(FS_ERR_FILE_NOT_FOUND, f"{name} not found")
-            self._upload = _Upload(name, None, bytearray(existing))
+        total = _get_uint(body, "len", legacy=True) if off == 0 else None
+        now = self.now()
         upload = self._upload
-        if off != len(upload.data):
+        if upload is None or upload.path != name or now - upload.touched > FS_IDLE_CLOSE_S:
             self._upload = None
-            raise RcError(FS_ERR_FILE_OFFSET_NOT_VALID, "offset mismatch",
-                          extra={"len": len(upload.data)})
-        old = len(self.fs.get(name, b""))
-        if self._fs_used() - old + len(upload.data) + len(data) > FS_TOTAL:
+            if not name.startswith("/lfs/"):
+                raise RcError(FS_ERR_MOUNT_POINT_NOT_FOUND, f"{name} is not on a mounted file system")
+            self.fs.setdefault(name, b"")  # fs_open(FS_O_CREATE | FS_O_WRITE)
+            upload = self._upload = _Upload(name, now)
+        upload.touched = now
+        if off == 0:
+            upload.total = total
+        elif upload.off == 0:
+            upload.off = len(self.fs[name])
+        if off > 0 and off != upload.off:
             self._upload = None
-            raise RcError(FS_ERR_FILE_WRITE_FAILED, "file system full")
-        upload.data += data
-        self.fs[name] = bytes(upload.data)
-        if upload.total is not None and len(upload.data) >= upload.total:
+            raise RcError(FS_ERR_FILE_OFFSET_NOT_VALID, "offset mismatch", extra={"len": upload.off})
+        if data:
+            content = b"" if off == 0 else self.fs[name]
+            if self._fs_used() - len(self.fs[name]) + len(content) + len(data) > FS_TOTAL:
+                self._upload = None
+                raise RcError(FS_ERR_FILE_WRITE_FAILED, "file system full")
+            self.fs[name] = content + data
+            upload.off += len(data)
+        if upload.total and upload.off >= upload.total:
             self._upload = None
-        return {"off": len(upload.data)}
+        return {"off": upload.off}
 
     def _fs_download(self, body: dict[str, Any]) -> dict[str, Any]:
         name = self._fs_name(body)
         off = _get_uint(body, "off", legacy=True)
+        self._upload = None  # fs_mgmt shares one context between upload and download
         content = self.fs.get(name)
         if content is None:
             raise RcError(FS_ERR_FILE_NOT_FOUND, f"{name} not found")

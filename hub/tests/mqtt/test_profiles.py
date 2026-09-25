@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 import math
 from typing import Any
@@ -92,6 +93,7 @@ def test_coerce(value: Any, datatype: Any, expected: Any) -> None:
 @pytest.mark.parametrize(("value", "datatype"), [
     ("abc", "real"), (math.nan, "real"), (math.inf, "int"), (2.5, "int"), (-1, "enum"),
     (2, "bool"), ("maybe", "bool"), ([1], "real"), ({"a": 1}, "int"),
+    pytest.param(10**400, "real", id="huge-int-real"),   # float() raises OverflowError
 ])
 def test_coerce_rejects(value: Any, datatype: Any) -> None:
     with pytest.raises(ValueError):
@@ -338,6 +340,29 @@ async def test_offline_fails_commands() -> None:
         await task
 
 
+@pytest.mark.parametrize("info", [None, MODERN_INFO], ids=["text", "json"])
+async def test_send_failing_with_the_link_leaves_no_stray_error(
+    info: dict[str, Any] | None,
+) -> None:
+    """The link drops while a command is published: the connection loop fails
+    the reply future, then the publish raises. asyncio must not later log
+    "Future exception was never retrieved" for that future."""
+    profile = tls_profile()
+    if info is not None:
+        feed(profile, "info", info)
+    reported: list[dict[str, Any]] = []
+    asyncio.get_running_loop().set_exception_handler(lambda _, ctx: reported.append(ctx))
+
+    async def send(topic: str, payload: bytes) -> None:
+        profile.link_lost()
+        raise DeviceTimeout("MQTT connection lost during publish")
+
+    with pytest.raises(DeviceTimeout, match="during publish"):
+        await profile.command(send, "ping", None, 1.0)
+    gc.collect()
+    assert reported == []
+
+
 async def test_identify_needs_caps() -> None:
     profile = tls_profile()
     send = FakeSend(profile)
@@ -417,6 +442,16 @@ def test_generic_decoding() -> None:
     assert "none of the configured paths" in (profile.extra()["last_error"] or "")
 
 
+def test_out_of_range_number_faults_only_its_point() -> None:
+    profile = generic({"profile": "generic-json", "topic": "t",
+                       "points": [{"id": "a"}, {"id": "b"}]})
+    payload = b'{"a": 1' + b"0" * 400 + b', "b": 2}'
+    assert profile.handle("t", payload, 1.0) == ["a", "b"]
+    a = profile.reading("a", 1.0, 300, True)
+    assert a.quality is Quality.FAULT and "out of range" in (a.error or "")
+    assert profile.reading("b", 1.0, 300, True).value == 2.0
+
+
 def test_generic_plain_text_payload() -> None:
     profile = generic({"profile": "generic-json", "topic": "plant/+/state",
                        "points": [{"id": "state", "path": "$", "datatype": "bool"},
@@ -452,6 +487,8 @@ async def test_generic_write() -> None:
         await profile.write("setpoint", "high", send, 1.0)
     with pytest.raises(InvalidRequest):
         await profile.write("setpoint", None, send, 1.0)
+    with pytest.raises(InvalidRequest, match="out of range"):
+        await profile.write("setpoint", 10**400, send, 1.0)
     assert len(sent) == 2
 
 

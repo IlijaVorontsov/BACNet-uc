@@ -139,7 +139,10 @@ def coerce(value: Any, datatype: Datatype) -> Value:
     if isinstance(number, float) and not math.isfinite(number):
         raise ValueError(f"{number} is not a finite number")
     if datatype == "real":
-        return float(number)
+        try:
+            return float(number)
+        except OverflowError:
+            raise ValueError("the number is out of range") from None
     if isinstance(number, float):
         if not number.is_integer():
             raise ValueError(f"{number} is not an integer")
@@ -511,6 +514,7 @@ class MqttTlsProfile(Profile):
                 f"{self.record.name}: no reply to {cmd!r} within {timeout_s:g} s") from None
         finally:
             self._pending.pop(cid, None)
+            _abandon(fut)
 
     async def _text_command(
         self, send: Send, cmd: str, arg: str | None, timeout_s: float,
@@ -527,6 +531,7 @@ class MqttTlsProfile(Profile):
                 f"{self.record.name}: no reply to {text!r} within {timeout_s:g} s") from None
         finally:
             self._text_waiter = None
+            _abandon(fut)
 
     async def write(self, obj: str, value: Value, send: Send, timeout_s: float) -> Value:
         if obj != "led" or "led" not in self._specs:
@@ -694,6 +699,16 @@ def _valid_obj(obj: str) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _abandon(fut: asyncio.Future[Any]) -> None:
+    """Settle a reply future its command no longer waits for. When the send
+    failed after ``_fail_commands`` had already set an exception on it,
+    retrieving that exception stops asyncio from logging it as unhandled."""
+    if not fut.done():
+        fut.cancel()
+    elif not fut.cancelled():
+        fut.exception()
 
 
 def _sample(raw: Any, datatype: Datatype, now: float) -> Sample:

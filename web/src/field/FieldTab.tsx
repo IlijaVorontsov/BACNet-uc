@@ -45,7 +45,11 @@ export function FieldTab() {
 
   useEffect(() => {
     if (blinkUntil <= Date.now()) return;
-    const t = setInterval(() => setNow(Date.now()), 1000);
+    const t = setInterval(() => {
+      const n = Date.now();
+      setNow(n);
+      if (n >= blinkUntil) clearInterval(t);
+    }, 1000);
     return () => clearInterval(t);
   }, [blinkUntil]);
 

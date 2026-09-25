@@ -7,7 +7,9 @@ import sys
 import pytest
 
 from uc_hub.core.errors import DeviceError, NotFound, Unsupported
+from uc_hub.drivers.bacnet_uc.api import GROUP_FS
 from uc_hub.drivers.bacnet_uc.client import SmpNodeClient, parse_address
+from uc_hub.drivers.bacnet_uc.smp import FS_CLOSE, FS_FILE, OP_WRITE, decode_frame, encode_frame
 from uc_hub.sim import (
     EXAMPLE_IO,
     ManualClock,
@@ -26,6 +28,42 @@ WASM = b"\0asm\x01\0\0\0"
 async def upload_io(client: SmpNodeClient, points: list[dict[str, object]]) -> None:
     await client.file_upload("/lfs/cfg/io.json", json.dumps({"schema": 1, "points": points}).encode())
     await client.reload("io")
+
+
+def _upload(sim: SimNode, seq: int, body: dict[str, object]) -> dict[str, object]:
+    reply = sim.handle_datagram(encode_frame(OP_WRITE, GROUP_FS, FS_FILE, seq, body))
+    assert reply is not None
+    return decode_frame(reply).body
+
+
+def test_upload_context_behaves_like_zephyr_fs_mgmt(net: SimNetwork, clock: ManualClock) -> None:
+    sim = SimNode(name="fs", instance=17, network=net)
+    path = "/lfs/data/f"
+    assert _upload(sim, 1, {"name": path, "off": 0, "len": 12, "data": b"abcd"}) == {"off": 4}
+    # Chunk 0 again while the upload is open (its answer was lost): Zephyr
+    # truncates and rewrites the file but keeps counting from the old offset.
+    assert _upload(sim, 2, {"name": path, "off": 0, "len": 12, "data": b"abcd"}) == {"off": 8}
+    assert sim.fs[path] == b"abcd"
+    # A wrong offset closes the context and reports the expected one as "len".
+    assert _upload(sim, 3, {"name": path, "off": 4, "data": b"efgh"}) == {
+        "err": {"group": GROUP_FS, "rc": 11}, "len": 8}
+    # A fresh context continues at the file length.
+    assert _upload(sim, 4, {"name": path, "off": 4, "data": b"efgh"}) == {"off": 8}
+    assert sim.fs[path] == b"abcdefgh"
+    closed = sim.handle_datagram(encode_frame(OP_WRITE, GROUP_FS, FS_CLOSE, 5, {}))
+    assert closed is not None and decode_frame(closed).body == {}
+    # An empty chunk 0 does not truncate an existing file.
+    assert _upload(sim, 6, {"name": path, "off": 0, "len": 0, "data": b""}) == {"off": 0}
+    assert sim.fs[path] == b"abcdefgh"
+    # An idle upload is closed after 4 s, so chunk 0 starts over.
+    assert _upload(sim, 7, {"name": path, "off": 0, "len": 8, "data": b"1234"}) == {"off": 4}
+    clock.advance(5)
+    assert _upload(sim, 8, {"name": path, "off": 0, "len": 8, "data": b"1234"}) == {"off": 4}
+    assert sim.fs[path] == b"1234"
+    # Uploading with an offset creates the file, like fs_open(FS_O_CREATE).
+    assert _upload(sim, 9, {"name": "/lfs/data/g", "off": 3, "data": b"x"}) == {
+        "err": {"group": GROUP_FS, "rc": 11}, "len": 0}
+    assert sim.fs["/lfs/data/g"] == b""
 
 
 async def test_reload_io_replaces_io_objects(client: SmpNodeClient, node: SimNode) -> None:

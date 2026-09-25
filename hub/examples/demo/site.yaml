@@ -1,0 +1,194 @@
+# Demo site for uc-hub: five simulated BACnet-uc room controllers on floor 2,
+# a third-party AHU controller on BACnet/IP, an mqtt_tls node and a generic
+# MQTT CO2 sensor. Every device runs on 127.0.0.1, so the room controllers
+# use distinct SMP and BACnet/IP ports (static bindings instead of Who-Is).
+apiVersion: bacnet-uc/v1
+kind: Site
+metadata:
+  name: hq
+  description: HQ building (demo)
+
+spaces:
+  - {id: hq, name: HQ}
+  - {id: f2, name: Floor 2, parent: hq}
+  - {id: r201, name: Room 201, parent: f2}
+  - {id: r202, name: Room 202, parent: f2}
+  - {id: r203, name: Room 203, parent: f2}
+  - {id: r204, name: Room 204, parent: f2}
+  - {id: r205, name: Room 205, parent: f2}
+  - {id: f2-riser, name: Floor 2 riser, parent: f2}
+  - {id: plant, name: Plant room, parent: hq}
+
+placement:
+  r201-ctl: r201
+  r202-ctl: r202
+  r203-ctl: r203
+  r204-ctl: r204
+  r205-ctl: r205
+  ahu1-ctl: plant
+  f2-mqtt: f2-riser
+  r204-co2: r204
+
+system:
+  apiVersion: bacnet-uc/v1
+  kind: System
+  metadata:
+    name: hq-uc
+    description: Floor 2 room controllers
+  nodes:
+    - name: r201-ctl
+      board: native_sim
+      transport: {kind: udp, host: 127.0.0.1, port: 13201}
+      device: {instance: 2011, name: R201 Controller, location: Room 201}
+      bacnet: {udp_port: 47821}
+      io:
+        - {channel: ai0, type: analog-input, instance: 1, name: R201 Temp, units: degrees-celsius,
+           scale: 0.1, offset: -50, cov_increment: 0.2}
+        - {channel: ao0, type: analog-output, instance: 1, name: R201 Valve, units: percent, min: 0, max: 100}
+        - {channel: di0, type: binary-input, instance: 1, name: R201 Window, debounce_ms: 50}
+        - {channel: do0, type: binary-output, instance: 1, name: R201 Heater}
+    - name: r202-ctl
+      board: native_sim
+      transport: {kind: udp, host: 127.0.0.1, port: 13202}
+      device: {instance: 2021, name: R202 Controller, location: Room 202}
+      bacnet: {udp_port: 47822}
+      io:
+        - {channel: ai0, type: analog-input, instance: 1, name: R202 Temp, units: degrees-celsius,
+           scale: 0.1, offset: -50, cov_increment: 0.2}
+        - {channel: ao0, type: analog-output, instance: 1, name: R202 Valve, units: percent, min: 0, max: 100}
+        - {channel: di0, type: binary-input, instance: 1, name: R202 Window, debounce_ms: 50}
+        - {channel: do0, type: binary-output, instance: 1, name: R202 Heater}
+    - name: r203-ctl
+      board: native_sim
+      transport: {kind: udp, host: 127.0.0.1, port: 13203}
+      device: {instance: 2031, name: R203 Controller, location: Room 203}
+      bacnet: {udp_port: 47823}
+      io:
+        - {channel: ai0, type: analog-input, instance: 1, name: R203 Temp, units: degrees-celsius,
+           scale: 0.1, offset: -50, cov_increment: 0.2}
+        - {channel: ao0, type: analog-output, instance: 1, name: R203 Valve, units: percent, min: 0, max: 100}
+        - {channel: di0, type: binary-input, instance: 1, name: R203 Window, debounce_ms: 50}
+        - {channel: do0, type: binary-output, instance: 1, name: R203 Heater}
+    - name: r204-ctl
+      board: native_sim
+      transport: {kind: udp, host: 127.0.0.1, port: 13204}
+      device: {instance: 2041, name: R204 Controller, location: Room 204}
+      bacnet:
+        udp_port: 47824
+        static_bindings:
+          - {device: 100, address: 127.0.0.1, port: 47830}   # ahu1-ctl, source of the supply temp link
+      io:
+        - {channel: ai0, type: analog-input, instance: 1, name: R204 Temp, units: degrees-celsius,
+           scale: 0.1, offset: -50, cov_increment: 0.2}
+        - {channel: ao0, type: analog-output, instance: 1, name: R204 Valve, units: percent, min: 0, max: 100}
+        - {channel: di0, type: binary-input, instance: 1, name: R204 Window, debounce_ms: 50}
+        - {channel: do0, type: binary-output, instance: 1, name: R204 Heater}
+    - name: r205-ctl
+      board: native_sim
+      transport: {kind: udp, host: 127.0.0.1, port: 13205}
+      device: {instance: 2051, name: R205 Controller, location: Room 205}
+      bacnet: {udp_port: 47825}
+      io:
+        - {channel: ai0, type: analog-input, instance: 1, name: R205 Temp, units: degrees-celsius,
+           scale: 0.1, offset: -50, cov_increment: 0.2}
+        - {channel: ao0, type: analog-output, instance: 1, name: R205 Valve, units: percent, min: 0, max: 100}
+        - {channel: di0, type: binary-input, instance: 1, name: R205 Window, debounce_ms: 50}
+        - {channel: do0, type: binary-output, instance: 1, name: R205 Heater}
+
+  apps:
+    - name: thermostat
+      node: r204-ctl
+      wasm: apps/thermostat.wasm          # built from apps/thermostat.c by apps/build.sh
+      perms: [bacnet.local]
+      period_ms: 1000
+      params: {setpoint: 21.5, kp: 10, ki: 0.011}
+
+  links:
+    # AHU supply air temperature, shown on the room controller (uc-link on r204-ctl)
+    - {from: ahu1-ctl/analog-value:3, to: r204-ctl/analog-value:10, mode: cov, period_ms: 5000}
+
+  tests:
+    - name: valve opens when cold
+      steps:
+        - force: {node: r204-ctl, channel: ai0, value: 650}          # 650 mV -> 15.0 degC
+        - expect: {point: r204-ctl/analog-input:1, op: approx, value: 15.0, tolerance: 0.2, within_ms: 2000}
+        - expect: {point: r204-ctl/analog-output:1, op: gt, value: 50, within_ms: 5000}
+        - release: {node: r204-ctl, channel: ai0}
+    - name: valve closes when warm
+      steps:
+        - force: {node: r204-ctl, channel: ai0, value: 780}          # 28.0 degC
+        - expect: {point: r204-ctl/analog-output:1, op: lt, value: 5, within_ms: 20000}
+        - release: {node: r204-ctl, channel: ai0}
+    - name: setpoint follows the operator
+      steps:
+        - write: {point: r204-ctl/analog-value:1, value: 23.0, priority: 12}
+        - expect: {point: r204-ctl/analog-value:1, op: approx, value: 23.0, within_ms: 1000}
+        - write: {point: r204-ctl/analog-value:1, value: null, priority: 12}
+        - expect: {point: r204-ctl/analog-value:1, op: approx, value: 21.5, within_ms: 1000}
+    - name: heater relay checkout
+      steps:
+        - write: {point: r201-ctl/binary-output:1, value: 1, priority: 12}
+        - wait: 500
+        - expect: {point: r201-ctl/binary-output:1, op: eq, value: 1}
+        - write: {point: r201-ctl/binary-output:1, value: null, priority: 12}
+
+external_devices:
+  - name: ahu1-ctl
+    protocol: bacnet-ip
+    address: 127.0.0.1:47830
+    device_instance: 100
+    equipment: ahu1
+    description: Third-party AHU controller
+    points:
+      - {obj: analog-value:3, name: Supply Air Temp, units: degrees-celsius}
+      - {obj: analog-input:1, name: Return Air Temp, units: degrees-celsius}
+      - {obj: analog-value:4, name: Supply Air Temp Setpoint, units: degrees-celsius}
+      - {obj: binary-output:1, name: Supply Fan Command}
+      - {obj: binary-output:9, name: Smoke Damper}
+  - name: f2-mqtt
+    protocol: mqtt
+    profile: mqtt_tls
+    client_id: zephyr-0a1b2c3d
+    topic_root: bacnet-uc
+    description: Floor 2 riser MQTT node (apps/mqtt_tls)
+  - name: r204-co2
+    protocol: mqtt
+    profile: generic-json
+    topic: sensors/r204/co2
+    points:
+      - {id: co2, path: $.ppm, name: R204 CO2, units: parts-per-million, datatype: real}
+      - {id: battery, path: $.bat.pct, name: R204 CO2 Battery, units: percent}
+
+bridges:
+  - from: r204-co2/co2
+    to: r204-ctl/analog-value:20
+    max_age_s: 120
+
+tags:
+  r201-ctl/analog-input:1: [Zone_Air_Temperature_Sensor, space:r201]
+  r202-ctl/analog-input:1: [Zone_Air_Temperature_Sensor, space:r202]
+  r203-ctl/analog-input:1: [Zone_Air_Temperature_Sensor, space:r203]
+  r204-ctl/analog-input:1: [Zone_Air_Temperature_Sensor, space:r204]
+  r205-ctl/analog-input:1: [Zone_Air_Temperature_Sensor, space:r205]
+  r204-ctl/analog-output:1: [Reheat_Valve_Command, space:r204]
+  r204-ctl/analog-value:1: [Zone_Air_Temperature_Setpoint, space:r204]
+  r204-ctl/binary-input:1: [Window_Status, space:r204]
+  r204-ctl/binary-output:1: [Heater_Command, space:r204]
+  r204-co2/co2: [Zone_Air_CO2_Sensor, space:r204]
+  ahu1-ctl/analog-value:3: [Supply_Air_Temperature_Sensor]
+  ahu1-ctl/analog-input:1: [Return_Air_Temperature_Sensor]
+  ahu1-ctl/binary-output:1: [Supply_Fan_Command]
+  ahu1-ctl/binary-output:9: [Smoke_Damper_Command]
+
+safety:
+  ahu1-ctl/binary-output:9: life-safety
+  ahu1-ctl/binary-output:1: critical
+
+policy:
+  agent_write_priority: 12
+  default_lease_s: 300
+  max_lease_s: 3600
+  deny: [ahu1-ctl/binary-output:*]
+  max_writes_per_minute: 30
+  max_devices_per_stage: 5
+  approval_ttl_s: 1800
