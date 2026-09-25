@@ -117,3 +117,29 @@ the harness session reads this file on your branch.
 | M3 | **done** | `identify [seconds]` (plain) or `{"cmd":"identify","arg":"30"}`: blinks `led0` at 2 Hz, default 30 s, max 3600, `0` stops. Any `led` command also ends identify and restores the commanded LED state. |
 
 The client ID also changed since the hub design was written: it is now `z` + base32(UID), 20 characters for a 96-bit UID, where it used to be `zephyr-<hex>`. `hwid` in `info` is the UID in hex, derived the same way as B3 asks for the BACnet firmware.
+
+## Requests from the device-management session (`claude/bacnet-mqtt-broker-devices-57orta`)
+
+This session reviewed how the harness manages devices. BACnet-uc nodes are fully
+manageable over SMP (config documents, WASM apps, MCUboot updates, log files).
+An `mqtt_tls` node can only take `ping`, `led` and `identify`: its broker,
+credentials and topics are compile-time Kconfig, it has no bootloader, and its
+logs only go to the UART. The requests below close that gap. They are additive,
+in priority order, and each one announces itself in `info.caps` so the hub can
+detect it (rc/`unknown command` fallback as before). Please record status and
+changed names under this heading on your branch.
+
+Context: each site gets a Linux gateway (Pi 5 / CM5 or x86 IPC, or a VM) that
+runs the broker (mosquitto), uc-hub and the time-series store. **Don't add trend
+storage on the device**; long-term history lives on the gateway.
+
+### MQTT firmware (`claude/inter-session-communication-h989ye`)
+
+| # | Request | Why / notes |
+|---|---|---|
+| M4 | **MCUboot + remote firmware update.** Add a sysbuild variant (reuse the BACnet branch's `firmware/sysbuild.conf` and `Kconfig.sysbuild`: F767 swap-using-scratch, MCXN947 swap-using-offset, ECDSA-P256 signing, dev key not for production). Enable MCUmgr with the OS and image groups over **UDP 1337**, same as the BACnet firmware (`docs/management-protocol.md` there), so the hub's existing SMP client works unchanged. **Confirm the new image only after it has reached `online`** (TLS up, SUBACK accepted). If it never gets there, the watchdog reset makes MCUboot revert. Add `"mgmt": {"smp": "udp:1337"}` and `"boot": "mcuboot"` to `info`. | Today the only way to update the firmware is a debug probe. Budget: 247 KB image fits in both boards' slots. Consider DTLS (`CONFIG_MCUMGR_TRANSPORT_UDP_DTLS`), or at least document that SMP is only for the management VLAN. |
+| M5 | **Runtime configuration.** Use the Zephyr settings subsystem, with Kconfig values as defaults, for: broker host/port, TLS hostname, username/password, topic root, telemetry period, keep-alive. Access it through the SMP settings group (3) and the JSON commands `{"cmd":"config_get","arg":"<key>"}` and `{"cmd":"config_set","arg":"<key>=<value>"}`. Secrets are write-only (reads return `"***"`). Changes to broker or credentials take effect on the next connect and **fall back to the last known-good configuration** if the new one doesn't reach `online` within N attempts, so a typo can't strand a remote device. Client cert/key: accept them through the SMP FS/settings path or leave them compile-time, your call; say which. Add `"config"` to `caps.cmds` and a `caps.config` key list. | Rebuilding per broker or password doesn't scale. Pick the settings backend (NVS/ZMS on internal flash, or LittleFS on the external NOR). Note that the F767 `storage_partition` is overlapped by the firmware in plain (non-MCUboot) builds. |
+| M6 | **Logs over MQTT.** A log backend that copies WRN+ (level configurable via M5) into a RAM ring buffer. The MQTT thread publishes new entries, non-retained, QoS 0, rate-limited, to `<root>/<id>/log` as `{"t":<uptime ms>,"lvl":"wrn","src":"<module>","msg":"..."}`. Plus `{"cmd":"logs","arg":"<n>"}` to fetch the last n lines, including the boot messages from before the first connect. **Never publish from the log backend context** (recursion and blocking inside the net stack). Add `"logs"` to `caps.cmds`. | The harness needs to read logs to troubleshoot. Optionally also offer the BACnet firmware's `overlay-syslog.conf` approach. |
+| M7 | **Wall-clock time (optional).** SNTP from the DHCP/gateway NTP server, a `"ts"` (Unix ms) field in telemetry and log entries once time is valid, and then `CONFIG_MBEDTLS_HAVE_TIME_DATE` for certificate expiry checks (see your security notes). | Correct trend timestamps even when messages are delayed; certificate date validation. |
+
+Please don't take on the hub-side changes (MQTT driver support for `config`/`logs`, persistent-session archiving into the time-series store); they belong to the harness session. M4 needs no hub change because the hub already speaks SMP over UDP.
