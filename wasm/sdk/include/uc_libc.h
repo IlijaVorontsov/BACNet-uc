@@ -12,8 +12,11 @@
  * "env" import has the signature WAMR registers for it.
  *
  * Differences from ISO C (libc_builtin_wrapper.c, WAMR 2.4.5):
- *   - printf/vprintf/puts/putchar write to the firmware console (printk),
- *     not to the log. Use uc_log()/uc_logf() (uc_util.h) instead.
+ *   - printf/vprintf/puts/putchar output is collected per line and logged
+ *     like uc_log() at info level (tagged "uc_app: <name>:", sanitised,
+ *     cut to 120 characters, rate limited; an unfinished line is flushed
+ *     when the callback returns). Prefer uc_log()/uc_logf() (uc_util.h),
+ *     which also select the level.
  *   - Formatting: %d %i %u %x %X %o %c %s %p %e %f %g and flags/width/
  *     precision are supported. %ld/%lu/%zu are 32 bit (wasm32 long);
  *     %lld/%llu/%jd are 64 bit. The number is formatted by the firmware's

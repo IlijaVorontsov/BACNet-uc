@@ -439,3 +439,86 @@ async def test_apps_json_parse_errors(fake_node: FakeNode, smp_client: SmpClient
             await smp_client.node_reload("apps")
         assert exc.value.rc_name == "INVALID", doc
     assert fake_node.apps == {}
+
+
+async def test_direct_output_write_lasts_until_the_pv_changes(
+        fake_node: FakeNode, smp_client: SmpClient, bacnet_client: BacnetClient) -> None:
+    """Like io_scan_out(): a bound output is re-driven only when its
+    Present_Value changes (CON-8)."""
+    await _upload_json(smp_client, "/lfs/cfg/io.json", IO_JSON)
+    await smp_client.node_reload("io")
+    assert await smp_client.io_read("do0") == {"do0": 0.0}  # BO:1 PV inactive
+    await smp_client.io_write("do0", 1)
+    await asyncio.sleep(0.05)
+    for _ in range(3):  # further scans keep the direct write
+        assert await smp_client.io_read("do0") == {"do0": 1.0}
+    addr = (fake_node.host, fake_node.bacnet_port)
+    await bacnet_client.write_property(addr, "binary-output", 1, "present-value", 1, priority=8)
+    await smp_client.io_write("do0", 0)
+    assert await smp_client.io_read("do0") == {"do0": 0.0}
+    await bacnet_client.write_property(addr, "binary-output", 1, "present-value", 0, priority=8)
+    assert await smp_client.io_read("do0") == {"do0": 0.0}  # PV changed: driven again
+    await bacnet_client.write_property(addr, "binary-output", 1, "present-value", 1, priority=8)
+    assert await smp_client.io_read("do0") == {"do0": 1.0}
+
+
+async def test_io_write_and_force_reject_non_finite(smp_client: SmpClient) -> None:
+    for call, name, value, rc in ((smp_client.io_write, "ao1", float("nan"), "INVALID"),
+                                  (smp_client.io_write, "do0", float("inf"), "INVALID"),
+                                  (smp_client.io_force, "ai1", float("nan"), "INVALID"),
+                                  (smp_client.io_force, "do1", float("-inf"), "INVALID"),
+                                  (smp_client.io_write, "di0", float("nan"), "PERM")):
+        with pytest.raises(SmpError) as exc:
+            await call(name, value)
+        assert exc.value.rc_name == rc, (name, value)
+    assert await smp_client.io_read("ao1") == {"ao1": 0.0}
+
+
+async def test_install_param_limits_are_bytes(fake_node: FakeNode, smp_client: SmpClient,
+                                              wasm_module: bytes) -> None:
+    """The firmware's param buffers count bytes, and uc_key_valid() rejects
+    '.' and '..' (CON-8)."""
+    fake_node.files["/lfs/apps/a.wasm"] = wasm_module
+    base = {"name": "a", "file": "/lfs/apps/a.wasm", "autostart": False}
+    for params in ({"v": "é" * 48},  # 48 characters, 96 bytes
+                   {".": "x"}, {"..": "x"}):
+        with pytest.raises(SmpError) as exc:
+            await smp_client.app_install({**base, "params": params})
+        assert exc.value.rc_name == "INVALID", params
+    await smp_client.app_install({**base, "params": {"v": "é" * 47, "a.b": "x"}})
+    assert fake_node.apps["a"]["params"]["v"] == "é" * 47
+
+
+async def test_node_info_aot_target(make_fake_node) -> None:  # type: ignore[no-untyped-def]
+    """wasm.aot_target is the wamrc target when AOT files can run (CON-12)."""
+    from bacnet_uc_harness.smp.client import connect_udp
+
+    for kw, aot, target in (({"wasm_aot": True}, True, "x86_64"),
+                            ({"wasm_aot": True, "board": "nucleo_f767zi"}, True, "thumbv7em"),
+                            ({}, False, "")):
+        node = await make_fake_node(1001, **kw)
+        client = await connect_udp(node.host, node.smp_port, timeout=1.0)
+        try:
+            wasm = (await client.node_info())["wasm"]
+        finally:
+            await client.close()
+        assert (wasm["aot"], wasm["aot_target"]) == (aot, target), kw
+
+
+async def test_config_parse_matches_firmware_limits(smp_client: SmpClient) -> None:
+    """tok_int() rejects 1001.0, netmask_valid() a non-contiguous mask, and
+    names count bytes (CON-6)."""
+    base = {"schema": 1, "device": {"instance": 1001, "name": "n"}}
+    bad_docs = [
+        {**base, "device": {"instance": 1001.0, "name": "n"}},
+        {**base, "network": {"dhcp": False, "ipv4": "10.0.0.2", "netmask": "255.0.255.0"}},
+        {**base, "device": {"instance": 1001, "name": "é" * 40}},
+    ]
+    for doc in bad_docs:
+        await _upload_json(smp_client, "/lfs/cfg/device.json.new", doc)
+        with pytest.raises(SmpError) as exc:
+            await smp_client.node_reload("device")
+        assert exc.value.rc_name == "INVALID", doc
+    await _upload_json(smp_client, "/lfs/cfg/device.json.new", {
+        **base, "network": {"dhcp": False, "ipv4": "10.0.0.2", "netmask": "255.255.255.0"}})
+    await smp_client.node_reload("device")

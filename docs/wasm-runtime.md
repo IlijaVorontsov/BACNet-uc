@@ -253,7 +253,7 @@ functions of section 4.3 trap on invalid pointers instead.)
 | `int32_t uc_obj_create(uint32_t type, uint32_t instance, const char *name, uint32_t name_len)` | `(iiii)i` | `bacnet.local` | `UC_OK` (also if already owned by this app) | types AI, AO, AV, BI, BO, BV, MSI, MSO, MSV else `INVALID`; name ≤ 63 bytes (empty: stack default name); `EXISTS` if owned by IO, another app or created over the network; `NO_MEM` owner table full; `BUSY` |
 | `int32_t uc_obj_delete(uint32_t type, uint32_t instance)` | `(ii)i` | `bacnet.local` | `UC_OK` | only objects owned by this app (`NOT_FOUND` / `PERM` otherwise) |
 | `int32_t uc_prop_read(uint32_t type, uint32_t instance, uint32_t prop, int32_t array_index, double *out)` | `(iiiii)i` | `bacnet.local` | `UC_OK` | any local object incl. Device; `array_index` -1 (`UC_ARRAY_ALL`) = the property (of an array: its first element), 0 = array size, 1..n = element; an index on a property that is not an array is `INVALID`; `NOT_FOUND`, `TYPE` for non-numeric datatypes |
-| `int32_t uc_prop_write(uint32_t type, uint32_t instance, uint32_t prop, int32_t array_index, double value, uint32_t priority)` | `(iiiiFi)i` | `bacnet.local` | `UC_OK` | WriteProperty semantics: priority 0 = none (16 for the Present_Value of AO, BO, MSO), 1..16; AV, BV, MSV and other properties ignore the priority; value converted to the property's datatype (`TYPE` if not numeric, `INVALID` if the datatype cannot hold it); `PERM` write access denied (e.g. input not Out_Of_Service, priority 6 on AO/BO/MSO/AV) |
+| `int32_t uc_prop_write(uint32_t type, uint32_t instance, uint32_t prop, int32_t array_index, double value, uint32_t priority)` | `(iiiiFi)i` | `bacnet.local` | `UC_OK` | WriteProperty semantics: priority 0 = none (16 for the Present_Value of AO, BO, MSO), 1..16; AV, BV, MSV and other properties ignore the priority (but priority 6 is `PERM` on AV); value converted to the property's datatype (`TYPE` if not numeric, `INVALID` if the datatype cannot hold it); `PERM` write access denied (e.g. input not Out_Of_Service, priority 6 on AO/BO/MSO/AV) |
 | `int32_t uc_prop_write_null(uint32_t type, uint32_t instance, uint32_t prop, uint32_t priority)` | `(iiii)i` | `bacnet.local` | `UC_OK` | AO, BO, MSO Present_Value: clears that priority slot (0 = 16). AV, BV, MSV Present_Value (no priority array): `UC_OK`, nothing changes. Present_Value of inputs and other properties: `TYPE` |
 | `int32_t uc_prop_write_string(uint32_t type, uint32_t instance, uint32_t prop, const char *str, uint32_t len)` | `(iiiii)i` | `bacnet.local` | `UC_OK` | CharacterString properties (Object_Name, Description); length ≤ 63 |
 | `int32_t uc_remote_read(uint32_t device, uint32_t type, uint32_t instance, uint32_t prop, int32_t array_index, double *out, uint32_t timeout_ms)` | `(iiiiiii)i` | `bacnet.remote` (`bacnet.local` for the own device) | `UC_OK` | blocks up to `timeout_ms` (0 = 5000, max 600 000); `NO_ROUTE`, `TIMEOUT`, `BACNET`, `BUSY`, `TYPE`. The own device instance or `UC_DEVICE_LOCAL` is served locally |
@@ -263,7 +263,7 @@ functions of section 4.3 trap on invalid pointers instead.)
 | `int32_t uc_cov_unsubscribe(int32_t sub_id)` | `(i)i` | - | `UC_OK` | only this instance's subscriptions (`NOT_FOUND` otherwise); no event of that subscription is delivered afterwards |
 | `int32_t uc_io_find(const char *name, uint32_t len)` | `(ii)i` | `io` | channel id ≥ 0 | `NOT_FOUND` |
 | `int32_t uc_io_read(int32_t channel, double *out)` | `(ii)i` | `io` | `UC_OK` | di/do 0/1, ai mV, ao %; forced value while forced; `NOT_FOUND`, `IO` |
-| `int32_t uc_io_write(int32_t channel, double value)` | `(iF)i` | `io` | `UC_OK` | outputs only (`PERM` for inputs); do: non-zero = 1; ao clamped to 0..100 |
+| `int32_t uc_io_write(int32_t channel, double value)` | `(iF)i` | `io` | `UC_OK` | outputs only (`PERM` for inputs); `INVALID` for NaN/infinities; do: non-zero = 1; ao clamped to 0..100 |
 | `int32_t uc_kv_get(const char *key, uint32_t key_len, void *buf, uint32_t buf_len)` | `(iiii)i` | `kv` | stored length (may exceed `buf_len`; `min(len, buf_len)` bytes copied) | key 1..31 chars of `[A-Za-z0-9_.-]`; `NOT_FOUND`, `IO` (storage not ready or read error). `buf_len` 0 queries the length |
 | `int32_t uc_kv_set(const char *key, uint32_t key_len, const void *val, uint32_t val_len)` | `(iiii)i` | `kv` | `UC_OK` | ≤ `CONFIG_UC_APP_KV_VALUE_MAX` (256) bytes else `INVALID`; written atomically (`<key>~` then rename) to `/lfs/data/<app>/<key>`; `IO` |
 
@@ -274,15 +274,16 @@ Relinquish_Default and priority-array entries ↔ 0.0 inactive / 1.0 active.
 A write of NaN, an infinity, a fraction for an integer datatype or a value
 out of range returns `UC_ERR_INVALID` (the same rules as SMP `prop_write`,
 [management-protocol.md](management-protocol.md#values)). Other datatypes
-give `UC_ERR_TYPE`. Note: the `Values` comment of `bacnet_uc.h` (API 1.0)
-still says "truncated toward zero on write", and the host stub
-(`wasm/sdk/host-stub`) still truncates multi-state values and turns any
-non-zero binary value into 1; the firmware rejects both with
-`UC_ERR_INVALID` (open issue for the SDK). Write integral values and 0/1.
+give `UC_ERR_TYPE`. The `Values` comment of `bacnet_uc.h` states these
+rules, and the host stub (`wasm/sdk/host-stub`) applies them, so an app's
+stub tests see the same `UC_ERR_INVALID` as the node.
 
 Priorities: only AO, BO and MSO have a priority array on BACnet-uc nodes;
 the value objects AV, BV and MSV take every write whatever its priority, and a
 relinquish of them succeeds without effect ([bacnet.md](bacnet.md#31-object-types)).
+Priority 6 (reserved for Minimum_On/Off) is the exception: a write or
+relinquish at priority 6 on AO, BO, MSO and a write at priority 6 on AV
+return `UC_ERR_PERM`; BV and MSV ignore it. The host stub does the same.
 `uc_app_on_write` reports the writer's priority (16 for a write without
 priority) also for value objects.
 

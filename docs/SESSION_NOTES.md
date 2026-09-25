@@ -73,3 +73,40 @@ pip install -r zephyr/scripts/requirements-base.txt     # inside the 3.12 venv
    Zephyr 4.4.2 with stack master.
 10. `curl -I` against github.com web pages returns 403 through the proxy.
     Git over HTTPS and release asset downloads work.
+11. **Zephyr 4.4 log FS backend never syncs a lone message.** The log
+    thread raises `LOG_BACKEND_EVT_PROCESS_THREAD_DONE`, the FS backend's
+    only `fs_sync()` trigger, only after a batch of >= 2 messages. So the
+    newest line of a quiet node stays uncommitted. Fix:
+    `firmware/src/storage/uc_log_sync.c`, an extra backend named
+    `log_backend_fs_uc_sync` (dispatched right after `log_backend_fs`
+    through SORT_BY_NAME) that notifies the FS backend when the queue is
+    empty.
+12. **NSOS on native_sim**:
+    - `zsock_poll` with a timeout can crash, because `poll->cond` is
+      uninitialised. Zero-timeout polls never see data.
+    - SO_BROADCAST is not forwarded, so a Who-Is broadcast fails with
+      EACCES.
+    - Multi-node tests should use static bindings and one network
+      namespace per node (pyroute2 works as root; the `ip` tool is not
+      installed).
+    - `nsos_adapt_dup()` lacks close-on-exec, so after a native_sim reboot
+      the old port stays bound. Workaround in `firmware/src/net/uc_net.c`.
+13. **WAMR 2.4.5 defects**, worked around in `modules/wasm-micro-runtime/`:
+    - Linear memory is allocated with the unrounded size but bounds-checked
+      at the 4 KiB-rounded size.
+    - `disable_mpu_rasr_xn()` uses `|= ~XN`.
+    - `aot_reloc_thumb.c` lacks `__aeabi_memclr`, so Cortex-M AOT needs
+      `--enable-indirect-mode`.
+    - Zephyr `os_mmap` gives only 8-byte alignment, which breaks x86-64 AOT.
+    - Code in a start function or ctors runs during instantiate, without
+      a watchdog. We now refuse such modules.
+
+## Coordination with the MQTT firmware (FRDM-MCXN947 W25Q64)
+
+The MQTT firmware keeps its ZMS settings in the top 64 KiB of the external
+W25Q64 (`settings_partition` @ 0x7F0000, 64 KiB). BACnet-uc therefore
+limits its LittleFS `storage_partition` to **0x000000-0x7EFFFF (8128 KiB)**
+in `firmware/boards/frdm_mcxn947_mcxn947_cpu0.overlay`. LittleFS formats
+only that partition (`fs_mkfs` on the fstab entry), never the whole chip.
+So the two firmwares can be flashed alternately on one board without
+wiping each other's data.

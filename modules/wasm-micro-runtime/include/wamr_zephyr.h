@@ -6,8 +6,11 @@
 #ifndef WAMR_ZEPHYR_H_
 #define WAMR_ZEPHYR_H_
 
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stddef.h>
+
+#include <wasm_export.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -48,6 +51,27 @@ int wamr_zephyr_exec_enable(void *start, size_t size, bool clear_xn);
  * first module is loaded.
  */
 void wamr_zephyr_mmap_align_init(void);
+
+/**
+ * Module code that wasm_runtime_instantiate() would run itself, outside
+ * any call the embedder makes (and so outside its watchdog, instruction
+ * budget and exec env user data): a start function, or an exported
+ * "__wasm_call_ctors", "__post_instantiate" or "_initialize" function.
+ *
+ * @return "start function" or the export's name, NULL when instantiating
+ *         the module runs no module code
+ */
+const char *wamr_zephyr_instantiate_code(wasm_module_t module);
+
+/**
+ * Output of WAMR's os_printf()/os_vprintf(): the libc-builtin printf,
+ * vprintf, puts and putchar of the modules and the runtime's diagnostics.
+ * The hook gets every call first (in the calling thread) and returns true
+ * when it consumed the output; otherwise the output goes to printk() as
+ * without a hook. Set it before the first module runs; NULL removes it.
+ */
+typedef bool (*wamr_zephyr_print_hook_t)(const char *format, va_list ap);
+void wamr_zephyr_set_print_hook(wamr_zephyr_print_hook_t hook);
 
 #ifdef __cplusplus
 }

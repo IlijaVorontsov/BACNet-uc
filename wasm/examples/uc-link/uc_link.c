@@ -11,8 +11,10 @@
  *   - Fields are separated by blanks; exactly 10 fields. Ranges:
  *     src_device 0..4194302 (4294967295 = UC_DEVICE_LOCAL is accepted as
  *     well), types 0..1023, instances 0..4194302, period_ms 100..3600000
- *     (a cov link may give 0: fallback period 1000 ms), priority 0..16,
- *     scale/offset finite decimal numbers. Anything else is malformed.
+ *     (a cov link may give 0: fallback period 1000 ms), priority 0..16
+ *     (6 is accepted here but the node rejects writes at 6 to outputs and
+ *     analog-value; the harness refuses such links), scale/offset finite
+ *     decimal numbers. Anything else is malformed.
  *   - "count" missing or outside 1..8, or no usable link: uc_app_init
  *     fails (the app enters the "failed" state with the reason logged).
  *   - A cov link whose SubscribeCOV request fails (no subscription slot,

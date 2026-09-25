@@ -11,11 +11,14 @@
  *                      store
  *
  * Threads touching a slot:
- *   manager callers    uc_apps_*() under mgr_lock (shell, SMP, main)
+ *   manager callers    uc_apps_*() under mgr_lock (shell, SMP, main); a
+ *                      stop sets cancel and stop_req
  *   app thread         owns the WAMR instance; the only thread that calls
- *                      into it (host functions run in this thread)
+ *                      into it (host functions and the libc-builtin output
+ *                      of the module run in this thread)
  *   BACnet thread      write hook / COV callback: uc_app_post_event() only
- *   system workqueue   watchdog: wasm_runtime_terminate() under wd_lock
+ *   system workqueue   watchdog: wasm_runtime_terminate() under wd_lock,
+ *                      sets cancel
  */
 #ifndef UC_APP_INTERNAL_H_
 #define UC_APP_INTERNAL_H_
@@ -39,6 +42,9 @@ extern "C" {
 #define UC_APP_PERIOD_MIN_MS 10u
 /* Longest tick period (ms), same limit as apps.json "period_ms". */
 #define UC_APP_PERIOD_MAX_MS 3600000u
+/* Longest log line taken from an app (uc_log, printf); longer lines are
+ * truncated. */
+#define UC_APP_LOG_LINE_MAX 120
 
 enum uc_app_ev_kind {
 	UC_APP_EV_STOP = 0, /* wake-up only; the stop flag carries the request */
@@ -91,6 +97,9 @@ struct uc_app_slot {
 	atomic_t busy;     /* 1 from start until the app thread has cleaned up */
 	atomic_t stop_req; /* stop requested by the manager */
 	atomic_t accept;   /* the write hook / COV callback may post events */
+	/* blocking host calls return at once (stop request, watchdog expiry;
+	 * cleared before uc_app_deinit()) */
+	atomic_t cancel;
 
 	struct k_thread thread;
 	struct k_sem run_sem;     /* manager -> thread: run the configured app */
@@ -108,6 +117,8 @@ struct uc_app_slot {
 	atomic_t wd_gen;            /* incremented per callback */
 	atomic_t wd_expired_gen;    /* wd_gen at the last timer expiry */
 	uint32_t wd_remaining_ms;   /* budget left while paused */
+	bool wd_paused;             /* app thread: paused by a blocking call */
+	uint16_t cancel_refused;    /* app thread: cancelled calls this callback */
 	wasm_module_inst_t inst;    /* running instance, NULL otherwise */
 
 	/* app thread only */
@@ -117,6 +128,9 @@ struct uc_app_slot {
 	int64_t log_window_ms;
 	uint32_t log_count;
 	uint32_t log_dropped;
+	/* libc-builtin printf/puts/putchar output of the current line */
+	char print_buf[UC_APP_LOG_LINE_MAX];
+	uint16_t print_len; /* characters beyond print_buf are dropped */
 };
 
 /* ---------------------------------------------------------------------- */
@@ -128,11 +142,22 @@ struct uc_app_slot {
  *  instance does not accept events or the queue is full. */
 bool uc_app_post_event(struct uc_app_slot *s, const struct uc_app_event *ev);
 
-/** Stop / restart the watchdog of the running callback around a host
- *  call that blocks on the network or the file system (app thread). The
- *  budget left is kept, so only execution time counts. */
-void uc_app_wd_pause(struct uc_app_slot *s);
-void uc_app_wd_resume(struct uc_app_slot *s);
+/** Bracket a host call that blocks on the network or the file system
+ *  (app thread). uc_app_block_begin() returns false when blocking calls
+ *  are cancelled (stop requested, watchdog expired): the host function
+ *  must then fail at once without blocking. Otherwise it pauses the
+ *  watchdog of the running callback (the budget left is kept, so only
+ *  execution time counts), except while a stop is pending: then the whole
+ *  time counts, so that a stopping callback and uc_app_deinit() end
+ *  within the watchdog period. Remote requests also pass &s->cancel to
+ *  the BACnet client, which gives up when it is set during the wait. A
+ *  callback that keeps making blocking calls after they were cancelled
+ *  is terminated. */
+bool uc_app_block_begin(struct uc_app_slot *s);
+void uc_app_block_end(struct uc_app_slot *s);
+
+/** Slot of the calling application thread, NULL in any other thread. */
+struct uc_app_slot *uc_app_current_slot(void);
 
 /* uc_apps_owner_name() is public (uc_apps.h, included above). */
 
@@ -156,6 +181,17 @@ bool uc_app_host_sub_live(const struct uc_app_slot *s, const struct uc_app_event
 
 /** Delete /lfs/data/<app> with all keys. Missing is not an error. */
 int uc_app_kv_remove_all(const char *app_name);
+
+/** One log line of the app (tag "<app>: ", control characters replaced,
+ *  truncated to UC_APP_LOG_LINE_MAX, at most 20 lines per second and app;
+ *  app thread). Used by uc_log and the libc-builtin output. */
+void uc_app_log_line(struct uc_app_slot *s, int32_t level, const char *src, uint32_t len);
+
+/** libc-builtin printf/puts/putchar output of the module: collected per
+ *  line and logged with uc_app_log_line() at level inf (app thread).
+ *  uc_app_print_flush() logs an unterminated line (end of a callback). */
+void uc_app_print_char(struct uc_app_slot *s, char c);
+void uc_app_print_flush(struct uc_app_slot *s);
 
 #ifdef __cplusplus
 }

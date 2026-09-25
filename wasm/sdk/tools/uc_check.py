@@ -111,8 +111,16 @@ def check_module(mod: Module, path: str = "", *, allow_grow: bool = False,
         rep.warnings.append(f"exports not used by the host: {', '.join(others)}")
     if "uc_app_init" not in exported_funcs and "uc_app_tick" not in exported_funcs:
         rep.warnings.append("neither uc_app_init nor uc_app_tick is exported")
+    # The firmware refuses modules that would run code inside
+    # wasm_runtime_instantiate (no watchdog, no app context there yet):
+    # modules/wasm-micro-runtime/wamr_zephyr_module.c.
     if mod.start is not None:
-        rep.warnings.append("module has a start function (runs before uc_app_api_version)")
+        rep.errors.append("module has a start function: the firmware refuses modules that run "
+                          "code at instantiation")
+    for name in ("_initialize", "__post_instantiate", "__wasm_call_ctors"):
+        if name in exported_funcs:
+            rep.errors.append(f"export {name}: the firmware refuses modules that run code at "
+                              "instantiation (do not export it)")
 
     # -- features ------------------------------------------------------------
     for feat in sorted(mod.features):

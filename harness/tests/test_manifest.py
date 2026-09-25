@@ -526,3 +526,85 @@ def test_app_points_and_objects_in_use() -> None:
     assert m.apps_using_objects(entries, {(0, 1)}, 11) == ["link", "alarm"]
     assert m.apps_using_objects(entries, {(1, 1)}, 11) == ["link"]
     assert m.apps_using_objects(entries, set(), 11) == []
+
+
+# --- firmware limits the schema cannot express (CON-6) ---------------------------------------
+
+
+E_ACUTE = "é"  # 2 bytes in UTF-8
+
+
+@pytest.mark.parametrize(("doc_name", "doc", "path", "fragment"), [
+    ("device", {"schema": 1, "device": {"instance": 1, "name": E_ACUTE * 40}},
+     "/device/name", "80 bytes in UTF-8"),
+    ("device", {"schema": 1, "device": {"instance": 1, "name": "水" * 22}},
+     "/device/name", "66 bytes in UTF-8"),
+    ("device", {"schema": 1, "device": {"instance": 1001.0, "name": "a"}},
+     "/device/instance", "not an integer"),
+    ("device", {"schema": 1, "device": {"instance": 1, "name": "a"},
+                "network": {"dhcp": False, "ipv4": "10.0.0.2", "netmask": "255.0.255.0"}},
+     "/network/netmask", "not a contiguous netmask"),
+    ("io", {"schema": 1, "points": [{"channel": "ai0", "type": "analog-input",
+                                     "instance": 1, "name": E_ACUTE * 40}]},
+     "/points/0/name", "80 bytes"),
+    ("apps", {"schema": 1, "apps": [{"name": "a", "file": "/lfs/apps/a.wasm",
+                                     "params": [{"key": "v", "value": E_ACUTE * 60}]}]},
+     "/apps/0/params/0/value", "120 bytes"),
+    ("apps", {"schema": 1, "apps": [{"name": "a", "file": "/lfs/apps/a.wasm",
+                                     "params": [{"key": "..", "value": "x"}]}]},
+     "/apps/0/params/0/key", "not allowed"),
+    ("apps", {"schema": 1, "apps": [{"name": "a", "file": "/lfs/apps/a.wasm",
+                                     "params": [{"key": "k", "value": "x"},
+                                                {"key": "k", "value": "y"}]}]},
+     "/apps/0/params/1/key", "appears twice"),
+])
+def test_documents_checked_with_firmware_limits(doc_name: str, doc: dict[str, Any], path: str,
+                                                fragment: str) -> None:
+    issues = m.validate_document(doc_name, doc)
+    assert any(i.path == path and fragment in i.message for i in issues), issues
+
+
+def test_firmware_limits_accept_what_the_node_accepts() -> None:
+    ok = {"schema": 1, "device": {"instance": 1001, "name": E_ACUTE * 31},
+          "network": {"dhcp": False, "ipv4": "10.0.0.2", "netmask": "255.255.240.0"}}
+    assert not m.validate_document("device", ok)
+    apps = {"schema": 1, "apps": [{"name": "a", "file": "/lfs/apps/a.wasm",
+                                   "params": [{"key": "a.b", "value": E_ACUTE * 47}]}]}
+    assert not m.validate_document("apps", apps)
+    assert m.netmask_valid("255.255.255.255") and not m.netmask_valid("0.255.255.255")
+
+
+def test_system_manifest_firmware_limits() -> None:
+    doc = base_doc()
+    doc["nodes"][1]["network"] = {"dhcp": False, "ipv4": "10.0.0.2", "netmask": "255.0.255.0"}
+    doc["nodes"][1]["device"]["name"] = E_ACUTE * 40
+    doc["apps"][0]["params"]["note"] = E_ACUTE * 48
+    doc["apps"][0]["params"][".."] = "x"
+    errs = errors(doc)
+    assert any(i.path == "/nodes/1/network/netmask" for i in errs)
+    assert any(i.path == "/nodes/1/device/name" and "bytes" in i.message for i in errs)
+    doc = base_doc()
+    doc["apps"][0]["params"]["note"] = E_ACUTE * 48
+    doc["apps"][0]["params"][".."] = "x"
+    errs = errors(doc)
+    assert any(i.path == "/apps/0/params/note" and "96 in UTF-8" in i.message for i in errs)
+    assert any(i.path == "/apps/0/params/.." and "'.' or '..'" in i.message for i in errs)
+
+
+@pytest.mark.parametrize("dst", ["analog-value:9", "binary-value:9", "multi-state-value:9",
+                                 "analog-output:1"])
+def test_link_priority_6_is_an_error_for_every_destination(dst: str) -> None:
+    """The node rejects priority 6 for AV as well as for outputs (CON-1)."""
+    doc = base_doc()
+    doc["links"] = [{"from": "a/analog-input:1", "to": f"b/{dst}", "priority": 6}]
+    assert_error(doc, "/links/0/priority", "reserved for minimum on/off")
+
+
+def test_link_period_limit_of_uc_link() -> None:
+    """uc-link skips a link with period_ms > 3600000 as malformed (CON-5)."""
+    doc = base_doc()
+    doc["links"] = [{"from": "a/analog-input:1", "to": "b/analog-value:21", "mode": "poll",
+                     "period_ms": 7200000}]
+    assert_error(doc, "/links/0/period_ms", "exceeds 3600000")
+    doc["links"][0]["period_ms"] = 3600000
+    assert not errors(doc)

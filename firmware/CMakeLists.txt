@@ -20,6 +20,10 @@ target_sources(app PRIVATE
   src/io/uc_io.c
 )
 
+target_sources_ifdef(CONFIG_LOG_BACKEND_FS app PRIVATE
+  src/storage/uc_log_sync.c
+)
+
 target_sources_ifdef(CONFIG_UC_APPS app PRIVATE
   src/apps/uc_app_mgr.c
   src/apps/uc_app_host_api.c

@@ -60,7 +60,23 @@ zephyr_library_sources(${WAMR_RUNTIME_LIB_SOURCE}
                        ${CMAKE_CURRENT_LIST_DIR}/wamr_zephyr_glue.c
                        ${CMAKE_CURRENT_LIST_DIR}/wamr_zephyr_exec.c
                        ${CMAKE_CURRENT_LIST_DIR}/wamr_zephyr_mmap.c
+                       ${CMAKE_CURRENT_LIST_DIR}/wamr_zephyr_module.c
                        ${CMAKE_CURRENT_LIST_DIR}/wamr_linear_memory.c)
+
+# wamr_zephyr_instantiate_code() (wamr_zephyr_module.c) knows the exports
+# WAMR 2.4.5 calls during instantiation. Stop the build when a WAMR update
+# looks up others.
+foreach(uc_wamr_rt ${WAMR_ROOT_DIR}/core/iwasm/interpreter/wasm_runtime.c
+                   ${WAMR_ROOT_DIR}/core/iwasm/aot/aot_runtime.c)
+  file(STRINGS ${uc_wamr_rt} uc_wamr_post
+       REGEX "lookup_post_instantiate_func\\(module_inst, *\"")
+  string(REGEX MATCHALL "\"[A-Za-z0-9_]+\"" uc_wamr_post "${uc_wamr_post}")
+  if(NOT uc_wamr_post STREQUAL "\"_initialize\";\"__post_instantiate\";\"__wasm_call_ctors\"")
+    message(FATAL_ERROR "${uc_wamr_rt} runs other functions at instantiation than "
+            "WAMR 2.4.5 (${uc_wamr_post}): re-check "
+            "modules/wasm-micro-runtime/wamr_zephyr_module.c")
+  endif()
+endforeach()
 
 # Linear memory allocation (wamr_linear_memory.c): WAMR bounds-checks the
 # linear memory rounded up to os_getpagesize() but the Zephyr platform's

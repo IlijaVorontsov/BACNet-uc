@@ -49,6 +49,17 @@
  *     while a callback computes, so there a budget of interpreted
  *     instructions per callback (CONFIG_WAMR_INSTRUCTION_LIMIT) takes the
  *     watchdog's place.
+ *   - Stopping an application cancels its blocking host calls: a remote
+ *     request in flight is abandoned within about 50 ms and returns
+ *     UC_ERR_TIMEOUT; once a stop is pending, further blocking calls fail
+ *     at once (uc_remote_*: UC_ERR_TIMEOUT, uc_kv_*: UC_ERR_IO) and no
+ *     longer pause the watchdog, so the callback must return.
+ *   - No module code may run during instantiation: the host refuses (SMP rc
+ *     VERIFY) a module with a start function or exporting
+ *     __wasm_call_ctors, __post_instantiate or _initialize. uc-cc builds
+ *     conforming modules; do global setup in uc_app_init().
+ *   - printf/puts output of an application is logged like uc_log() at
+ *     info level (see uc_libc.h).
  *
  * Pointer arguments
  *   A pointer (with its length) passed to a bacnet_uc function must lie in
@@ -60,10 +71,17 @@
  * Values
  *   Numeric property values cross the ABI as double. The host converts to
  *   and from the property's BACnet datatype:
- *     REAL, DOUBLE                  <-> value
- *     UNSIGNED, SIGNED, ENUMERATED  <-> value (truncated toward zero on write)
+ *     REAL, DOUBLE                  <-> value (REAL: finite and within the
+ *                                       float range on write)
+ *     UNSIGNED, SIGNED, ENUMERATED  <-> value (integral and within the
+ *                                       datatype's range on write)
  *     BOOLEAN                       <-> 0.0 / 1.0
  *     binary PV (BI/BO/BV)          <-> 0.0 inactive / 1.0 active
+ *   A write is never truncated or rounded: NaN, an infinity, a REAL beyond
+ *   the float range, a fraction for an integer datatype (e.g. 2.7 for a
+ *   multi-state value), a value out of range, and anything but exactly 0.0
+ *   or 1.0 for BOOLEAN and a binary present value (Present_Value,
+ *   Relinquish_Default) return UC_ERR_INVALID; the property keeps its value.
  *   Other datatypes return UC_ERR_TYPE.
  *
  * Priorities (uc_prop_write*, uc_remote_write*, uc_app_on_write)
@@ -73,11 +91,16 @@
  *   write) clears the slot, and the highest set slot (or
  *   Relinquish_Default) is the Present_Value. The value objects AV, BV and
  *   MSV of BACnet-uc nodes have no priority array: a write sets the
- *   Present_Value whatever the priority, and a relinquish succeeds and
- *   changes nothing (ASHRAE 135 clause 15.9.2). A relinquish of any other
- *   property or of an input's Present_Value returns UC_ERR_TYPE. Other
- *   properties ignore the priority. Devices of other vendors may make value
- *   objects commandable.
+ *   Present_Value whatever the priority (except priority 6 on AV, below),
+ *   and a relinquish succeeds and changes nothing (ASHRAE 135 clause
+ *   15.9.2). A relinquish of any other property or of an input's
+ *   Present_Value returns UC_ERR_TYPE. Other properties ignore the
+ *   priority. Devices of other vendors may make value objects commandable.
+ *   Priority 6 is reserved for Minimum_On/Off_Time (135 clause 19.2.3): a
+ *   write or relinquish at priority 6 of the Present_Value of AO, BO and
+ *   MSO, and a write at priority 6 to an AV, return UC_ERR_PERM
+ *   (write-access-denied); BV and MSV ignore it like any priority. Do not
+ *   use priority 6.
  *
  * Errors
  *   Functions returning int32_t return >= 0 on success and a negative
@@ -229,7 +252,9 @@ int32_t uc_prop_read(uint32_t type, uint32_t instance, uint32_t prop,
 /** Write a numeric property of a local object, with the rules of a BACnet
  *  WriteProperty request. priority 0..16 (UC_PRIORITY_NONE = no priority):
  *  AO, BO, MSO Present_Value go into the priority array, AV, BV, MSV and
- *  other properties ignore the priority (see "Priorities" above). */
+ *  other properties ignore the priority, except that priority 6 is
+ *  UC_ERR_PERM for AO, BO, MSO and AV (see "Priorities" above). The value
+ *  must fit the property's datatype, else UC_ERR_INVALID (see "Values"). */
 UC_IMPORT(uc_prop_write)
 int32_t uc_prop_write(uint32_t type, uint32_t instance, uint32_t prop,
 		      int32_t array_index, double value, uint32_t priority);
@@ -264,7 +289,14 @@ int32_t uc_remote_read(uint32_t device, uint32_t type, uint32_t instance,
 		       uint32_t timeout_ms);
 
 /** WriteProperty on a remote device (priority as for uc_prop_write; a
- *  BACnet-uc node's AV, BV, MSV ignore it). */
+ *  BACnet-uc node's AV, BV, MSV ignore it, except priority 6 on AV). The
+ *  value is converted as described in "Values" before the request is sent
+ *  (UC_ERR_INVALID if it does not fit the datatype). The datatype is taken
+ *  from the host's table of standard numeric properties, which covers AI,
+ *  AO, AV, BI, BO, BV, MSI, MSO, MSV, Integer Value, Positive Integer
+ *  Value, Large Analog Value, Accumulator, Loop, Pulse Converter, Lighting
+ *  Output and Binary Lighting Output; other properties return
+ *  UC_ERR_TYPE. */
 UC_IMPORT(uc_remote_write)
 int32_t uc_remote_write(uint32_t device, uint32_t type, uint32_t instance,
 			uint32_t prop, int32_t array_index, double value,
@@ -305,7 +337,9 @@ int32_t uc_io_find(const char *name, uint32_t len);
 UC_IMPORT(uc_io_read)
 int32_t uc_io_read(int32_t channel, double *out);
 
-/** Write an output channel (do: 0/1, ao: 0..100 %). */
+/** Write an output channel: do non-zero = 1, ao clamped to 0..100 %.
+ *  UC_ERR_PERM for an input channel, UC_ERR_INVALID for NaN or an
+ *  infinity. */
 UC_IMPORT(uc_io_write)
 int32_t uc_io_write(int32_t channel, double value);
 

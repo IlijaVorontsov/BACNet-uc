@@ -572,3 +572,18 @@ async def test_fs_upload_rejects_an_offset_it_did_not_ask_for(fake_node: FakeNod
         assert fake_node.files["/lfs/apps/y.bin"] == data
     finally:
         await client.close()
+
+
+async def test_node_reload_partial_failure_carries_reboot_required(
+        smp_client: SmpClient, fake_node: FakeNode) -> None:
+    """CON-7: {reboot_required: true, err: INVALID} is not a bare SmpError."""
+    from bacnet_uc_harness.errors import ReloadError
+
+    fake_node.files["/lfs/cfg/device.json.new"] = json.dumps(
+        {"schema": 1, "device": {"instance": 1500, "name": "moved"}}).encode()
+    fake_node.files["/lfs/cfg/apps.json.new"] = b'{"schema": 1, "apps": [{"name": "BAD"}]}'
+    with pytest.raises(ReloadError) as exc:
+        await smp_client.node_reload("all")
+    assert exc.value.rc_name == "INVALID" and exc.value.reboot_required is True
+    assert isinstance(exc.value, SmpError) and "reboot required" in str(exc.value)
+    assert json.loads(fake_node.files["/lfs/cfg/device.json"])["device"]["instance"] == 1500

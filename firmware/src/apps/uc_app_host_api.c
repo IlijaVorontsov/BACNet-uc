@@ -4,7 +4,8 @@
  * Host functions of import module "bacnet_uc" (wasm/sdk/include/bacnet_uc.h).
  *
  * Every function runs in the calling application's thread; the slot comes
- * from the exec env's user data. Permissions are those of the app's
+ * from the exec env's user data (or, should WAMR ever call one on an exec
+ * env of its own, from the calling thread). Permissions are those of the app's
  * apps.json entry. Errors are returned as UC_ERR_* (uc_err_to_api()) and
  * counted in the app status ("errors"), except UC_ERR_NOT_FOUND of the
  * lookups uc_param_get, uc_param_get_number and uc_kv_get: a missing key
@@ -22,8 +23,17 @@
  *
  * Blocking
  *   Remote BACnet requests and kv file access pause the app's watchdog
- *   while they block. Local object access goes through the BACnet executor
- *   and is short.
+ *   while they block (uc_app_block_begin()). Once the app is being stopped
+ *   (or its watchdog expired) they fail at once, and a remote request in
+ *   progress is abandoned within UC_BN_CANCEL_POLL_MS, so that a stop never
+ *   waits for an app looping on blocking calls. Local object access goes
+ *   through the BACnet executor and is short.
+ *
+ * Output
+ *   The libc-builtin printf/vprintf/puts/putchar of a module become log
+ *   lines of the app like uc_log (level inf, tag, sanitising, truncation
+ *   and rate limit; uc_app_print_char(), fed by the app manager's print
+ *   hook), so that a module cannot write untagged lines into the log.
  */
 
 #include <errno.h>
@@ -70,7 +80,7 @@ BUILD_ASSERT((UC_LOG_ERR == LOG_LEVEL_ERR) && (UC_LOG_WRN == LOG_LEVEL_WRN) &&
 	     "log levels mismatch");
 
 /* Longest log line taken from an app (longer messages are truncated). */
-#define APP_LOG_LINE_MAX  120
+#define APP_LOG_LINE_MAX  UC_APP_LOG_LINE_MAX
 /* Log lines per app and window; the excess is dropped and counted. */
 #define APP_LOG_BURST     20
 #define APP_LOG_WINDOW_MS 1000
@@ -84,8 +94,6 @@ BUILD_ASSERT((UC_LOG_ERR == LOG_LEVEL_ERR) && (UC_LOG_WRN == LOG_LEVEL_WRN) &&
 #define APP_KV_TMP_SUFFIX "~"
 /* "/lfs/data/<app>/<key>~" */
 #define APP_KV_PATH_MAX (sizeof(UC_DIR_DATA) + UC_APP_NAME_MAX + APP_KV_KEY_MAX + 8)
-/* Upper bound of entries uc_app_kv_remove_all() deletes. */
-#define APP_KV_REMOVE_MAX 256
 
 /* ---------------------------------------------------------------------- */
 /* Helpers                                                                 */
@@ -93,7 +101,12 @@ BUILD_ASSERT((UC_LOG_ERR == LOG_LEVEL_ERR) && (UC_LOG_WRN == LOG_LEVEL_WRN) &&
 
 static inline struct uc_app_slot *slot_of(wasm_exec_env_t env)
 {
-	return wasm_runtime_get_user_data(env);
+	struct uc_app_slot *s = wasm_runtime_get_user_data(env);
+
+	/* WAMR runs module code on exec envs of its own only during
+	 * instantiation, which the app manager refuses (start function,
+	 * __wasm_call_ctors, ...); every host call comes from an app thread */
+	return (s != NULL) ? s : uc_app_current_slot();
 }
 
 /* Count an error of the running instance and pass the code through. */
@@ -195,22 +208,11 @@ static bool object_id_ok(uint32_t type, uint32_t instance)
 /* Logging, time, scheduling                                               */
 /* ---------------------------------------------------------------------- */
 
-static void h_log(wasm_exec_env_t env, int32_t level, uint32_t msg, uint32_t len)
+void uc_app_log_line(struct uc_app_slot *s, int32_t level, const char *src, uint32_t len)
 {
-	struct uc_app_slot *s = slot_of(env);
 	char line[APP_LOG_LINE_MAX + 1];
-	const char *src;
 	int64_t now = k_uptime_get();
 	uint32_t n;
-
-	if (len == 0U) {
-		return;
-	}
-	src = app_mem(env, msg, len);
-	if (src == NULL) {
-		(void)ret_api(s, UC_ERR_INVALID);
-		return;
-	}
 
 	if ((now - s->log_window_ms) >= APP_LOG_WINDOW_MS) {
 		if (s->log_dropped > 0U) {
@@ -250,6 +252,42 @@ static void h_log(wasm_exec_env_t env, int32_t level, uint32_t msg, uint32_t len
 	} else {
 		LOG_DBG("%s: %s", s->cfg.name, line);
 	}
+}
+
+void uc_app_print_char(struct uc_app_slot *s, char c)
+{
+	if (c == '\n') {
+		uc_app_print_flush(s);
+		return;
+	}
+	if (s->print_len < sizeof(s->print_buf)) {
+		s->print_buf[s->print_len++] = c;
+	}
+}
+
+void uc_app_print_flush(struct uc_app_slot *s)
+{
+	if (s->print_len > 0U) {
+		uc_app_log_line(s, UC_LOG_INF, s->print_buf, s->print_len);
+		s->print_len = 0;
+	}
+}
+
+static void h_log(wasm_exec_env_t env, int32_t level, uint32_t msg, uint32_t len)
+{
+	struct uc_app_slot *s = slot_of(env);
+	const char *src;
+
+	if (len == 0U) {
+		return;
+	}
+	src = app_mem(env, msg, len);
+	if (src == NULL) {
+		(void)ret_api(s, UC_ERR_INVALID);
+		return;
+	}
+
+	uc_app_log_line(s, level, src, len);
 }
 
 static uint64_t h_uptime_ms(wasm_exec_env_t env)
@@ -535,9 +573,12 @@ static int32_t h_remote_read(wasm_exec_env_t env, uint32_t device, uint32_t type
 	}
 
 	memset(&value, 0, sizeof(value));
-	uc_app_wd_pause(s);
-	rc = uc_bn_remote_read(device, (uint16_t)type, instance, prop, index, &value, timeout_ms);
-	uc_app_wd_resume(s);
+	if (!uc_app_block_begin(s)) {
+		return ret_errno(s, -ECANCELED);
+	}
+	rc = uc_bn_remote_read(device, (uint16_t)type, instance, prop, index, &value, timeout_ms,
+			       &s->cancel);
+	uc_app_block_end(s);
 	if (rc == 0) {
 		rc = uc_value_to_double(&value, &d);
 	}
@@ -576,10 +617,12 @@ static int32_t remote_write(struct uc_app_slot *s, uint32_t device, uint32_t typ
 		value = &null_value;
 	}
 
-	uc_app_wd_pause(s);
+	if (!uc_app_block_begin(s)) {
+		return ret_errno(s, -ECANCELED);
+	}
 	rc = uc_bn_remote_write(device, (uint16_t)type, instance, prop, index, value,
-				(uint8_t)priority, timeout_ms);
-	uc_app_wd_resume(s);
+				(uint8_t)priority, timeout_ms, &s->cancel);
+	uc_app_block_end(s);
 
 	return ret_errno(s, rc);
 }
@@ -707,6 +750,7 @@ void uc_app_host_reset(struct uc_app_slot *s)
 	s->log_window_ms = 0;
 	s->log_count = 0;
 	s->log_dropped = 0;
+	s->print_len = 0;
 }
 
 void uc_app_host_cleanup(struct uc_app_slot *s)
@@ -900,7 +944,9 @@ static int32_t h_kv_get(wasm_exec_env_t env, uint32_t key_off, uint32_t key_len,
 		return ret_errno(s, rc);
 	}
 
-	uc_app_wd_pause(s);
+	if (!uc_app_block_begin(s)) {
+		return ret_api(s, UC_ERR_IO);
+	}
 	rc = uc_storage_file_size(path, &size);
 	if ((rc == 0) && (size > (size_t)INT32_MAX)) {
 		rc = -EFBIG;
@@ -908,7 +954,7 @@ static int32_t h_kv_get(wasm_exec_env_t env, uint32_t key_off, uint32_t key_len,
 	if ((rc == 0) && (buf_len > 0U) && (size > 0U)) {
 		rc = kv_read(path, dst, MIN(size, (size_t)buf_len));
 	}
-	uc_app_wd_resume(s);
+	uc_app_block_end(s);
 
 	if (rc == -EISDIR) {
 		rc = -ENOENT;
@@ -950,10 +996,12 @@ static int32_t h_kv_set(wasm_exec_env_t env, uint32_t key_off, uint32_t key_len,
 		return ret_api(s, UC_ERR_IO);
 	}
 	rc = kv_path(path, sizeof(path), s->cfg.name, NULL, "");
+	if ((rc == 0) && !uc_app_block_begin(s)) {
+		return ret_api(s, UC_ERR_IO);
+	}
 	if (rc == 0) {
 		size_t size;
 
-		uc_app_wd_pause(s);
 		/* -EISDIR: the directory exists (fs_mkdir() would log an error) */
 		rc = uc_storage_file_size(path, &size);
 		if (rc == -ENOENT) {
@@ -972,7 +1020,7 @@ static int32_t h_kv_set(wasm_exec_env_t env, uint32_t key_off, uint32_t key_len,
 		if (rc == 0) {
 			rc = kv_write(path, tmp, src, val_len);
 		}
-		uc_app_wd_resume(s);
+		uc_app_block_end(s);
 	}
 	if (rc < 0) {
 		LOG_WRN("%s: kv_set %s failed (%d)", s->cfg.name, key, rc);
@@ -1005,8 +1053,10 @@ int uc_app_kv_remove_all(const char *app_name)
 	}
 
 	/* Delete the first entry until the directory is empty (no unlink
-	 * while a directory is being iterated). */
-	for (int i = 0; i < APP_KV_REMOVE_MAX; i++) {
+	 * while a directory is being iterated). Every round removes one
+	 * entry or ends the loop, so it ends however many keys an app
+	 * stored. */
+	for (;;) {
 		fs_dir_t_init(&d);
 		rc = fs_opendir(&d, dir);
 		if (rc < 0) {

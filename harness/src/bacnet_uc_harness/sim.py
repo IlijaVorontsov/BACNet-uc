@@ -582,12 +582,11 @@ class SimManager:
             self.state.bridge = self.bridge
             self.state.host_address = f"{self.subnet}.254"
             self._save()
-            # tear down only what this call creates: never another simulation's
-            # bridge or namespaces
-            bridge: str | None = None
+            # on failure tear down only what this call created (the bridge
+            # did not exist before, even a half-made one is ours), never the
+            # namespaces it did not get to
             created: list[str] = []
             try:
-                bridge = self.bridge  # did not exist: ours even if half made
                 backend.setup_bridge(self.bridge, self.host_cidr())
                 for n in nodes:
                     created.append(n.netns or "")
@@ -595,7 +594,7 @@ class SimManager:
                                      self.bridge, SIM_HOST_ADDRESS if self.subnet == SIM_SUBNET
                                      else f"{self.subnet}.254")
             except Exception as exc:
-                backend.teardown(bridge, [ns for ns in created if ns])
+                backend.teardown(self.bridge, [ns for ns in created if ns])
                 self.state = None
                 (wd / STATE_FILE).unlink(missing_ok=True)
                 raise HarnessError(f"network setup failed: {exc}") from exc

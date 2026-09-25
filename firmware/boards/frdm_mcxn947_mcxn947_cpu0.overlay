@@ -3,9 +3,14 @@
  *
  * FRDM-MCXN947 (cpu0)
  *
- * Storage: the board's storage_partition, the whole 8 MiB Winbond W25Q64JV
- * QSPI NOR flash on FlexSPI (4 KiB erase blocks). The application runs from
- * the internal flash, so the external flash is used for data only.
+ * Storage: the board's storage_partition on the 8 MiB Winbond W25Q64JV QSPI
+ * NOR flash on FlexSPI (4 KiB erase blocks), shrunk to the first 8128 KiB
+ * (0x000000-0x7EFFFF). The top 64 KiB (0x7F0000-0x7FFFFF) stay reserved for
+ * the settings partition of the MQTT firmware in this repository (branch
+ * claude/inter-session-communication-h989ye), so both firmwares can be
+ * flashed alternately on one board without wiping each other's data.
+ * LittleFS only ever formats this partition. The application runs from the
+ * internal flash, so the external flash is used for data only.
  *
  * Network: ENET QOS with the on-board PHY (RMII). The board default
  * zephyr,random-mac-address is replaced by a MAC derived from the silicon
@@ -22,6 +27,11 @@
 
 &sram0 {
 	reg = <0x20000000 DT_SIZE_K(384)>;
+};
+
+/* Leave the top 64 KiB of the W25Q64 to other firmwares (see above). */
+&storage_partition {
+	reg = <0x0 0x7f0000>;
 };
 
 /* cpu1's RAM (SRAM G) is now part of sram0 */

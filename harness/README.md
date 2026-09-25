@@ -171,7 +171,7 @@ JSON-pointer paths), `group`/`rc`/`rc_name` (SMP), `kind`/`error_class`/
 | `node_info` | node | ro | firmware, board, API, device, network, FS, apps, WASM runtime |
 | `get_config` | node, doc | ro | read `/lfs/cfg/<doc>.json` (includes `bacnet.password` in clear text) |
 | `set_config` | node, doc, content, reload?, force? | destr. | schema-validated staged upload (`<doc>.json.new`) + reload; restarts IO-dependent apps after `io` |
-| `reload_config` | node, doc? | idem. | `uc_node reload` (activates a staged document); restarts IO-dependent apps after `io`/`all` |
+| `reload_config` | node, doc? | idem. | `uc_node reload` (activates a staged document); restarts IO-dependent apps after `io`/`all`, also when one document of `all` fails (the error carries `reboot_required`) |
 | `io_catalog` | node | ro | IO channels (name, kind, hw, pin, forced, bound object) |
 | `configure_io` | node, points, mode?, dry_run? | destr. | merge/replace `io.json` points, validated against schema and catalog; restarts IO-dependent apps |
 | `io_read` | node, channel? | ro | raw channel values |
@@ -533,16 +533,16 @@ reboot detection against the boot configuration.
 
 | File | Covers |
 |------|--------|
-| `test_manifest.py` | example manifests, placeholders, YAML 1.2, schema errors, semantic checks, catalogs, collisions |
+| `test_manifest.py` | example manifests, placeholders, YAML 1.2, schema errors, firmware limits the schemas cannot express (UTF-8 bytes, integers without fraction, netmask, parameter keys), semantic checks (link priority 6 and period), catalogs, collisions |
 | `test_render.py` | rendered documents against the schemas, static bindings, uc-link parameters (README format), chunking, permissions |
-| `test_planner.py` | diffs against fake live state, `restart_app` for apps using re-created IO objects, apply order/failure/reboot with fake nodes, plan/apply/re-plan against `FakeNode`s |
+| `test_planner.py` | diffs against fake live state, `restart_app` for apps using re-created IO objects, `clear_staged` of stale staged documents, apply order/failure/reboot with fake nodes, plan/apply/re-plan against `FakeNode`s, the build cache key (local headers) |
 | `test_wasm_build.py` | WebAssembly reader on hand-assembled modules, ABI check, header parsing, builds with uc-cc and the clang fallback, AOT |
 | `test_mcp_server.py` | tool catalogue and annotations, resources, prompts, tool calls end-to-end against `FakeNode` through the SDK's in-memory client |
 | `test_cli.py` | CLI commands, exit codes, output against a `FakeNode` |
-| `test_sim.py` | `ip` command generation, compose file, process lifecycle with a stand-in executable, failure roll-back, reboot fallback to SMP |
-| `test_node.py` | staged `push_config` (activation check, rejection, no reload, firmware without staging), `prop_read` LIMIT fallback, `restart_app`, IO-dependent app restarts, log reads with a fresh FS handle |
+| `test_sim.py` | `ip` command generation, compose file, process lifecycle with a stand-in executable, failure roll-back without touching another simulation's network, host ports in use, stale pids, reboot fallback to SMP |
+| `test_node.py` | staged `push_config` (activation check, rejection, no reload, stale staged documents removed, firmware without staging), `prop_read` LIMIT fallback, `restart_app`, IO-dependent app restarts, log reads with a fresh FS handle, serial targets with pyserial URLs |
 | `test_budget.py` | pool sizes from the board configurations, per-app estimates against the native_sim measurements, budget warnings |
-| `test_fake_node.py`, `test_smp_*.py`, `test_bacnet_*.py` | FakeNode fidelity, SMP client and serial framing, BACnet/IP codec and client |
+| `test_fake_node.py`, `test_smp_*.py`, `test_bacnet_*.py` | FakeNode fidelity, SMP client (uploads with lost responses, partial reloads) and serial framing, BACnet/IP codec and client |
 | `e2e/` | marker `e2e`: the real native_sim firmware (below) |
 
 ### End-to-end tests

@@ -15,7 +15,10 @@ Processing order of :func:`load_system`:
    list index); a string that is exactly one placeholder takes the type of
    the referenced value,
 3. validate against the JSON schema (``$ref`` to device/io schemas resolved
-   through a :class:`referencing.Registry`),
+   through a :class:`referencing.Registry`) with the firmware's reading of
+   it: ``maxLength`` counts UTF-8 bytes (the node's buffers do), an
+   ``integer`` must not be written with a fraction (``1001.0``), a netmask
+   is contiguous, parameter keys are not ``.``/``..`` and unique,
 4. semantic checks (unique names and device instances, references to
    existing nodes, valid object references, IO channels against a catalog,
    BACnet object collisions per node).
@@ -28,6 +31,7 @@ a JSON-pointer-like path. Warnings do not fail loading and are kept in
 from __future__ import annotations
 
 import copy
+import ipaddress
 import json
 import re
 from collections.abc import Callable, Iterable, Mapping
@@ -37,7 +41,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema import Draft202012Validator, FormatChecker, validators
 from jsonschema.exceptions import ValidationError, best_match
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
@@ -78,6 +82,8 @@ DEFAULT_SMP_PORT = 1337
 FIRMWARE_APPS_MAX_DEFAULT = 4
 APPS_SCHEMA_MAX = 8
 LINKS_PER_APP = 8
+#: uc-link PERIOD_MAX_MS: a link with a longer period is malformed and skipped
+LINK_PERIOD_MAX_MS = 3600000
 STEP_KINDS = ("force", "release", "write", "wait", "expect")
 
 _PLACEHOLDER = re.compile(r"\{\{\s*([A-Za-z0-9_.\-]+)\s*\}\}")
@@ -203,11 +209,41 @@ def schema_names() -> list[str]:
     return sorted(docs)
 
 
+def _max_length_bytes(validator: Any, limit: int, instance: Any, schema: Any) -> Any:
+    """``maxLength`` as the firmware applies it: its string buffers hold
+    ``limit`` bytes of UTF-8 (plus the NUL), not ``limit`` characters."""
+    if not validator.is_type(instance, "string"):
+        return
+    size = len(instance.encode("utf-8"))
+    if size > limit:
+        what = "characters" if size == len(instance) else "bytes in UTF-8"
+        yield ValidationError(f"{instance!r} is too long: {size} {what}, the node stores at "
+                              f"most {limit} bytes")
+
+
+def _type_strict_integer(validator: Any, types: Any, instance: Any, schema: Any) -> Any:
+    """``type: integer`` without the 2020-12 leniency for ``1001.0``: the
+    firmware's JSON parser (``strtoll``) rejects a number with a fraction or
+    an exponent."""
+    names = [types] if isinstance(types, str) else list(types)
+    if isinstance(instance, float) and "integer" in names and "number" not in names:
+        yield ValidationError(f"{instance!r} is not an integer (write it without a fraction "
+                              "or exponent: the node rejects it)")
+        return
+    yield from Draft202012Validator.VALIDATORS["type"](validator, types, instance, schema)
+
+
+#: Draft 2020-12 with the firmware's reading of maxLength and integer
+_FirmwareValidator = validators.extend(
+    Draft202012Validator, {"maxLength": _max_length_bytes, "type": _type_strict_integer})
+
+
 def _validator(name: str) -> Draft202012Validator:
     docs, registry = _schemas(str(paths.schemas_dir()))
     if name not in docs:
         raise HarnessError(f"unknown schema {name!r}")
-    return Draft202012Validator(docs[name], registry=registry, format_checker=FormatChecker())
+    return _FirmwareValidator(docs[name], registry=registry,  # type: ignore[no-any-return]
+                              format_checker=FormatChecker())
 
 
 def _pick_context(err: ValidationError) -> ValidationError:
@@ -232,11 +268,73 @@ def _error_issue(err: ValidationError, prefix: tuple[object, ...] = ()) -> Issue
     return Issue(_ptr(*parts) if parts else "", err.message)
 
 
+def netmask_valid(text: str) -> bool:
+    """A dotted IPv4 netmask with contiguous ones (like the firmware's
+    ``netmask_valid()``)."""
+    try:
+        inv = ~int(ipaddress.IPv4Address(text)) & 0xFFFFFFFF
+    except ValueError:
+        return False
+    return inv & (inv + 1) == 0
+
+
+def param_key_valid(key: str) -> bool:
+    """``uc_key_valid()``: 1..23 characters of ``[A-Za-z0-9_.-]``, not ``.``
+    or ``..``."""
+    return bool(re.fullmatch(r"[A-Za-z0-9_.-]{1,23}", key)) and key not in (".", "..")
+
+
+def _firmware_checks(name: str, doc: Any) -> list[tuple[tuple[object, ...], str]]:
+    """What the firmware's parser rejects beyond the schema: a non-contiguous
+    netmask, parameter keys ``.``/``..``, a parameter key twice."""
+    out: list[tuple[tuple[object, ...], str]] = []
+    if not isinstance(doc, Mapping):
+        return out
+
+    def netmask(where: tuple[object, ...], net: Any) -> None:
+        mask = net.get("netmask") if isinstance(net, Mapping) else None
+        if isinstance(mask, str) and not netmask_valid(mask):
+            try:
+                ipaddress.IPv4Address(mask)
+            except ValueError:
+                return  # the schema's format check reports it
+            out.append(((*where, "netmask"), f"{mask!r} is not a contiguous netmask"))
+
+    def keys(where: tuple[object, ...], params: Any) -> None:
+        if not isinstance(params, list):
+            return
+        seen: set[str] = set()
+        for j, p in enumerate(params):
+            key = p.get("key") if isinstance(p, Mapping) else None
+            if not isinstance(key, str):
+                continue
+            if key in (".", ".."):
+                out.append(((*where, j, "key"), f"parameter key {key!r} is not allowed"))
+            if key in seen:
+                out.append(((*where, j, "key"), f"parameter key {key!r} appears twice"))
+            seen.add(key)
+
+    if name == "device":
+        netmask(("network",), doc.get("network"))
+    elif name == "system":
+        for i, node in enumerate(doc.get("nodes") or []):
+            if isinstance(node, Mapping):
+                netmask(("nodes", i, "network"), node.get("network"))
+    elif name == "apps":
+        for i, app in enumerate(doc.get("apps") or []):
+            if isinstance(app, Mapping):
+                keys(("apps", i, "params"), app.get("params"))
+    return out
+
+
 def validate_document(name: str, doc: Any, prefix: tuple[object, ...] = ()) -> list[Issue]:
-    """Validate ``doc`` against ``schemas/<name>.schema.json``; returns the errors."""
+    """Validate ``doc`` against ``schemas/<name>.schema.json`` as the firmware
+    reads it (see the module docstring, step 3); returns the errors."""
     validator = _validator(name)
     errors = sorted(validator.iter_errors(doc), key=lambda e: list(map(str, e.absolute_path)))
-    return [_error_issue(e, prefix) for e in errors]
+    issues = [_error_issue(e, prefix) for e in errors]
+    issues += [Issue(_ptr(*prefix, *where), msg) for where, msg in _firmware_checks(name, doc)]
+    return issues
 
 
 def check_document(name: str, doc: Any) -> None:
@@ -972,13 +1070,14 @@ class _Checker:
             if a.perms is not None and len(set(a.perms)) != len(a.perms):
                 self.warn(_ptr("apps", i, "perms"), "duplicate permissions")
             for key, value in a.params.items():
-                text = _stringify(value)
-                if len(text) > 95:
+                size = len(_stringify(value).encode("utf-8"))
+                if size > 95:
                     self.err(_ptr("apps", i, "params", key),
-                             f"value longer than 95 characters ({len(text)})")
-                if not re.fullmatch(r"[A-Za-z0-9_.-]{1,23}", key):
+                             f"value longer than 95 bytes ({size} in UTF-8)")
+                if not param_key_valid(key):
                     self.err(_ptr("apps", i, "params", key),
-                             "parameter keys are 1..23 characters of [A-Za-z0-9_.-]")
+                             "parameter keys are 1..23 characters of [A-Za-z0-9_.-], not "
+                             "'.' or '..'")
             if len(a.params) > 16:
                 self.err(_ptr("apps", i, "params"), f"{len(a.params)} parameters, max. 16")
         for node in self.s.nodes:
@@ -1013,6 +1112,10 @@ class _Checker:
             if (lk.src_node, lk.src_type, lk.src_instance) == (lk.dst_node, lk.dst_type,
                                                               lk.dst_instance):
                 self.err(_ptr(*base), "link copies a point onto itself")
+            if lk.period_ms > LINK_PERIOD_MAX_MS:
+                self.err(_ptr(*base, "period_ms"),
+                         f"period_ms {lk.period_ms} exceeds {LINK_PERIOD_MAX_MS} (1 h): uc-link "
+                         "would skip the link as malformed")
 
     # -- BACnet object collisions per node
     def objects(self) -> None:
@@ -1058,10 +1161,14 @@ class _Checker:
                 elif key in dests and dests[key].priority == lk.priority:
                     self.err(where, f"{lk.to_ref} is also written by link "
                              f"/links/{dests[key].index} at the same priority")
-                if lk.priority == RESERVED_PRIORITY and lk.dst_type in COMMANDABLE_TYPES:
+                if lk.priority == RESERVED_PRIORITY:
+                    # AO, BO, MSO and AV reject it (write-access-denied); BV
+                    # and MSV of this stack ignore it, but it is reserved for
+                    # every object (135 clause 19.2.3)
                     self.err(_ptr("links", lk.index, "priority"),
                              "priority 6 is reserved for minimum on/off; the node rejects "
-                             "writes at it (write-access-denied)")
+                             "writes at it (write-access-denied) for outputs and "
+                             "analog-value: use another priority, or 0 for a value object")
                 elif lk.priority and lk.dst_type in VALUE_TYPES:
                     self.warn(_ptr("links", lk.index, "priority"),
                               f"{enums.object_type_name(lk.dst_type)} has no priority array on "

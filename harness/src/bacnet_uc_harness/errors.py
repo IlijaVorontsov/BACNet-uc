@@ -71,11 +71,14 @@ class ReloadError(SmpError):
         doc: the requested document (``"device"``, ``"io"``, ``"apps"`` or
             ``"all"``).
         reboot_required: a document that was applied needs a reboot.
+        restarted_apps: apps restarted after the partial reload (set by the
+            caller that restarts them), else ``None``.
     """
 
     def __init__(self, doc: str, exc: SmpError) -> None:
         self.doc = doc
         self.reboot_required = bool(exc.response.get("reboot_required", False))
+        self.restarted_apps: list[str] | None = None
         what = ("a document failed; the others were applied" if doc == "all"
                 else f"{doc}.json failed")
         super().__init__(exc.group, exc.rc, exc.rc_name,

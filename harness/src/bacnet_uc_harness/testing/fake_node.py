@@ -17,7 +17,9 @@ The IO model follows ``firmware/src/io/uc_io.c``: a default catalog like
 native_sim (di0, di1, do0, do1, ai0, ai1, ao0, ao1, all simulated),
 ``uc_node reload io`` binds channels to BACnet objects from
 ``/lfs/cfg/io.json``, inputs update the Present_Value of their object (unless
-Out_Of_Service), outputs follow the Present_Value of their object, and
+Out_Of_Service), outputs are driven from the Present_Value of their object
+when it changes (a direct ``uc_io write`` lasts until the next change),
+``uc_io write``/``force`` reject NaN and infinities (rc ``INVALID``), and
 forcing overrides a channel until released (io.md section 5). WebAssembly
 apps are not executed: install/start/stop/remove only track the documented
 state.
@@ -61,7 +63,7 @@ Behaviour copied from the firmware as observed on native_sim (Zephyr
 
 Deliberate simplifications: no WASM runtime (a module only needs a valid
 header; ``ticks`` are derived from the uptime and ``period_ms``), outputs
-follow Present_Value immediately (the firmware scans every 100 ms), no COV,
+follow a Present_Value change immediately (the firmware scans every 100 ms), no COV,
 no ReadPropertyMultiple, no CreateObject/DeleteObject (like the default
 firmware: Reject unrecognized-service), DeviceCommunicationControl is only
 recorded (:attr:`FakeNode.dcc_state`), no network change on reboot.
@@ -87,6 +89,7 @@ from bacnet_uc_harness.bacnet.codec import BitString, Double, Enumerated, Object
 from bacnet_uc_harness.errors import HarnessError
 from bacnet_uc_harness.smp import groups as g
 from bacnet_uc_harness.smp.codec import decode_frame, encode_frame
+from bacnet_uc_harness.wasm_build import AOT_TARGETS, normalize_board
 
 log = logging.getLogger(__name__)
 
@@ -225,6 +228,8 @@ class FakeChannel:
     forced_value: float = 0.0
     point: dict[str, Any] | None = None  # bound io.json point
     obj: tuple[int, int] | None = None  # bound BACnet object
+    out_valid: bool = False  # out_last holds the Present_Value last applied
+    out_last: Any = None
 
     @property
     def is_output(self) -> bool:
@@ -347,6 +352,8 @@ class FakeNode:
         self.fw = fw
         self.vendor_id = vendor_id
         self.wasm_aot = wasm_aot
+        #: wamrc target of the board (CONFIG_WAMR_BUILD_TARGET) for node_info
+        self.aot_target = AOT_TARGETS.get(normalize_board(board), ("",))[0]
         #: CONFIG_UC_BACNET_REQUIRE_PASSWORD: refuse DCC/ReinitializeDevice
         #: while device.json has no bacnet.password
         self.require_password = require_password
@@ -653,6 +660,12 @@ class FakeNode:
                 pv = props.get(P["present-value"])
                 if pv is None:
                     continue
+                # io_scan_out(): an output is driven when its Present_Value
+                # changes, so a direct uc_io write lasts until the next change
+                if ch.out_valid and pv == ch.out_last:
+                    continue
+                ch.out_valid = True
+                ch.out_last = pv
                 if ch.kind == "do":
                     bit = (int(pv) != 0) != bool(pt.get("invert", False))
                     ch.value = 1.0 if bit else 0.0
@@ -787,6 +800,7 @@ class FakeNode:
         for ch in self.io_channels.values():
             ch.point = None
             ch.obj = None
+            ch.out_valid = False
         for idx, pt in enumerate(points):
             ch = self.io_channels.get(str(pt["channel"]))
             key = (enums.object_type_number(pt["type"]), int(pt["instance"]))
@@ -893,8 +907,9 @@ class FakeNode:
             or any(
                 not isinstance(k, str)
                 or not _PARAM_KEY_RE.match(k)
+                or k in (".", "..")  # uc_key_valid()
                 or not isinstance(v, str)
-                or len(v) > 95
+                or len(v.encode()) > 95  # char value[96]: bytes, not characters
                 for k, v in params.items()
             )
         ):
@@ -1386,6 +1401,8 @@ class FakeNode:
         value = self._num(req, "value")
         if not ch.is_output:
             raise _Rc(g.UC_RC_PERM)
+        if not math.isfinite(value):
+            raise _Rc(g.UC_RC_INVALID)
         ch.value = _normalise(ch.kind, value)
         return {}
 
@@ -1397,7 +1414,10 @@ class FakeNode:
         if release:
             ch.forced = False
             return {}
-        value = _normalise(ch.kind, self._num(req, "value"))
+        value = self._num(req, "value")
+        if not math.isfinite(value):
+            raise _Rc(g.UC_RC_INVALID)
+        value = _normalise(ch.kind, value)
         ch.forced = True
         ch.forced_value = value
         if ch.hw == "sim" and not ch.is_output:
@@ -1420,8 +1440,10 @@ class FakeNode:
             "apps": {"installed": len(self.apps), "running": running},
             "wasm": {
                 "interp": True,
+                # like uc_app_mgr.c: the wamrc target (lower case, without
+                # "_VFP") when AOT files can be loaded, else ""
                 "aot": self.wasm_aot,
-                "aot_target": "",
+                "aot_target": self.aot_target if self.wasm_aot else "",
                 "pool_total": 262144,
                 "pool_free": 262144 - 32768 * running,
             },
@@ -1787,10 +1809,23 @@ class FakeNode:
 
 
 def _is_int(v: Any, lo: int, hi: int) -> bool:
-    """A JSON integer (or integral number) within ``lo..hi``."""
-    if isinstance(v, bool) or not isinstance(v, int | float):
+    """A JSON integer within ``lo..hi``. Like ``tok_int()`` (``strtoll`` of
+    the number text) a number written with a fraction or an exponent
+    (``1001.0``, ``1e3``) is not one."""
+    if isinstance(v, bool) or not isinstance(v, int):
         return False
-    return float(v).is_integer() and lo <= v <= hi
+    return lo <= v <= hi
+
+
+def _is_netmask(v: Any) -> bool:
+    """``netmask_valid()``: a dotted IPv4 address with contiguous ones."""
+    if not _is_ipv4(v):
+        return False
+    m = 0
+    for part in v.split("."):
+        m = (m << 8) | int(part)
+    inv = ~m & 0xFFFFFFFF
+    return inv & (inv + 1) == 0
 
 
 def _is_num(v: Any) -> bool:
@@ -1823,7 +1858,7 @@ def _check_device_doc(cfg: dict[str, Any]) -> None:
     if not isinstance(net, dict) or not isinstance(net.get("dhcp", True), bool):
         raise bad
     for key in ("ipv4", "netmask", "gateway"):
-        if key in net and not _is_ipv4(net[key]):
+        if key in net and not (_is_netmask if key == "netmask" else _is_ipv4)(net[key]):
             raise bad
     bn = cfg.get("bacnet", {})
     if not isinstance(bn, dict):

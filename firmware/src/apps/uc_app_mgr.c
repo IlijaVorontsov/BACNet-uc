@@ -21,13 +21,20 @@
  * App thread, one run per start
  *   STARTING: wait for uc_bn_ready() -> optional sha256 check -> module
  *   image into a pool buffer (kept until unload, WAMR references it) ->
- *   wasm_runtime_load -> every function import resolved? -> instantiate
- *   (stack_kb, heap_kb) -> exec env -> export signatures ->
+ *   wasm_runtime_load -> every function import resolved? -> no module code
+ *   run by the instantiation itself (start function, __wasm_call_ctors,
+ *   __post_instantiate: WAMR runs those on an exec env of its own, beyond
+ *   the watchdog, the instruction budget and the host functions' slot) ->
+ *   instantiate (stack_kb, heap_kb) -> exec env -> export signatures ->
  *   uc_app_api_version() major == UC_API_VERSION_MAJOR -> uc_app_init().
  *   RUNNING: uc_app_tick(now_ms) when due, otherwise wait for an event
  *   (uc_app_on_cov / uc_app_on_write) until the next tick.
- *   Stop request: uc_app_deinit() -> cleanup -> STOPPED. Trap, watchdog or
- *   failed start: cleanup -> FAILED with last_error.
+ *   Stop request: blocking host calls are cancelled (a remote request in
+ *   progress is abandoned, further ones fail at once) so that the running
+ *   callback returns or runs into the watchdog -> uc_app_deinit() (its
+ *   blocking calls work again but count against the watchdog) -> cleanup
+ *   -> STOPPED. Trap, watchdog or failed start: cleanup -> FAILED with
+ *   last_error.
  *   Cleanup: COV subscriptions, owned objects, queued events, exec env,
  *   instance, module, module image.
  *
@@ -37,8 +44,10 @@
  *   callback (generation counter) still runs. With CONFIG_WAMR_THREAD_MGR
  *   the interpreter checks the terminate flag on every branch and call, so
  *   endless loops end there. Host calls that block on the network or the
- *   file system pause the timer (uc_app_wd_pause/resume): only execution
- *   time counts.
+ *   file system pause the timer (uc_app_block_begin/end): only execution
+ *   time counts, except once a stop is pending. An expiry also cancels
+ *   blocking host calls (a callback blocked in one when the timer expired
+ *   returns at once).
  *   native_sim: simulated time advances only while the simulated CPU is
  *   idle, so the timer cannot expire during a callback that never blocks
  *   (a busy loop would hang the node). There every call gets an
@@ -57,6 +66,12 @@
  *   COV notifications (uc_app_host_api.c) and writes to objects owned by an
  *   app (write hook, BACnet thread) are queued without blocking; a full
  *   queue drops the event and counts an error.
+ *
+ * Output
+ *   The WAMR glue's print hook takes os_printf() output of the app threads
+ *   (the modules' libc-builtin printf/puts/putchar and runtime diagnostics
+ *   about them) and turns it into log lines of the app (uc_app_print_char()),
+ *   flushed at the end of every callback.
  */
 
 #include <ctype.h>
@@ -75,9 +90,8 @@
 #include <zephyr/sys/util.h>
 
 #include <wasm_export.h>
-#if defined(CONFIG_WAMR_AOT)
 #include <wamr_zephyr.h>
-#endif
+#include <zephyr/sys/cbprintf.h>
 
 #include "uc/uc_apps.h"
 #include "uc/uc_bacnet.h"
@@ -104,9 +118,17 @@ LOG_MODULE_REGISTER(uc_app_mgr, CONFIG_UC_LOG_LEVEL);
 #define APP_BN_WAIT_MS 250
 /* uc_apps_start() waits this long for the outcome when BACnet is up (ms). */
 #define APP_START_WAIT_MS (CONFIG_UC_APP_WATCHDOG_MS + 3000)
-/* uc_apps_stop() waits this long for the app thread (ms): a running
- * callback, uc_app_deinit() and a blocking host call. */
+/* uc_apps_stop() waits this long for the app thread (ms): the rest of a
+ * running callback and uc_app_deinit() (both bounded by the watchdog once
+ * the stop cancelled blocking host calls), the cancellation of a remote
+ * request (UC_BN_CANCEL_POLL_MS) and the cleanup. */
 #define APP_STOP_WAIT_MS (2 * CONFIG_UC_APP_WATCHDOG_MS + 8000)
+/* A callback that makes this many more blocking host calls after they were
+ * cancelled ignores the stop: it is terminated at once instead of running
+ * on until the watchdog (on native_sim: the instruction budget, which host
+ * calls do not consume) ends it. A callback that returns after a few failed
+ * calls still gets uc_app_deinit(). */
+#define APP_CANCEL_REFUSALS_MAX 100
 /* Retries of uc_bn_obj_delete_owned() while the executor queue is full. */
 #define APP_EXEC_RETRIES 20
 #define APP_EXEC_RETRY_MS 50
@@ -308,6 +330,8 @@ static void wd_work_fn(struct k_work *work)
 	    (atomic_get(&s->wd_expired_gen) == atomic_get(&s->wd_gen))) {
 		s->wd_fired = true;
 		wasm_runtime_terminate(s->inst);
+		/* a callback blocked in a host call returns from it at once */
+		atomic_set(&s->cancel, 1);
 		fired = true;
 	}
 	(void)k_mutex_unlock(&s->wd_lock);
@@ -325,6 +349,7 @@ static void wd_arm(struct uc_app_slot *s)
 	s->wd_in_cb = true;
 	s->wd_fired = false;
 	(void)k_mutex_unlock(&s->wd_lock);
+	s->cancel_refused = 0;
 
 	k_timer_start(&s->wd_timer, K_MSEC(CONFIG_UC_APP_WATCHDOG_MS), K_NO_WAIT);
 }
@@ -344,16 +369,75 @@ static bool wd_disarm(struct uc_app_slot *s)
 	return fired;
 }
 
-void uc_app_wd_pause(struct uc_app_slot *s)
+bool uc_app_block_begin(struct uc_app_slot *s)
 {
-	s->wd_remaining_ms = k_timer_remaining_get(&s->wd_timer);
-	k_timer_stop(&s->wd_timer);
+	if (atomic_get(&s->cancel)) {
+		if (++s->cancel_refused == APP_CANCEL_REFUSALS_MAX) {
+			LOG_WRN("%s: blocking calls go on after being cancelled, terminating",
+				s->cfg.name);
+			/* ends the callback at its next branch or call */
+			(void)k_mutex_lock(&s->wd_lock, K_FOREVER);
+			if (s->inst != NULL) {
+				wasm_runtime_terminate(s->inst);
+			}
+			(void)k_mutex_unlock(&s->wd_lock);
+		}
+		return false;
+	}
+
+	/* a stopping callback or uc_app_deinit(): all time counts */
+	s->wd_paused = !atomic_get(&s->stop_req);
+	if (s->wd_paused) {
+		s->wd_remaining_ms = k_timer_remaining_get(&s->wd_timer);
+		k_timer_stop(&s->wd_timer);
+	}
+
+	return true;
 }
 
-void uc_app_wd_resume(struct uc_app_slot *s)
+void uc_app_block_end(struct uc_app_slot *s)
 {
-	/* an expiry before the pause already terminated the callback */
-	k_timer_start(&s->wd_timer, K_MSEC(MAX(s->wd_remaining_ms, 1U)), K_NO_WAIT);
+	if (s->wd_paused) {
+		s->wd_paused = false;
+		/* an expiry before the pause already terminated the callback */
+		k_timer_start(&s->wd_timer, K_MSEC(MAX(s->wd_remaining_ms, 1U)), K_NO_WAIT);
+	}
+}
+
+struct uc_app_slot *uc_app_current_slot(void)
+{
+	k_tid_t self = k_current_get();
+
+	for (size_t i = 0; i < ARRAY_SIZE(slots); i++) {
+		if (&slots[i].thread == self) {
+			return &slots[i];
+		}
+	}
+
+	return NULL;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Module output                                                           */
+/* ---------------------------------------------------------------------- */
+
+static int app_print_out(int c, void *ctx)
+{
+	uc_app_print_char(ctx, (char)c);
+	return c;
+}
+
+/* WAMR os_printf() hook: output in an app thread becomes log lines of
+ * that app, anything else goes to printk() as before. */
+static bool app_print_hook(const char *format, va_list ap)
+{
+	struct uc_app_slot *s = uc_app_current_slot();
+
+	if (s == NULL) {
+		return false;
+	}
+	(void)cbvprintf(app_print_out, s, format, ap);
+	return true;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -626,6 +710,7 @@ static int check_exports(struct uc_app_slot *s, struct app_rt *rt)
 static int app_load(struct uc_app_slot *s, struct app_rt *rt)
 {
 	char err[APP_ERR_BUF_SIZE];
+	const char *code;
 	uint32_t stack_size = (uint32_t)s->cfg.stack_kb * 1024U;
 	uint32_t heap_size = (uint32_t)s->cfg.heap_kb * 1024U;
 	int rc;
@@ -665,6 +750,13 @@ static int app_load(struct uc_app_slot *s, struct app_rt *rt)
 	rc = check_imports(s, rt->module);
 	if (rc < 0) {
 		return rc;
+	}
+	/* no module code may run before the watchdog can cover it and the
+	 * host functions know the slot */
+	code = wamr_zephyr_instantiate_code(rt->module);
+	if (code != NULL) {
+		slot_error(s, "%s not supported (runs at instantiation)", code);
+		return -EILSEQ;
 	}
 
 	err[0] = '\0';
@@ -712,6 +804,8 @@ static bool app_call(struct uc_app_slot *s, struct app_rt *rt, enum app_export f
 	wd_arm(s);
 	ok = wasm_runtime_call_wasm_a(rt->env, rt->fn[fn], n_results, results, n_args, args);
 	fired = wd_disarm(s);
+	/* an unterminated printf line ends with the callback */
+	uc_app_print_flush(s);
 
 	if (ok && !fired) {
 		return true;
@@ -874,6 +968,7 @@ static void app_teardown(struct uc_app_slot *s, struct app_rt *rt)
 	int rc = 0;
 
 	atomic_clear(&s->accept);
+	uc_app_print_flush(s);
 
 	/* no COV callback runs for this slot once this returns */
 	uc_app_host_cleanup(s);
@@ -938,6 +1033,7 @@ static void app_run(struct uc_app_slot *s)
 
 	memset(&rt, 0, sizeof(rt));
 	uc_app_host_reset(s);
+	s->wd_paused = false;
 	s->period_ms = (s->cfg.period_ms == 0U) ? 0U : MAX(s->cfg.period_ms, UC_APP_PERIOD_MIN_MS);
 	s->period_changed = true;
 
@@ -972,7 +1068,11 @@ static void app_run(struct uc_app_slot *s)
 
 	stopped = app_loop(s, &rt);
 	if (stopped && (rt.fn[EXP_DEINIT] != NULL)) {
-		/* a trap here is recorded in last_error; the app stops anyway */
+		/* blocking host calls work again, but count against the
+		 * watchdog now (uc_app_block_begin()), whose expiry cancels
+		 * them again; a trap here is recorded in last_error, the app
+		 * stops anyway */
+		atomic_clear(&s->cancel);
 		(void)app_call(s, &rt, EXP_DEINIT, 0, NULL, 0, NULL);
 	}
 
@@ -1064,6 +1164,7 @@ static int slot_start(struct uc_app_slot *s)
 	k_msgq_purge(&s->msgq);
 	k_sem_reset(&s->started_sem);
 	atomic_clear(&s->stop_req);
+	atomic_clear(&s->cancel);
 	slot_reset_status(s);
 	slot_set_state(s, UC_APP_STARTING);
 	atomic_set(&s->busy, 1);
@@ -1100,6 +1201,9 @@ static int slot_stop(struct uc_app_slot *s)
 		return 0;
 	}
 
+	/* cancel first: the app thread clears it again before uc_app_deinit(),
+	 * after it has seen stop_req */
+	atomic_set(&s->cancel, 1);
 	atomic_set(&s->stop_req, 1);
 	(void)k_msgq_put(&s->msgq, &ev, K_NO_WAIT);
 
@@ -1373,6 +1477,7 @@ int uc_apps_init(void)
 		slot_init(&slots[i], (uint8_t)i);
 	}
 	uc_bn_set_write_hook(app_write_hook);
+	wamr_zephyr_set_print_hook(app_print_hook);
 
 	installed = k_malloc(sizeof(*installed));
 
@@ -1624,6 +1729,7 @@ out:
 int uc_apps_reload(void)
 {
 	struct uc_apps_cfg *next;
+	bool kept = false;
 	int first_err = 0;
 	int rc;
 
@@ -1631,17 +1737,23 @@ int uc_apps_reload(void)
 		return -EAGAIN;
 	}
 
-	rc = uc_config_reload(UC_CFG_APPS);
-	if (rc < 0) {
-		return rc;
-	}
 	next = k_malloc(sizeof(*next));
 	if (next == NULL) {
 		return -ENOMEM;
 	}
-	uc_config_get_apps(next);
 
+	/* Read and apply apps.json under the lock of install and remove: a
+	 * document read before a concurrent install or remove rewrote
+	 * apps.json must not be applied after it (it would bring a removed
+	 * app back or drop a new one). */
 	(void)k_mutex_lock(&mgr_lock, K_FOREVER);
+
+	rc = uc_config_reload(UC_CFG_APPS);
+	if (rc < 0) {
+		first_err = rc;
+		goto out;
+	}
+	uc_config_get_apps(next);
 
 	/* stop apps that were removed or whose entry changed */
 	for (size_t i = 0; i < ARRAY_SIZE(slots); i++) {
@@ -1657,8 +1769,9 @@ int uc_apps_reload(void)
 		}
 		rc = slot_stop(s);
 		if (rc < 0) {
-			/* keeps its old entry until it stops */
+			/* stays installed with its old entry until it stops */
 			first_err = (first_err != 0) ? first_err : rc;
+			kept = true;
 			continue;
 		}
 		if (n == NULL) {
@@ -1685,6 +1798,21 @@ int uc_apps_reload(void)
 		}
 		order[n_installed++] = s->index;
 	}
+	/* removed apps that could not be stopped are still installed */
+	for (size_t i = 0; i < ARRAY_SIZE(slots); i++) {
+		if (slots[i].used && (list_find(next, slots[i].cfg.name) == NULL)) {
+			order[n_installed++] = slots[i].index;
+		}
+	}
+	if (kept) {
+		/* apps.json lists what is installed and running */
+		struct uc_apps_cfg *list = list_build(NULL);
+
+		rc = (list != NULL) ? uc_config_set_apps(list) : -ENOMEM;
+		k_free(list);
+		LOG_WRN("reload apps: apps that did not stop keep their entry%s",
+			(rc < 0) ? ", apps.json not rewritten" : "");
+	}
 
 	/* start autostart apps that are not running */
 	for (size_t i = 0; i < n_installed; i++) {
@@ -1700,6 +1828,7 @@ int uc_apps_reload(void)
 		}
 	}
 
+out:
 	(void)k_mutex_unlock(&mgr_lock);
 	k_free(next);
 

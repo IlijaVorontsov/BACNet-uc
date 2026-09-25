@@ -239,7 +239,9 @@ class Node:
             raise
 
     async def upload(self, path: str, data: bytes, *, force: bool = False) -> dict[str, Any]:
-        """Upload unless the node already has identical content."""
+        """Upload unless the node already has identical content; the file on
+        the node is checked against ``data`` by SHA-256 afterwards
+        (:meth:`SmpClient.fs_upload`)."""
         sha = hashlib.sha256(data).hexdigest()
         if not force and await self.file_sha256(path) == sha:
             return {"path": path, "uploaded": False, "sha256": sha, "size": len(data)}
@@ -264,7 +266,12 @@ class Node:
             raise HarnessError(f"{self.name}: {doc_path(doc)} is not valid JSON: {exc}") from exc
 
     async def reload(self, doc: str = "all") -> bool:
-        """``uc_node reload``; returns ``reboot_required``."""
+        """``uc_node reload``; returns ``reboot_required``.
+
+        Raises:
+            ReloadError: a document failed; with ``"all"`` the others were
+                applied, and the error carries their ``reboot_required``.
+        """
         if doc not in (*DOC_NAMES, "all"):
             raise HarnessError(f"unknown document {doc!r}")
         return await (await self.smp()).node_reload(doc)

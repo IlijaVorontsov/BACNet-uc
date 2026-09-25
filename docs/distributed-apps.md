@@ -61,7 +61,7 @@ tools (a BMS can read and override every point).
 | Event-driven transfer | SubscribeCOV + (Un)ConfirmedCOVNotification | `uc_cov_subscribe()`; `uc-link` `mode: cov`; thermostat and alarm sensor inputs | subscriber requests **unconfirmed** notifications, lifetime 300 s (`uc-link`, `uc_point.h`), renewed at lifetime/2; the current value is delivered once after subscribing |
 | Polling | ReadProperty | `uc_remote_read()`; `uc-link` `mode: poll`; COV fallback | the destination reads every `period_ms`; `uc-link` writes the destination only when the value changed |
 | COV fallback | ReadProperty | firmware COV module | a device that answers SubscribeCOV with Error/Reject/Abort is polled every `CONFIG_UC_BACNET_COV_POLL_MS` (2000 ms) for the lifetime of the subscription; after a timeout it is polled and SubscribeCOV is retried every 60 s ([bacnet.md](bacnet.md#52-client-for-applications)) |
-| Commanding | WriteProperty with priority | `uc_remote_write()`, `uc_prop_write()`; `uc-link` `priority` | commandable objects (AO, BO, MSO) arbitrate writers through the priority array; writing NULL at a priority relinquishes it. Value objects (AV, BV, MSV) take every write whatever the priority; NULL changes nothing |
+| Commanding | WriteProperty with priority | `uc_remote_write()`, `uc_prop_write()`; `uc-link` `priority` | commandable objects (AO, BO, MSO) arbitrate writers through the priority array; writing NULL at a priority relinquishes it. Value objects (AV, BV, MSV) take every write whatever the priority (AV rejects priority 6); NULL changes nothing |
 | Discovery / binding | Who-Is / I-Am, static bindings | firmware client | static bindings from `device.json` first (the harness renders them), Who-Is otherwise |
 
 Priorities (convention from [bacnet.md](bacnet.md#34-priority-array-use-convention)):
@@ -188,8 +188,8 @@ links:
 | `from` | – | source point `<node>/<type>:<instance>`; any readable numeric Present_Value on any node of the manifest |
 | `to` | – | destination on a node of the manifest; must be writable: AO, AV, BO, BV, MSO, MSV |
 | `mode` | `cov` | `cov`: SubscribeCOV with polling fallback; `poll`: ReadProperty every `period_ms` |
-| `period_ms` | 1000 | poll period, and the fallback poll period of a `cov` link (min 100) |
-| `priority` | 0 | write priority 1..16 for commandable destinations (AO, BO, MSO; not 6), 0 = no priority; value objects (AV, BV, MSV) ignore it: use 0 |
+| `period_ms` | 1000 | poll period, and the fallback poll period of a `cov` link (100..3600000; `validate_system` rejects longer periods, which uc-link would skip as malformed) |
+| `priority` | 0 | write priority 1..16 for commandable destinations (AO, BO, MSO; not 6), 0 = no priority; value objects (AV, BV, MSV) ignore it: use 0 (6 is rejected for every destination: analog-value refuses it) |
 | `scale`, `offset` | 1, 0 | destination = source × `scale` + `offset` |
 
 The example's fan link uses priority 8; with the priority convention of
@@ -230,7 +230,7 @@ forced are released when the test ends, also after a failure.
 | The node's WAMR pool must hold all its apps | `validate_system` estimate, warning above 90 % (`wamr_pool` in the report; the firmware answers `NO_MEM` when an app does not fit) | 112 KiB (F767), 96 KiB (MCXN947), 256 KiB (`native_sim`); the examples need 28..44 KiB each with `heap_kb: 0` and 38..54 KiB with `heap_kb: 8` (`native_sim` figures, [wasm-runtime.md](wasm-runtime.md#5-memory-model)) |
 | Object instances do not collide between IO points, stock apps and link destinations | `validate_system` error | a second creator gets `UC_ERR_EXISTS` |
 | At most one link per destination object and priority; at most one link per value object (AV, BV, MSV) | `validate_system` error | two writers at one priority, or two writers of an object without priority array, overwrite each other |
-| No priority 6 on outputs (links, test writes; also on analog-value in tests) | `validate_system` error; a priority or a `null` write on a value object is a warning | the node rejects priority 6 (write-access-denied); value objects ignore priorities |
+| No priority 6 (links to any destination; test writes on outputs and analog-value) | `validate_system` error; another priority or a `null` write on a value object is a warning | the node rejects priority 6 on AO, BO, MSO and AV (write-access-denied); BV and MSV ignore priorities |
 | Place a controller on the node that owns its **output** | recommendation | the output path stays local; on loss of a remote sensor the controller can drive its fail-safe value (the thermostat does, `stale_ms`/`fail_output`); a remote writer that loses the network can neither update nor relinquish its command |
 | Keep latency-critical interlocks inside one node | recommendation | see the timing budget (section 6); inter-node paths depend on the LAN and on COV behaviour of the peer |
 | Put sensor-only nodes on the board with the matching IO | recommendation | nodes without apps have the smallest failure surface |

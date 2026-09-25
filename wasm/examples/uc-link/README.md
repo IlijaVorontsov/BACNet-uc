@@ -22,8 +22,8 @@ Fields of a link, separated by single spaces:
 | `src_type`, `src_instance` | source object, numeric BACnet object type (0 = analog-input, ...) |
 | `dst_type`, `dst_instance` | destination object on this node, numeric type |
 | `mode` | `cov` (SubscribeCOV, host falls back to polling if unsupported) or `poll` |
-| `period_ms` | poll period (poll mode) |
-| `priority` | write priority 1..16 for a commandable destination (analog-output, binary-output, multi-state-output), 0 = none. Value objects (analog-value, binary-value, multi-state-value) of BACnet-uc nodes have no priority array and ignore it: use 0 for them |
+| `period_ms` | poll period of a `poll` link, the fallback poll period of a `cov` link: 100..3600000 ms (a `cov` link may give 0 for the default 1000 ms); outside that range the link is malformed |
+| `priority` | write priority 1..16 for a commandable destination (analog-output, binary-output, multi-state-output), 0 = none. Value objects (analog-value, binary-value, multi-state-value) of BACnet-uc nodes have no priority array and ignore it: use 0 for them. Priority 6 is reserved for Minimum_On/Off: the node rejects writes at 6 to outputs and to analog-value (`UC_ERR_PERM`, logged as a failed write), so never use it |
 | `scale`, `offset` | destination = source * scale + offset |
 
 Example: `l0 = "1001 0 1 2 10 cov 1000 0 1 0"` copies analog-input:1 of

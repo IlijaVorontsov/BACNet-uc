@@ -9,7 +9,8 @@
  *   instance   object instance, default 1
  *   name       object name if the app creates the object, default "blinky"
  *   priority   write priority 1..16 for a commandable object (AO, BO,
- *              MSO), 0 = none (default); value objects ignore it
+ *              MSO; not 6), 0 = none (default); value objects ignore it
+ *              (AV rejects 6)
  *   period_ms  toggle period, 10..3600000, default 1000
  *   on, off    values written for the two states, default 1 and 0
  *   channel    raw IO channel name ("do0"): toggle the channel instead

@@ -21,6 +21,13 @@
  * uc_app_on_write (numeric, non-NULL only), subscription notifications
  * right after subscribing, app objects deleted on stop.
  *
+ * Values written by the application or a BACnet client are converted like
+ * the firmware's uc_value_from_double(): NaN, infinities, REAL values
+ * beyond the float range, fractions for UNSIGNED/ENUMERATED properties and
+ * anything but 0/1 for binary present values and BOOLEAN properties return
+ * UC_ERR_INVALID (nothing is truncated or rounded). Priority 6 (reserved
+ * for Minimum_On/Off) is UC_ERR_PERM for AO, BO, MSO and for a write to AV.
+ *
  * Simplifications: analog values are stored with REAL (float) precision
  * like the firmware; every change of a local Present_Value is notified
  * (no COV increment); non-PV properties are a plain per-object store; a
@@ -148,8 +155,10 @@ uint32_t uc_stub_events_dropped(void);
 /** Add an object owned by the IO configuration (not the app). For the
  *  commandable types (AO, BO, MSO) value becomes the relinquish default.
  *  As in the firmware, the value objects (AV, BV, MSV) have no priority
- *  array: writes ignore the priority, a relinquish succeeds and changes
- *  nothing. Returns 0, -1 (full) or -2 (exists). */
+ *  array: writes ignore the priority (except AV, which rejects priority 6
+ *  with UC_ERR_PERM), a relinquish succeeds and changes nothing. The value
+ *  is taken like an input sample: binary non-zero = 1, multi-state
+ *  truncated. Returns 0, -1 (full) or -2 (exists). */
 int uc_stub_obj_add(uint32_t type, uint32_t instance, const char *name, double value);
 bool uc_stub_obj_exists(uint32_t type, uint32_t instance);
 bool uc_stub_obj_app_owned(uint32_t type, uint32_t instance);
@@ -163,8 +172,9 @@ bool uc_stub_obj_prio(uint32_t type, uint32_t instance, uint32_t priority, doubl
 double uc_stub_obj_prop(uint32_t type, uint32_t instance, uint32_t prop);
 /** Present_Value writes (with a value) since the object was created. */
 uint32_t uc_stub_obj_writes(uint32_t type, uint32_t instance);
-/** Set the Present_Value as the IO layer would (input sampled): no
- *  uc_app_on_write, local COV subscribers are notified on change. */
+/** Set the Present_Value as the IO layer would (input sampled: binary
+ *  non-zero = 1, multi-state truncated, NaN refused): no uc_app_on_write,
+ *  local COV subscribers are notified on change. */
 int uc_stub_obj_set_pv(uint32_t type, uint32_t instance, double value);
 
 /** WriteProperty by a BACnet client (priority 0 = none -> 16). Raises
@@ -234,7 +244,11 @@ void uc_stub_fail(enum uc_stub_fn fn, int32_t err, int32_t count);
 int uc_stub_kv_get(const char *key, void *buf, size_t size);
 int uc_stub_kv_set(const char *key, const void *val, size_t len);
 
-/** Add a raw IO channel. output: writable by uc_io_write. */
+/** Add a raw IO channel. output: writable by uc_io_write (inputs:
+ *  UC_ERR_PERM). Like the firmware, uc_io_write refuses NaN/infinities
+ *  (UC_ERR_INVALID) and normalises by the channel kind, taken from the name
+ *  prefix of the firmware's catalogs: di/do 0 or 1 (non-zero = 1), ao
+ *  clamped to 0..100. */
 int uc_stub_io_add(const char *name, double value, bool output);
 double uc_stub_io_get(const char *name);
 int uc_stub_io_set(const char *name, double value);

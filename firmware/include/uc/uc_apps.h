@@ -14,10 +14,15 @@
  *   uc_app_on_write in the app.
  * - A watchdog terminates a callback that runs longer than
  *   CONFIG_UC_APP_WATCHDOG_MS (wasm_runtime_terminate); the app enters
- *   the "failed" state. Blocking host calls do not count. On native_sim
- *   the timer cannot interrupt a busy loop (simulated time stands still);
- *   an instruction budget per call (CONFIG_WAMR_INSTRUCTION_LIMIT) stops
- *   it there.
+ *   the "failed" state. Blocking host calls do not count, unless a stop is
+ *   pending: a stop cancels them, so it never waits for an app blocked in
+ *   (or looping on) remote requests. On native_sim the timer cannot
+ *   interrupt a busy loop (simulated time stands still); an instruction
+ *   budget per call (CONFIG_WAMR_INSTRUCTION_LIMIT) stops it there.
+ * - Modules whose instantiation would run code (start function, exported
+ *   __wasm_call_ctors / __post_instantiate) are refused at start.
+ * - The modules' libc-builtin printf/puts/putchar output becomes log lines
+ *   of the app, like uc_log (level inf).
  */
 #ifndef UC_APPS_H_
 #define UC_APPS_H_
@@ -62,13 +67,19 @@ int uc_apps_init(void);
 int uc_apps_install(const struct uc_app_cfg *cfg, bool restart);
 
 int uc_apps_start(const char *name);   /* -ENOENT, -EALREADY if running */
-int uc_apps_stop(const char *name);    /* -ENOENT, stopping a stopped app is 0 */
+/** -ENOENT; stopping a stopped app is 0. Cancels the app's blocking host
+ *  calls and waits until the app thread has cleaned up (-EBUSY if it has
+ *  not after 2 * CONFIG_UC_APP_WATCHDOG_MS + 8 s). */
+int uc_apps_stop(const char *name);
 /** Stop, remove from apps.json and optionally delete the module file and
  *  the app's /lfs/data directory. */
 int uc_apps_remove(const char *name, bool delete_file);
 
-/** Re-read apps.json: stop apps that were removed or whose entry changed,
- *  start autostart apps that are not running. */
+/** Re-read apps.json (activating a staged apps.json.new) and apply it,
+ *  under the same lock as install and remove: stop apps that were removed
+ *  or whose entry changed, start autostart apps that are not running. An
+ *  app that does not stop keeps its old entry (it stays installed and
+ *  apps.json is rewritten to list it); the first error is returned. */
 int uc_apps_reload(void);
 
 size_t uc_apps_installed(void);

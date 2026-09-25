@@ -98,7 +98,7 @@ flowchart LR
 | Path | Protocol | Used for | Details |
 |------|----------|----------|---------|
 | MCP client → server | MCP over stdio (default) or streamable HTTP (`--http`, default `127.0.0.1:8000/mcp`) | all tools | official MCP Python SDK (`MCPServer` with mcp >= 2, `FastMCP` with mcp 1.x) |
-| harness → node, management | SMP v2 over UDP port 1337, or over the console UART (shell transport framing, 115200 8N1, frames up to 1152 bytes without line pacing; needs the `serial` extra) | configuration (staged `*.json.new` uploads), files, apps, IO, logs, firmware images | requests are retried with the same sequence number; default timeout 3 s, 2 retries in the MCP server context |
+| harness → node, management | SMP v2 over UDP port 1337, or over the console UART (shell transport framing, 115200 8N1, frames up to 1152 bytes without line pacing; needs the `serial` extra) | configuration (staged `*.json.new` uploads), files, apps, IO, logs, firmware images | requests are retried with the same sequence number, except the first chunk of a multi-chunk file upload (the node would write it twice); a lost chunk response or an unexpected offset restarts the upload, and every upload is checked against the file's SHA-256 on the node; default timeout 3 s, 2 retries in the MCP server context |
 | harness → node, verification | BACnet/IP (unsegmented confirmed requests, max APDU 1476) | `bacnet_read`, `bacnet_write`, test `expect`/`write` | `via="auto"` falls back to SMP `prop_read`/`prop_write` when BACnet/IP is unavailable (no address, timeout); a BACnet Error/Reject/Abort is returned as a tool error |
 | harness → toolchains | subprocess | `build_app`, `build_firmware`, `flash_firmware` | clang/wasm-ld, wamrc, west |
 
@@ -133,7 +133,7 @@ depending on the error, `issues` (JSON-pointer paths), `group`/`rc`/`rc_name`
 | `node_info` | firmware, board, API version, device identity, network, FS usage, apps, WASM runtime | `node` | ro, idem | |
 | `get_config` | read `/lfs/cfg/<doc>.json` (`exists=false`: firmware defaults) | `node`, `doc` (`device`\|`io`\|`apps`) | ro, idem | |
 | `set_config` | schema-validated upload of a whole document as `/lfs/cfg/<doc>.json.new`, then `uc_node reload` (the node activates it, or rejects and deletes it: rc `INVALID`); after an `io` reload the node's apps that use its IO objects are restarted (`restarted_apps`) | `node`, `doc`, `content`, `reload?` (true), `force?` (false) | destr, idem | schema validation before upload; firmware validation at the reload |
-| `reload_config` | `uc_node reload` of one or all documents (a staged `.new` is activated first); `io`/`all` restart the apps that use IO objects | `node`, `doc?` (`all`) | idem | |
+| `reload_config` | `uc_node reload` of one or all documents (a staged `.new` is activated first); `io`/`all` restart the apps that use IO objects. The node applies each document on its own: when one fails, the tool error (`ReloadError`) still carries `reboot_required` of the others and `restarted_apps` | `node`, `doc?` (`all`) | idem | |
 
 ### 3.3 IO
 
@@ -676,7 +676,7 @@ A server started separately with `--http` is added with
 | AOT modules need firmware built with `CONFIG_WAMR_AOT=y`, on the boards also `CONFIG_WAMR_AOT_MPU_EXEC=y` (both off by default; see [wasm-runtime.md](wasm-runtime.md#21-aot-and-the-mpu)) | `aot: true` in a manifest fails at install with rc `UNSUPPORTED` on the default firmware; `node_info` `wasm.aot` tells whether a node loads AOT files |
 | One manifest per target | simulation and hardware variants are separate files (overlay **Planned**) |
 | The WAMR pool budget is an estimate | `validate_system` predicts each node's pool use from the built modules and warns above 90 % of `CONFIG_UC_APP_POOL_SIZE`; the constants are fitted to `native_sim` (64-bit) measurements, so they are conservative for the boards, and Thumb AOT files are not calibrated. A node that runs out still fails the start (`NO_MEM`, `last_error`) |
-| Value objects ignore priorities | AV, BV and MSV on BACnet-uc nodes have no priority array: `validate_system` rejects two links to one value object and priority 6 on outputs, and warns about a priority or a `null` test write on a value object |
+| Value objects ignore priorities | AV, BV and MSV on BACnet-uc nodes have no priority array: `validate_system` rejects two links to one value object, priority 6 on any link and on test writes to outputs and analog-value (AV rejects it), and warns about another priority or a `null` test write on a value object |
 | A staged document waits for the next reload | a `set_config(reload=false)` leaves `<doc>.json.new` on the node, and the next reload or boot activates it. A later `set_config` of the document that is already active removes it (`staged_cleared`), and `plan_system` plans `clear_staged` for a staged document that differs from the manifest, so `apply_system` removes it before any reload or reboot |
 | No partial apply per node | `apply_system` applies all nodes of a manifest; use a manifest with fewer nodes for a canary ([distributed-apps.md](distributed-apps.md#11-versioning-and-rollout)) |
 

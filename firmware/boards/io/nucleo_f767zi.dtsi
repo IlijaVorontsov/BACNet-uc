@@ -24,8 +24,8 @@
  *
  * Pins deliberately not used: the RMII Ethernet pins (PA1, PA2, PA7, PB13,
  * PC1, PC4, PC5, PG11, PG13), the SPI1 NOR flash of the storage overlay
- * (PA5, PA6, PB5, PD14 = D13/D12/D10), USART3 console (PD8/PD9), USART6
- * (D0/D1), I2C1 (D14/D15).
+ * (PA5 = D13, PA6 = D12, PB5 = D22 (CN7-13), PD14 = D10), USART3 console
+ * (PD8/PD9), USART6 (D0/D1), I2C1 (D14/D15).
  *
  * The board DTS declares B1 as GPIO_ACTIVE_LOW; on the Nucleo-144 (MB1137)
  * B1 pulls PC13 high when pressed (like the other Nucleo-144 board files),

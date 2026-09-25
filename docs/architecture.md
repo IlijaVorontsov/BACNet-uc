@@ -419,14 +419,24 @@ use the same plan; they differ in where the WAMR pool lives.
 | `frdm_mcxn947/mcxn947/cpu0` | SRAM A-G, 384 KiB (the overlay gives cpu0 the RAM that Zephyr's default split reserves for the unused cpu1; SRAM H stays unused) | 96 KiB, all of SRAMX |
 | `native_sim/native/64` | host process | 256 KiB in `.noinit` of the process |
 
+The WAMR pool (module images, loaded modules with the fast-interpreter
+code, instances, linear memories, app heaps, operand stacks;
+`CONFIG_UC_APP_POOL_SIZE` in `boards/<board>.conf`, region in
+`boards/<board>.overlay`) is the only large consumer outside the main RAM on
+the two MCU boards: `wamr_pool`, 114 688 B in the F767 DTCM next to the
+Ethernet DMA buffers (`dma_rx_buffer`, `dma_tx_buffer`), 98 304 B in the
+MCXN947 SRAMX. It is not part of the main RAM figures below.
+
 Main RAM consumers (sizes from the symbol table of the `nucleo_f767zi`
-build; the MCXN947 build has the same consumers):
+build; the MCXN947 build has the same consumers). The kernel heap and the
+`malloc` arena are two separate reservations (`kheap__system_heap` and
+`malloc_arena`), not one heap counted twice: `k_malloc()` never takes memory
+from the arena, and `malloc()` never from the kernel heap.
 
 | Consumer | Size | Where configured |
 |----------|------|------------------|
-| WAMR pool: module images, loaded modules (fast-interpreter code), instances, linear memories, app heaps, operand stacks | 112 KiB (F767, DTCM), 96 KiB (MCXN947, SRAMX), 256 KiB (native_sim) | `CONFIG_UC_APP_POOL_SIZE` in `boards/<board>.conf`, region in `boards/<board>.overlay` |
-| kernel heap (`k_malloc`): configuration documents and parse buffers, file reads, shell/SMP snapshots | 64 KiB (MCUs; 48 KiB with `uc-ramfs`), 128 KiB (native_sim) | `CONFIG_HEAP_MEM_POOL_SIZE` |
-| libc `malloc` arena (picolibc): bacnet-stack object data (`calloc` per object created from `io.json`, by applications or by CreateObject), PSA crypto | 64 KiB (MCUs; 32 KiB with `uc-ramfs`); host `malloc` on `native_sim` | `CONFIG_COMMON_LIBC_MALLOC_ARENA_SIZE` in `boards/<board>.conf` (`snippets/uc-ramfs/boards/ram.conf`) |
+| kernel heap (`k_malloc`, symbol `kheap__system_heap`): configuration documents and parse buffers, file reads, shell/SMP snapshots | 64 KiB (MCUs; 48 KiB with `uc-ramfs`), 128 KiB (native_sim) | `CONFIG_HEAP_MEM_POOL_SIZE` |
+| libc `malloc` arena (Zephyr's common `malloc` of picolibc, symbol `malloc_arena`): bacnet-stack object data (`calloc` per object created from `io.json`, by applications or by CreateObject), PSA crypto | 64 KiB (MCUs; 32 KiB with `uc-ramfs`); host `malloc` on `native_sim` | `CONFIG_COMMON_LIBC_MALLOC_ARENA_SIZE` in `boards/<board>.conf` (`snippets/uc-ramfs/boards/ram.conf`) |
 | app thread stacks | 4 × 8 KiB | `CONFIG_UC_APPS_MAX` × `CONFIG_UC_APP_THREAD_STACK_SIZE` |
 | BACnet thread stack | 8 KiB | `CONFIG_UC_BACNET_THREAD_STACK_SIZE` |
 | main, system work queue, SMP work queue, shell (UART), shell (dummy backend of the SMP shell group) | 4 KiB each | `prj.conf` |
@@ -440,6 +450,12 @@ build; the MCXN947 build has the same consumers):
 | SMP shell transport receive buffers (16 lines) | ~2.4 KiB | `CONFIG_MCUMGR_TRANSPORT_SHELL_RX_BUF_COUNT` |
 | LittleFS file caches (8 files × 256 bytes + read/prog/lookahead) | ~3 KiB | `CONFIG_FS_LITTLEFS_*`, fstab node |
 | RAM disk of the `uc-ramfs` snippet | 64 KiB | `snippets/uc-ramfs/uc-ramfs.overlay` |
+
+Without the RAM disk these rows add up to about 300 KiB of the 352 KiB of
+main RAM the `nucleo_f767zi` build uses; the rest are many smaller objects
+(the bacnet-stack's APDU and NPDU buffers and the client and COV tables,
+about 14 KiB; the SMP scratch buffer, the logging, network RX and interrupt
+stacks and the SMP UDP state, about 12 KiB; kernel, driver and shell data).
 
 The `malloc` arena has a fixed size (Zephyr's default of -1 would give it
 whatever RAM is left after linking). IO points and applications create their

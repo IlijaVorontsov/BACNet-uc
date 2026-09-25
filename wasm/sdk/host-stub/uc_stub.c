@@ -6,6 +6,7 @@
  */
 
 #include <ctype.h>
+#include <float.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,6 +21,7 @@
 #define INSTANCE_MAX    4194303u /* BACNET_MAX_INSTANCE */
 #define TYPE_MAX        1023u
 #define PRIORITY_MAX    16u
+#define PRIORITY_MIN_ON_OFF 6u /* reserved for Minimum_On/Off_Time */
 #define PERIOD_MIN_MS   10u
 #define PERIOD_MAX_MS   3600000u
 #define LOG_BURST       20u
@@ -250,9 +252,108 @@ static const char *type_abbr(uint32_t type)
 	}
 }
 
-/* Present_Value as the firmware stores it (uc_value_from_double). */
+/* BACnet datatype of a numeric property, as the firmware converts it
+ * (uc_common.c numeric_property_tag(); property numbers of ASHRAE 135). */
+enum val_kind {
+	VK_REAL,
+	VK_UNSIGNED, /* UNSIGNED and ENUMERATED: integral, 0..2^32-1 */
+	VK_BOOLEAN,  /* BOOLEAN and the binary present value: 0 or 1 */
+	VK_OTHER,    /* not modelled: any finite value */
+};
+
+static enum val_kind prop_kind(uint32_t type, uint32_t prop)
+{
+	switch (prop) {
+	case UC_PROP_PRESENT_VALUE:
+	case UC_PROP_RELINQUISH_DEFAULT:
+	case 87u: /* priority-array */
+		if (type_binary(type)) {
+			return VK_BOOLEAN;
+		}
+		return type_multistate(type) ? VK_UNSIGNED : VK_REAL;
+	case UC_PROP_COV_INCREMENT:
+	case 25u:  /* deadband */
+	case 45u:  /* high-limit */
+	case 59u:  /* low-limit */
+	case 65u:  /* max-pres-value */
+	case 69u:  /* min-pres-value */
+	case 106u: /* resolution */
+		return VK_REAL;
+	case UC_PROP_OUT_OF_SERVICE:
+	case 353u: /* event-detection-enable */
+		return VK_BOOLEAN;
+	case UC_PROP_UNITS:
+	case UC_PROP_NUMBER_OF_STATES:
+	case 15u:  /* change-of-state-count */
+	case 17u:  /* notification-class */
+	case 33u:  /* elapsed-active-time */
+	case 36u:  /* event-state */
+	case 66u:  /* minimum-off-time */
+	case 67u:  /* minimum-on-time */
+	case 72u:  /* notify-type */
+	case 84u:  /* polarity */
+	case 103u: /* reliability */
+	case 113u: /* time-delay */
+		return VK_UNSIGNED;
+	default:
+		return VK_OTHER;
+	}
+}
+
+/* A numeric value converted for a write like the firmware's
+ * uc_value_from_double(): NaN and infinities, a REAL beyond the float
+ * range, a fraction or a value out of 0..2^32-1 for UNSIGNED/ENUMERATED,
+ * anything but 0 or 1 for BOOLEAN and a binary present value are
+ * UC_ERR_INVALID; nothing is truncated or rounded to 0/1. */
+static int32_t value_convert(uint32_t type, uint32_t prop, double in, double *out)
+{
+	if (!isfinite(in)) {
+		return UC_ERR_INVALID;
+	}
+	switch (prop_kind(type, prop)) {
+	case VK_REAL:
+		if (fabs(in) > (double)FLT_MAX) {
+			return UC_ERR_INVALID;
+		}
+		*out = (double)(float)in;
+		return UC_OK;
+	case VK_UNSIGNED:
+		if ((trunc(in) != in) || (in < 0.0) || (in > (double)UINT32_MAX)) {
+			return UC_ERR_INVALID;
+		}
+		break;
+	case VK_BOOLEAN:
+		if ((in != 0.0) && (in != 1.0)) {
+			return UC_ERR_INVALID;
+		}
+		break;
+	default:
+		break;
+	}
+	*out = in + 0.0; /* -0.0 -> 0.0 */
+	return UC_OK;
+}
+
+/* Present_Value written by an application or a BACnet client: converted
+ * like the firmware, and a multi-state value starts at state 1. */
 static int32_t pv_normalise(uint32_t type, double in, double *out)
 {
+	int32_t rc = value_convert(type, UC_PROP_PRESENT_VALUE, in, out);
+
+	if ((rc == UC_OK) && type_multistate(type) && (*out < 1.0)) {
+		return UC_ERR_INVALID;
+	}
+	return rc;
+}
+
+/* Present_Value set by the test (uc_stub_obj_add(), uc_stub_obj_set_pv()),
+ * like the IO scan feeds an input: binary non-zero = 1, multi-state
+ * truncated (>= 1), analog with REAL precision. */
+static int32_t pv_coerce(uint32_t type, double in, double *out)
+{
+	if (isnan(in)) {
+		return UC_ERR_INVALID;
+	}
 	if (type_binary(type)) {
 		*out = (in != 0.0) ? 1.0 : 0.0;
 		return UC_OK;
@@ -260,13 +361,12 @@ static int32_t pv_normalise(uint32_t type, double in, double *out)
 	if (type_multistate(type)) {
 		double t = trunc(in);
 
-		if (isnan(in) || (t < 1.0) || (t > (double)UINT32_MAX)) {
+		if ((t < 1.0) || (t > (double)UINT32_MAX)) {
 			return UC_ERR_INVALID;
 		}
 		*out = t;
 		return UC_OK;
 	}
-	/* REAL */
 	*out = (double)(float)in;
 	return UC_OK;
 }
@@ -349,7 +449,7 @@ static struct stub_obj *obj_new(uint32_t type, uint32_t instance, const char *na
 			snprintf(o->name, sizeof(o->name), "%s-%u", type_abbr(type),
 				 (unsigned int)instance);
 		}
-		if (pv_normalise(type, value, &value) < 0) {
+		if (pv_coerce(type, value, &value) < 0) {
 			value = type_multistate(type) ? 1.0 : 0.0;
 		}
 		o->value = value;
@@ -427,8 +527,16 @@ static int32_t obj_write_pv(struct stub_obj *o, const double *value, uint32_t pr
 			/* like the firmware: no change (AV, BV, MSV), else no NULL */
 			return type_optionally_commandable(o->type) ? UC_OK : UC_ERR_TYPE;
 		}
-		/* the priority is ignored */
+		/* no priority array: BV and MSV ignore the priority, AV
+		 * rejects priority 6 like the firmware's stack
+		 * (write-access-denied) */
+		if ((priority == PRIORITY_MIN_ON_OFF) && (o->type == UC_OBJ_ANALOG_VALUE)) {
+			return UC_ERR_PERM;
+		}
 		o->value = v;
+	} else if (priority == PRIORITY_MIN_ON_OFF) {
+		/* reserved for Minimum_On/Off: write and relinquish denied */
+		return UC_ERR_PERM;
 	} else if (value == NULL) {
 		o->prio_set[priority - 1u] = false;
 	} else {
@@ -492,6 +600,9 @@ static int32_t obj_prop_write(struct stub_obj *o, uint32_t prop, double value)
 	if ((prop == UC_PROP_OBJECT_NAME) || (prop == UC_PROP_DESCRIPTION) ||
 	    (prop == UC_PROP_STATUS_FLAGS)) {
 		return UC_ERR_TYPE;
+	}
+	if (value_convert(o->type, prop, value, &value) < 0) {
+		return UC_ERR_INVALID;
 	}
 	for (uint32_t i = 0; i < o->n_props; i++) {
 		if (o->prop_id[i] == prop) {
@@ -1053,6 +1164,20 @@ int32_t uc_io_read(int32_t channel, double *out)
 	return UC_OK;
 }
 
+/* io_normalise() of the firmware, the channel kind taken from the name
+ * prefix of the firmware's catalogs: di/do 0 or 1 (non-zero = 1), ao
+ * clamped to 0..100 %. */
+static double io_normalise(const char *name, double v)
+{
+	if ((strncmp(name, "do", 2) == 0) || (strncmp(name, "di", 2) == 0)) {
+		return (v != 0.0) ? 1.0 : 0.0;
+	}
+	if (strncmp(name, "ao", 2) == 0) {
+		return (v < 0.0) ? 0.0 : ((v > 100.0) ? 100.0 : v);
+	}
+	return v;
+}
+
 int32_t uc_io_write(int32_t channel, double value)
 {
 	if (!has_perm(UC_STUB_PERM_IO)) {
@@ -1062,9 +1187,12 @@ int32_t uc_io_write(int32_t channel, double value)
 		return ret(UC_ERR_NOT_FOUND);
 	}
 	if (!st.io[channel].output) {
+		return ret(UC_ERR_PERM); /* inputs are not writable */
+	}
+	if (!isfinite(value)) {
 		return ret(UC_ERR_INVALID);
 	}
-	st.io[channel].value = value;
+	st.io[channel].value = io_normalise(st.io[channel].name, value);
 	return UC_OK;
 }
 
@@ -1468,7 +1596,7 @@ int uc_stub_obj_set_pv(uint32_t type, uint32_t instance, double value)
 		return -1;
 	}
 	old = obj_pv(o);
-	if (pv_normalise(type, value, &value) < 0) {
+	if (pv_coerce(type, value, &value) < 0) {
 		return -1;
 	}
 	if (o->commandable) {

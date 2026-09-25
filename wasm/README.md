@@ -280,7 +280,7 @@ Toggles a binary object, or a raw digital output channel, every `period_ms`.
 |-------|---------|---------|
 | `type`, `instance` | 5, 1 | object (binary-value:1) |
 | `name` | `blinky` | object name when the app creates it |
-| `priority` | 0 | write priority 1..16 for a commandable object (BO, AO, MSO), 0 = none; value objects ignore it |
+| `priority` | 0 | write priority 1..16 for a commandable object (BO, AO, MSO; not 6), 0 = none; value objects ignore it (AV rejects 6) |
 | `period_ms` | 1000 | toggle period (10..3600000), set with `uc_set_tick_period` |
 | `on`, `off` | 1, 0 | values written |
 | `channel` | - | raw IO channel (`do0`) instead of an object |
@@ -388,11 +388,13 @@ are queued. Model:
 
 | Area | Behaviour |
 |------|-----------|
-| objects | table with owner (IO or app), priority arrays for AO/BO/MSO (AV/BV/MSV have none, as in the firmware: the priority is ignored, a relinquish succeeds without effect; a relinquish of an input or another property is `UC_ERR_TYPE`), REAL precision for analog values, binary 0/1, multi-state >= 1; other numeric properties stored per object |
+| objects | table with owner (IO or app), priority arrays for AO/BO/MSO (AV/BV/MSV have none, as in the firmware: BV and MSV ignore the priority, AV rejects priority 6 with `UC_ERR_PERM`, a relinquish succeeds without effect; a relinquish of an input or another property is `UC_ERR_TYPE`; priority 6 on AO/BO/MSO is `UC_ERR_PERM`), REAL precision for analog values; other numeric properties stored per object |
+| values | converted like the firmware's `uc_value_from_double()`: NaN, infinities, a REAL beyond the float range, a fraction or a value outside 0..2^32-1 for UNSIGNED/ENUMERATED properties (multi-state Present_Value, `number-of-states`, `units`, ...), anything but 0/1 for a binary Present_Value or a BOOLEAN property (`out-of-service`) return `UC_ERR_INVALID`; multi-state values start at 1. Test-control setters (`uc_stub_obj_add`, `uc_stub_obj_set_pv`) take a sample like the IO scan: binary non-zero = 1, multi-state truncated |
 | writes | `uc_stub_client_write` writes like a BACnet client and queues `uc_app_on_write` for app-owned objects (not for relinquish, not for the app's own writes) |
 | COV | initial notification right after subscribing; local objects notify on every Present_Value change; remote points notify on `uc_stub_remote_set(..., notify=true)`; `uc_stub_cov_notify` for arbitrary values |
 | remote | scripted points and per-point errors; unknown device: `UC_ERR_NO_ROUTE`, unknown object: `UC_ERR_BACNET`; a timeout advances the clock by `timeout_ms` |
-| other | parameters, key/value store (survives `uc_stub_stop`), IO channels, log capture with the host's 120-character truncation and 20 lines/s limit, fault injection per function (`uc_stub_fail`) |
+| IO | raw channels; `uc_io_write` like the firmware: `UC_ERR_PERM` for inputs, `UC_ERR_INVALID` for NaN/infinities, di/do stored as 0/1 (non-zero = 1) and ao clamped to 0..100 (the kind from the name prefix, as in the firmware's catalogs) |
+| other | parameters, key/value store (survives `uc_stub_stop`), log capture with the host's 120-character truncation and 20 lines/s limit, fault injection per function (`uc_stub_fail`) |
 
 Unit tests use `uc_test.h` and run with ASan/UBSan: `test_thermostat.c`
 (16 tests: defaults, remote COV, poll fallback, lost notifications, stale
@@ -403,7 +405,9 @@ invalid parameters, REAL setpoint precision, setpoint object taken),
 README example, scale/offset/priority, poll-on-change, error logging, local
 sources, malformed links and numbers, blanks, invalid count, missing link,
 destinations, write errors, COV fallback, unsubscribe), `test_alarm.c` (10),
-`test_blinky.c` (6) and `sdk/tests/test_util.c` (7).
+`test_blinky.c` (6), `sdk/tests/test_util.c` (7) and `sdk/tests/test_stub.c` (3:
+the stub's value conversion, priority 6 and `uc_io_write` against the
+firmware's rules).
 
 ### WAMR runner (`sdk/wamr-runner`)
 

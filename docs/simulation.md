@@ -76,7 +76,11 @@ SMP listens on UDP port 1337 of the host; without a `network` section in
 namespace (the SMP port is fixed at build time,
 `CONFIG_MCUMGR_TRANSPORT_UDP_PORT`). The harness equivalent is
 `sim_start(mode="host")` / `bacnet-uc sim up MANIFEST --mode host`, which
-accepts a manifest with exactly one `transport: sim` node.
+accepts a manifest with exactly one `transport: sim` node. It refuses to start
+while UDP 1337 or the node's BACnet/IP port is in use on the host (a second
+node would keep running without its SMP server, and the harness would manage
+whichever node owns the port), and fails the start when the node's log
+reports a socket it could not bind.
 
 Several nodes on one host without namespaces would need distinct SMP ports
 (a firmware build per node) and distinct BACnet ports with static bindings to
@@ -112,7 +116,7 @@ flowchart LR
 | Privileges | root, or CAP_NET_ADMIN + CAP_SYS_ADMIN (checked before anything is created) |
 | Working directory | `<home>/.bacnet-uc/sim/<system>/`: `<node>.flash.bin`, `<node>.log` (console output), `sim-state.json` |
 | Process | `zephyr.exe --flash=<workdir>/<node>.flash.bin --seed=<0x5EED0000 + n>`, own session, stdin closed |
-| Failure handling | a network setup error tears down what was created; a node that exits within 0.5 s of its start stops the whole simulation and returns its log tail |
+| Failure handling | the start is refused when the bridge `bnuc0`, a node's namespace or its `vbnuc<n>` interface already exists (another simulation, or one left over from a crash); a network setup error tears down only what this start created; a node that exits within 0.5 s of its start, or logs a failed socket bind, stops the whole simulation and returns its log tail |
 
 Because each process has its own namespace, every node uses the standard
 ports (1337, 47808): the simulated system is addressed exactly like a
@@ -151,7 +155,10 @@ sequenceDiagram
 
 `sim_stop` keeps the flash images: the next `sim_start` resumes with the
 applied configuration and apps (`erase_flash=true` / `--erase` starts clean).
-The state file allows a different harness process to stop the simulation.
+The state file allows a different harness process to stop the simulation. It
+records each process's start time next to its pid; a pid whose process has
+another start time (after a host reboot or a crash the pid may belong to an
+unrelated process) counts as dead and is never signalled.
 
 ## 4. Multi-node: docker compose (`compose`)
 

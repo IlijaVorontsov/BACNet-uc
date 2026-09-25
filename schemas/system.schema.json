@@ -285,7 +285,8 @@
           "type": "integer",
           "minimum": 100,
           "default": 1000,
-          "description": "Poll period, or COV fallback poll period."
+          "description": "Poll period, or COV fallback poll period.",
+          "maximum": 3600000
         },
         "priority": {
           "type": "integer",

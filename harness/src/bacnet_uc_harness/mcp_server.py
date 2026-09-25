@@ -30,7 +30,13 @@ from pydantic import Field
 from bacnet_uc_harness import __version__, firmware, paths
 from bacnet_uc_harness.bacnet.client import BacnetClient
 from bacnet_uc_harness.budget import system_budgets
-from bacnet_uc_harness.errors import BacnetError, HarnessError, HarnessTimeout, SmpError
+from bacnet_uc_harness.errors import (
+    BacnetError,
+    HarnessError,
+    HarnessTimeout,
+    ReloadError,
+    SmpError,
+)
 from bacnet_uc_harness.inventory import Inventory, InventoryNode
 from bacnet_uc_harness.manifest import (
     CHANNEL_KIND_TYPES,
@@ -278,6 +284,10 @@ def error_payload(exc: BaseException) -> dict[str, Any]:
         out["issues"] = [i.to_dict() for i in exc.issues]
     if isinstance(exc, SmpError):
         out.update(group=exc.group, rc=exc.rc, rc_name=exc.rc_name)
+    if isinstance(exc, ReloadError):
+        out.update(doc=exc.doc, reboot_required=exc.reboot_required)
+        if exc.restarted_apps is not None:
+            out["restarted_apps"] = exc.restarted_apps
     if isinstance(exc, BacnetError):
         out.update(kind=exc.kind, error_class=exc.error_class_name,
                    error_code=exc.error_code_name, reason=exc.reason)
@@ -559,10 +569,21 @@ def create_server(ctx: HarnessContext | None = None) -> Any:
     ) -> dict[str, Any]:
         """Make a node re-read configuration documents from its file system (a staged
         /lfs/cfg/<doc>.json.new is activated first). An io reload restarts the node's apps
-        that use its IO objects."""
+        that use its IO objects. Each document is loaded and applied on its own: when one
+        fails, the tool error still carries reboot_required (the documents that were
+        applied may need a reboot) and restarted_apps; see read_logs for which document
+        failed."""
         async with ctx.lock(node):
             n = await ctx.node(node)
-            reboot = await n.reload(doc)
+            try:
+                reboot = await n.reload(doc)
+            except ReloadError as exc:
+                # "all": the other documents were applied, io.json possibly
+                # too; "io" failing after activation (not INVALID) re-created
+                # IO objects as well
+                if doc == "all" or (doc == "io" and exc.rc_name != "INVALID"):
+                    exc.restarted_apps = await n.restart_io_dependents()
+                raise
             out: dict[str, Any] = {"node": node, "doc": doc, "reboot_required": reboot}
             if doc in ("io", "all"):
                 out["restarted_apps"] = await n.restart_io_dependents()
@@ -645,7 +666,9 @@ def create_server(ctx: HarnessContext | None = None) -> Any:
                        value: Annotated[float, Field(description="do: 0/1, ao: 0..100 %")],
                        ) -> dict[str, Any]:
         """Write an output channel directly. If the channel is bound to a BACnet object the
-        next IO scan drives it from the object again; use bacnet_write or io_force."""
+        write lasts until that object's Present_Value changes: the IO scan re-drives an
+        output only when its Present_Value changes. To hold a value use io_force, to
+        command the output through its object use bacnet_write."""
         async with ctx.lock(node):
             n = await ctx.node(node)
             await n.io_write(channel, value)
@@ -658,8 +681,9 @@ def create_server(ctx: HarnessContext | None = None) -> Any:
                            description="Raw value: di/do 0|1, ai mV, ao %")]) -> dict[str, Any]:
         """Force a channel until io_release: an input's forced value is what the IO scan
         (and so the bound BACnet object) sees; an output is driven regardless of its
-        object. On simulated channels this sets the value. The way to inject test
-        stimuli."""
+        object. On a simulated input it also sets the simulated value, which stays after
+        the release; a simulated output shows the forced value only until the release,
+        then its commanded value again. The way to inject test stimuli."""
         async with ctx.lock(node):
             n = await ctx.node(node)
             await n.io_force(channel, value)
@@ -741,8 +765,9 @@ def create_server(ctx: HarnessContext | None = None) -> Any:
 
     @tool(read_only=True, idempotent=True)
     async def list_objects(node: NodeName) -> dict[str, Any]:
-        """List the BACnet objects of a node with name, owner ('system', 'io' or
-        'app:<name>') and present value."""
+        """List the BACnet objects of a node with name, owner ('system', 'io',
+        'app:<name>' ('app:#<slot>' when the owning app is gone) or 'network' for objects
+        a BACnet client created with CreateObject) and present value."""
         async with ctx.lock(node):
             n = await ctx.node(node)
             objs = await n.objects()

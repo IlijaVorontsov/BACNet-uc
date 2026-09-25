@@ -242,6 +242,28 @@ async def test_config_and_io_tools(server: Any, fake_node: FakeNode) -> None:
         assert info["info"]["device"]["name"] == "renamed"
 
 
+async def test_reload_all_partial_failure_keeps_reboot_required(server: Any,
+                                                                 fake_node: FakeNode) -> None:
+    """reload 'all' with one bad document still applies the others: the error
+    must carry reboot_required, and IO dependents are restarted (CON-7)."""
+    fake_node.files["/lfs/cfg/device.json.new"] = json.dumps(
+        {"schema": 1, "device": {"instance": 1500, "name": "moved"}}).encode()
+    fake_node.files["/lfs/cfg/io.json.new"] = json.dumps({"schema": 1, "points": [
+        {"channel": "ai0", "type": "analog-input", "instance": 1}]}).encode()
+    fake_node.files["/lfs/cfg/apps.json.new"] = b'{"schema": 1, "apps": [{"name": "BAD"}]}'
+    async with connect(server) as client:
+        await add(client, "n1", fake_node)
+        with pytest.raises(ToolCallError) as exc:
+            await client.call("reload_config", node="n1", doc="all")
+        p = exc.value.payload
+        assert p["error"] == "ReloadError" and p["rc_name"] == "INVALID"
+        assert p["reboot_required"] is True and p["doc"] == "all"
+        assert p["restarted_apps"] == []
+        assert "reboot required" in p["message"]
+    assert (0, 1) in fake_node.objects  # io.json was applied
+    assert "/lfs/cfg/apps.json.new" not in fake_node.files
+
+
 async def test_shell_disabled_and_enabled(server: Any, fake_node: FakeNode,
                                           ctx: HarnessContext) -> None:
     async with connect(server) as client:

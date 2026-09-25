@@ -4,7 +4,9 @@ BACnet-uc custom groups (docs/management-protocol.md).
 
 Every request is retried with the same sequence number when no response
 arrives (``retries`` times, default 3); :class:`HarnessTimeout` is raised
-afterwards. Error responses raise :class:`SmpError`:
+afterwards. The exception is the first chunk of a multi-chunk file upload,
+which the node would write twice (see :meth:`SmpClient.fs_upload`). Error
+responses raise :class:`SmpError`:
 
 - SMP v2: ``{"err": {"group": g, "rc": n}}`` with ``n != 0``,
 - legacy: ``{"rc": n}`` with ``n != 0`` (``mcumgr_err_t``).
@@ -263,8 +265,8 @@ class SmpClient:
             if attempt:
                 log.info("fs upload %s: %s; starting again", path, why)
                 try:
-                    await self.fs_close()
-                except (SmpError, HarnessTimeout):
+                    await self.fs_close()  # HarnessTimeout: the node is gone
+                except SmpError:
                     pass
             problem = await self._fs_upload_pass(path, data, chunk, progress)
             if problem is None and verify and total:

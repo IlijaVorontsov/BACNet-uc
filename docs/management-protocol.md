@@ -94,9 +94,14 @@ For every requested document the reload first looks for `<document>.new`:
 | invalid | **deleted**; the active document and the running configuration stay; the reload of that document fails with rc `INVALID` |
 | unreadable / rename failed (I/O) | left in place for another attempt; rc `IO` (or `NO_MEM`) |
 
-A staged document that is valid but cannot be applied (e.g. an `io.json`
-point on an unknown channel: rc `NOT_FOUND`) has been activated already,
-like a directly uploaded one. Staged documents found at boot are activated
+A staged document that is valid but cannot be applied completely has been
+activated already, like a directly uploaded one: an `apps.json` entry whose
+module does not start fails the reload with the start's rc (e.g.
+`NOT_FOUND` for a missing module file, `VERIFY` for a `sha256` mismatch).
+`io.json` points that cannot be bound (unknown channel, channel kind and
+object type do not match, channel or object bound twice) are skipped with
+a logged error, the other points are bound and the reload returns `OK`;
+the catalog's `object` fields show what is bound. Staged documents found at boot are activated
 the same way before the configuration is loaded (an invalid one is deleted
 and the active document is used). A staged `device.json` with a changed
 instance, network or port still needs a reboot (`reboot_required`).
@@ -163,7 +168,22 @@ receives fewer than `total - offset` entries requests the next page with
 optional sha256, WASM/AOT magic), stores the entry in `/lfs/cfg/apps.json`
 and starts it when `autostart` is true (or restarts it with `restart`).
 Installing an existing name replaces its entry (rc `STATE` if it is running
-and `restart` is not true).
+and `restart` is not true). A start (install, `start`, boot, reload) fails
+with rc `VERIFY` for a module whose instantiation would run module code
+before the watchdog covers it: a start function or an exported
+`__wasm_call_ctors` or `__post_instantiate` (`last_error` "... not supported
+(runs at instantiation)"); the SDK never produces them.
+
+`stop` (also `remove`, `install` with `restart`, and a `reload` of `apps`
+for a removed or changed entry) cancels the app's blocking host calls (a
+remote request in progress is abandoned, further ones fail at once), lets
+the running callback return, or terminates it with the watchdog, and then
+calls `uc_app_deinit()` under the watchdog. The request returns once the app
+has cleaned up, at most 2 x `CONFIG_UC_APP_WATCHDOG_MS` + 8 s later (rc
+`BUSY` otherwise; the app then keeps its `apps.json` entry). The app is
+`stopped`, or `failed` when its callback had to be terminated. `remove` with
+`delete_file` also deletes the module file (unless another app uses it) and
+the app's `/lfs/data/<name>` directory with all its keys.
 
 `<app status>`:
 
@@ -207,10 +227,17 @@ and `restart` is not true).
 full; `total` is the number of channels of the board.
 
 Values are raw engineering values of the channel: `di`/`do` 0 or 1, `ai`
-millivolts, `ao` percent 0..100. `force` overrides what the IO scan sees
-for an input (or drives an output regardless of its BACnet object) until
-released; on `sim` channels it simply sets the simulated value. This is how
-the harness injects stimuli in tests.
+millivolts, `ao` percent 0..100. `force` overrides a channel until it is
+released ([io.md](io.md#5-forcing)):
+
+| Channel | forced | released |
+|---------|--------|----------|
+| hardware input | the IO scan and every reader see the forced value instead of the pin/ADC | readers see the hardware again |
+| simulated input (`sim`) | the simulated value is set to the forced value | the simulated value keeps the forced value |
+| hardware output | the pin/PWM is driven with the forced value regardless of its BACnet object; Present_Value changes are recorded, not applied | the last commanded value (Present_Value) is applied |
+| simulated output (`sim`) | `read` returns the forced value | `read` returns the commanded value again |
+
+This is how the harness injects stimuli in tests.
 
 ### Group 66 `uc_node` - node information and configuration
 
@@ -240,9 +267,17 @@ the harness injects stimuli in tests.
 }
 ```
 
+`wasm.aot` is true when AOT files load: the firmware is built with
+`CONFIG_WAMR_AOT` **and** the WAMR pool is executable (see
+[wasm-runtime.md](wasm-runtime.md) section 2.1); otherwise `.aot` modules are
+refused and `wasm.aot_target` is `""`. `wasm.aot_target` is the `wamrc
+--target` the files must be compiled for (e.g. `"thumbv7em"`).
+
 `<object>`: `{"type": tstr, "instance": uint, "name": tstr, "owner": tstr,
-"pv"?: <value>}` where owner is `"system"`, `"io"` or `"app:<name>"`
-(`"app:#<slot>"` when the owning app is gone).
+"pv"?: <value>}` where owner is `"system"`, `"io"`, `"network"` (created by
+a BACnet client with CreateObject, only with
+`CONFIG_UC_BACNET_REMOTE_CREATE_DELETE`) or `"app:<name>"` (`"app:#<slot>"`
+when the owning app is gone).
 
 `objects` returns the local objects in object-list order from `offset`
 (default 0): at most `count` entries (**default 8**) and fewer when the

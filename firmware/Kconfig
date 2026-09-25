@@ -147,8 +147,20 @@ config UC_APP_MAX_FILE_SIZE
 	default 262144
 
 config UC_APP_WATCHDOG_MS
-	int "Maximum duration of one application callback (ms)"
+	int "Execution time budget of one application callback (ms)"
 	default 2000
+	help
+	  A callback (uc_app_init, uc_app_tick, uc_app_on_cov, uc_app_on_write,
+	  uc_app_deinit) that executes longer is terminated
+	  (wasm_runtime_terminate()) and the application enters "failed". Time
+	  blocked in remote requests and kv file access does not count, except
+	  while a stop is pending: a stop cancels the blocking host calls, so
+	  the rest of the running callback and uc_app_deinit() each end within
+	  this period, and uc_apps_stop() waits at most 2 x this period + 8 s.
+	  The timer runs in real time on the boards. On native_sim simulated
+	  time stands still while a callback computes, so the timer cannot stop
+	  a busy loop there; WAMR_INSTRUCTION_LIMIT (an instruction budget per
+	  call, interpreter only) does.
 
 config UC_APP_EVENT_QUEUE_LEN
 	int "Pending events per application"

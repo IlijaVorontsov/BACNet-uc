@@ -37,6 +37,7 @@ test_thermostat := $(WASM_DIR)/examples/thermostat/test_thermostat.c
 test_alarm := $(WASM_DIR)/examples/alarm/test_alarm.c
 test_uc-link := $(WASM_DIR)/examples/uc-link/test_uc_link.c
 test_util := $(UC_SDK)/tests/test_util.c
+test_stub := $(UC_SDK)/tests/test_stub.c
 
 STUB_DIR := $(UC_SDK)/host-stub
 RUNNER_DIR := $(UC_SDK)/wamr-runner
@@ -46,7 +47,7 @@ HOST_INC := -I$(UC_INCLUDE) -I$(STUB_DIR) -I$(RUNNER_DIR)
 SCENARIO_SRC := $(RUNNER_DIR)/scenario.c $(RUNNER_DIR)/scenario_native.c
 
 WASM := $(EXAMPLES:%=$(BUILD)/%.wasm)
-HOST_TESTS := $(addprefix $(BUILD)/host/test_,$(EXAMPLES) util)
+HOST_TESTS := $(addprefix $(BUILD)/host/test_,$(EXAMPLES) util stub)
 SCENARIOS := $(EXAMPLES:%=$(BUILD)/host/scenario_%)
 RUNNER := $(WAMR_BUILD)/uc-wamr-runner
 WAMRC ?= $(firstword $(wildcard /opt/wamrc/wamrc) wamrc)
