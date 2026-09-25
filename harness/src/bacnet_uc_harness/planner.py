@@ -5,13 +5,14 @@
    (manifest apps and the generated ``uc-link`` instances), cached by
    content hash.
 2. :func:`fetch_live` reads the live state of each node: node info,
-   SHA-256 of ``device.json``/``io.json``, the installed apps
-   (``apps.json`` entries + ``uc_app list``), SHA-256 of the module files and
-   the object list.
+   SHA-256 of ``device.json``/``io.json`` and of staged documents
+   (``<doc>.json.new``), the installed apps (``apps.json`` entries +
+   ``uc_app list``), SHA-256 of the module files and the object list.
 3. :func:`plan` compares desired and live state and returns a
-   :class:`Plan` of actions: ``push_config`` (staged upload + reload),
-   ``reload``, ``remove_app`` (only with ``prune``), ``deploy_app`` (upload if
-   the module changed, install with manifest), ``start_app``,
+   :class:`Plan` of actions: ``clear_staged`` (remove a staged document the
+   next reload or boot would activate), ``push_config`` (staged upload +
+   reload), ``reload``, ``remove_app`` (only with ``prune``), ``deploy_app``
+   (upload if the module changed, install with manifest), ``start_app``,
    ``restart_app``, plus notes (e.g. a pending reboot).
 4. :func:`apply` executes a plan in a safe order: device configuration, IO
    configuration, applications, links (uc-link instances), restarts;
@@ -35,6 +36,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
+import re
+import subprocess
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -46,9 +50,12 @@ from bacnet_uc_harness.bacnet import enums
 from bacnet_uc_harness.errors import HarnessError
 from bacnet_uc_harness.manifest import AppSpec, System
 from bacnet_uc_harness.render import (
+    DOC_NAMES,
+    STAGED_SUFFIX,
     AppArtifact,
     NodeRender,
     RenderedApp,
+    doc_path,
     doc_sha256,
     node_apps,
     render_system,
@@ -57,13 +64,36 @@ from bacnet_uc_harness.render import (
 )
 from bacnet_uc_harness.wasm_build import aot_compile, build_c, check_module
 
-ActionKind = Literal["push_config", "reload", "remove_app", "deploy_app", "start_app",
-                     "restart_app"]
+ActionKind = Literal["clear_staged", "push_config", "reload", "remove_app", "deploy_app",
+                     "start_app", "restart_app"]
 PHASE_DEVICE, PHASE_IO, PHASE_APPS, PHASE_LINKS = 0, 1, 2, 3
 PHASE_NAMES = {PHASE_DEVICE: "device", PHASE_IO: "io", PHASE_APPS: "apps", PHASE_LINKS: "links"}
-_KIND_ORDER = {"push_config": 0, "reload": 1, "remove_app": 2, "deploy_app": 3, "start_app": 4,
-               "restart_app": 5}
+_KIND_ORDER = {"clear_staged": 0, "push_config": 1, "reload": 2, "remove_app": 3,
+               "deploy_app": 4, "start_app": 5, "restart_app": 6}
 DEFAULT_OPT = "-Oz"
+_QUOTED_INCLUDE = re.compile(rb'^[ \t]*#[ \t]*include[ \t]*"([^"\n]+)"', re.M)
+
+
+def source_dependencies(source: Path) -> list[Path]:
+    """``source`` and the files it includes with ``#include "..."``, found
+    relative to the including file, recursively (headers of the SDK include
+    directory are hashed separately). Conditional includes count as well."""
+    seen: set[Path] = set()
+    todo = [source.resolve()]
+    while todo:
+        f = todo.pop()
+        if f in seen:
+            continue
+        try:
+            data = f.read_bytes()
+        except OSError:
+            continue
+        seen.add(f)
+        for m in _QUOTED_INCLUDE.finditer(data):
+            cand = (f.parent / m.group(1).decode("utf-8", "replace")).resolve()
+            if cand.is_file() and cand not in seen:
+                todo.append(cand)
+    return sorted(seen)
 
 
 # --- artifacts ------------------------------------------------------------------------------
@@ -81,6 +111,7 @@ class ArtifactBuilder:
         self.cache_dir = cache_dir or paths.cache_dir()
         self.opt = opt
         self.log: list[str] = []
+        self._toolchain: str | None = None
 
     def _sdk_digest(self) -> str:
         h = hashlib.sha256()
@@ -90,6 +121,44 @@ class ArtifactBuilder:
         except HarnessError:
             pass
         return h.hexdigest()
+
+    def _toolchain_digest(self) -> str:
+        """uc-cc and its checker modules, and the clang version (once per builder)."""
+        if self._toolchain is None:
+            h = hashlib.sha256()
+            try:
+                sdk = paths.wasm_sdk_dir()
+                for p in [sdk / "uc-cc", *sorted((sdk / "tools").glob("*.py"))]:
+                    if p.is_file():
+                        h.update(p.read_bytes())
+            except HarnessError:
+                pass
+            clang = os.environ.get("UC_CLANG", "clang")
+            try:
+                res = subprocess.run([clang, "--version"], capture_output=True, text=True,
+                                     check=False, timeout=30)
+                h.update(res.stdout.encode())
+            except (OSError, subprocess.SubprocessError):
+                pass
+            self._toolchain = h.hexdigest()
+        return self._toolchain
+
+    def wasm_key(self, app: AppSpec) -> str:
+        """Cache key of an app built from source: the source and every local
+        header it includes (:func:`source_dependencies`), the options, the SDK
+        headers and the toolchain."""
+        assert app.source is not None
+        h = hashlib.sha256()
+        base = app.source.resolve().parent
+        for dep in source_dependencies(app.source):
+            try:
+                name = str(dep.relative_to(base))
+            except ValueError:
+                name = str(dep)
+            h.update(name.encode() + b"\0" + hashlib.sha256(dep.read_bytes()).digest())
+        h.update(f"opt={self.opt};heap_kb={app.heap_kb}".encode())
+        h.update(self._sdk_digest().encode() + self._toolchain_digest().encode())
+        return h.hexdigest()[:16]
 
     def wasm_for(self, app: AppSpec) -> Path:
         """The ``.wasm`` of an app (built from ``source`` if necessary)."""
@@ -101,8 +170,7 @@ class ArtifactBuilder:
             raise HarnessError(f"app {app.name!r} has neither source nor wasm")
         if not app.source.is_file():
             raise HarnessError(f"app {app.name!r}: source not found: {app.source}")
-        key = hashlib.sha256(app.source.read_bytes() + self.opt.encode() +
-                             self._sdk_digest().encode()).hexdigest()[:16]
+        key = self.wasm_key(app)
         out = self.cache_dir / "wasm" / key / f"{app.source.stem}.wasm"
         if not out.is_file():
             res = build_c([app.source], out, opt=self.opt, heap_kb=app.heap_kb)
@@ -149,6 +217,8 @@ class LiveState:
     error: str | None = None
     info: dict[str, Any] = field(default_factory=dict)
     config_sha256: dict[str, str | None] = field(default_factory=dict)
+    #: SHA-256 of a staged ``<doc>.json.new`` by document, ``None``: none staged
+    staged_sha256: dict[str, str | None] = field(default_factory=dict)
     apps_cfg: list[dict[str, Any]] = field(default_factory=list)
     apps_status: dict[str, dict[str, Any]] = field(default_factory=dict)
     files_sha256: dict[str, str | None] = field(default_factory=dict)
@@ -157,6 +227,7 @@ class LiveState:
     def to_dict(self) -> dict[str, Any]:
         return {"node": self.node, "reachable": self.reachable, "error": self.error,
                 "info": self.info, "config_sha256": self.config_sha256,
+                "staged": sorted(d for d, h in self.staged_sha256.items() if h is not None),
                 "apps": [{"name": n, "state": s.get("state")} for n, s in self.apps_status.items()]}
 
 
@@ -168,6 +239,8 @@ async def fetch_live_node(node: Any, render: NodeRender | None = None,
         state.info = await node.info()
         for doc in ("device", "io"):
             state.config_sha256[doc] = await node.config_sha256(doc)
+        for doc in DOC_NAMES:
+            state.staged_sha256[doc] = await node.file_sha256(doc_path(doc) + STAGED_SUFFIX)
         apps_doc = await node.get_config("apps")
         if isinstance(apps_doc, dict):
             state.apps_cfg = [dict(e) for e in apps_doc.get("apps", []) if isinstance(e, dict)]
@@ -413,6 +486,7 @@ def plan(
             if hint:
                 p.notes.append(Note(name, f"device.json is current but the node still runs the "
                                     f"old settings ({hint}): reboot pending", "reboot_required"))
+            _plan_clear_staged(p, st, name, "device", want, PHASE_DEVICE)
         # io.json
         want = doc_sha256(render.io)
         have = st.config_sha256.get("io")
@@ -420,12 +494,18 @@ def plan(
             reason = "missing on the node" if have is None else "content differs"
             p.actions.append(Action("push_config", name, "io", reason, PHASE_IO,
                                     {"doc": render.io}))
-        elif st.objects is not None:
-            missing = _expected_io_objects(render) - _live_io_objects(st.objects)
-            if missing:
-                refs = ", ".join(sorted(enums.format_object_ref(*k) for k in missing))
-                p.actions.append(Action("reload", name, "io",
-                                        f"io.json current but objects missing: {refs}", PHASE_IO))
+        else:
+            _plan_clear_staged(p, st, name, "io", want, PHASE_IO)
+            if st.objects is not None:
+                missing = _expected_io_objects(render) - _live_io_objects(st.objects)
+                if missing:
+                    refs = ", ".join(sorted(enums.format_object_ref(*k) for k in missing))
+                    p.actions.append(Action("reload", name, "io",
+                                            f"io.json current but objects missing: {refs}",
+                                            PHASE_IO))
+        # apps.json: the node writes it itself on install/remove; a staged
+        # one would replace the installed apps at the next reload or boot
+        _plan_clear_staged(p, st, name, "apps", None, PHASE_APPS)
         # applications
         desired: dict[str, RenderedApp] = {a.name: a for a in render.app_list}
         live_cfg = {str(e.get("name")): e for e in st.apps_cfg}
@@ -469,6 +549,20 @@ def plan(
                         f"state {status.get('state')}" + (f": {err}" if err else ""), phase))
     _plan_restarts(system, p, renders, live)
     return p
+
+
+def _plan_clear_staged(p: Plan, st: LiveState, node: str, doc: str, want: str | None,
+                       phase: int) -> None:
+    """``clear_staged`` for a staged ``<doc>.json.new`` that differs from the
+    desired document (``want``; ``None``: any) while no ``push_config`` of
+    that document replaces it: the node would activate it at the next reload
+    or boot (including the reboot that :func:`apply` may do)."""
+    staged = st.staged_sha256.get(doc)
+    if staged is None or staged == want:
+        return
+    p.actions.append(Action("clear_staged", node, doc,
+                            f"stale staged {doc}.json.new would be activated at the next "
+                            "reload or boot", phase))
 
 
 def _plan_restarts(system: System, p: Plan, renders: Mapping[str, NodeRender],
@@ -542,6 +636,8 @@ Rebooter = Callable[[str], Awaitable[Any]]
 
 
 async def _execute(action: Action, node: Any) -> Any:
+    if action.kind == "clear_staged":
+        return await node.clear_staged(action.target)
     if action.kind == "push_config":
         return await node.push_config(action.target, action.data["doc"])
     if action.kind == "reload":

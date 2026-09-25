@@ -82,7 +82,10 @@ class SmpTarget:
     @classmethod
     def parse(cls, spec: str | SmpTarget | Mapping[str, Any]) -> SmpTarget:
         """``udp:<host>[:<port>]``, ``serial:<device>[:<baud>]``, ``<host>[:<port>]``,
-        ``/dev/...`` or an inventory-style mapping."""
+        ``/dev/...`` or an inventory-style mapping. A pyserial URL device
+        (``serial:socket://host:port``, ``serial:rfc2217://host:port``) keeps
+        its port; a baud rate follows it as another ``:<baud>``
+        (``serial:socket://host:7777:115200``)."""
         if isinstance(spec, SmpTarget):
             return spec
         if isinstance(spec, Mapping):
@@ -94,6 +97,14 @@ class SmpTarget:
         if text.startswith("serial:") or text.startswith("/dev/") or text.upper().startswith(
                 "COM"):
             rest = text.removeprefix("serial:")
+            if "://" in rest:
+                # pyserial URL: the ":<port>" of scheme://host:port is not a
+                # baud rate; one follows the port as another ":<digits>"
+                scheme, _, addr = rest.partition("://")
+                head, sep, baud = addr.rpartition(":")
+                if sep and baud.isdigit() and (":" in head or not head):
+                    return cls("serial", device=f"{scheme}://{head}", baud=int(baud))
+                return cls("serial", device=rest)
             dev, sep, baud = rest.rpartition(":")
             if sep and baud.isdigit():
                 return cls("serial", device=dev, baud=int(baud))
@@ -263,13 +274,16 @@ class Node:
         """Validate, stage and activate a configuration document.
 
         Unless ``force`` is set nothing is sent when the node's active
-        document already has the same SHA-256. Otherwise the document is
-        uploaded to ``/lfs/cfg/<doc>.json.new`` and, with ``reload``, activated
-        with ``uc_node reload``; the active document's hash is then checked.
-        Without ``reload`` the staged file waits for the next reload or boot.
+        document already has the same SHA-256; a staged document left behind
+        (e.g. by an earlier push without ``reload``) is then removed, since
+        the next reload or boot would activate it (:meth:`clear_staged`).
+        Otherwise the document is uploaded to ``/lfs/cfg/<doc>.json.new`` and,
+        with ``reload``, activated with ``uc_node reload``; the active
+        document's hash is then checked. Without ``reload`` the staged file
+        waits for the next reload or boot.
 
         Returns ``{"doc", "path", "staged_path", "uploaded", "sha256", "size",
-        "reloaded", "activated", "reboot_required"}``.
+        "reloaded", "activated", "reboot_required", "staged_cleared"}``.
 
         Raises:
             ManifestError: ``doc`` violates ``schemas/<doc_name>.schema.json``.
@@ -288,8 +302,10 @@ class Node:
         staged = path + STAGED_SUFFIX
         out: dict[str, Any] = {"doc": doc_name, "path": path, "staged_path": staged,
                                "uploaded": False, "sha256": sha, "size": len(data),
-                               "reloaded": False, "activated": False, "reboot_required": False}
+                               "reloaded": False, "activated": False, "reboot_required": False,
+                               "staged_cleared": False}
         if not force and await self.file_sha256(path) == sha:
+            out["staged_cleared"] = (await self.clear_staged(doc_name))["cleared"]
             out["activated"] = True
             return out
         async with self._lock:
@@ -315,6 +331,39 @@ class Node:
                 f"documents ({staged})?")
         out["activated"] = True
         return out
+
+    async def clear_staged(self, doc: str) -> dict[str, Any]:
+        """Remove a staged ``/lfs/cfg/<doc>.json.new``: the node would activate
+        it at the next reload or boot, whatever the active document is.
+
+        The file is deleted with the shell command ``fs rm``; where that is
+        not available it is overwritten with the active document, so that
+        activating it changes nothing. Returns ``{"doc", "staged_path",
+        "cleared", "how"}`` (``cleared`` false: there was none).
+
+        Raises:
+            HarnessError: the staged file is still there and there is no
+                active document to replace it with.
+        """
+        if doc not in DOC_NAMES:
+            raise HarnessError(f"unknown document {doc!r}")
+        staged = doc_path(doc) + STAGED_SUFFIX
+        out: dict[str, Any] = {"doc": doc, "staged_path": staged, "cleared": False, "how": None}
+        if await self.file_sha256(staged) is None:
+            return out
+        try:
+            await self.shell(["fs", "rm", staged])
+        except (SmpError, HarnessTimeout):
+            pass  # no shell group: overwrite below
+        if await self.file_sha256(staged) is None:
+            return {**out, "cleared": True, "how": "removed"}
+        active = await self.download(doc_path(doc))
+        if active is None:
+            raise HarnessError(f"{self.name}: cannot remove the stale staged document {staged} "
+                               f"and there is no active {doc}.json to replace it with")
+        async with self._lock:
+            await (await self.smp()).fs_upload(staged, active)
+        return {**out, "cleared": True, "how": "replaced by the active document"}
 
     # --- applications -------------------------------------------------------------------------
 

@@ -46,6 +46,7 @@ static const struct {
 	{-ENOENT, UC_ERR_NOT_FOUND, UC_MGMT_RC_NOT_FOUND},
 	{-EACCES, UC_ERR_PERM, UC_MGMT_RC_PERM},
 	{-ETIMEDOUT, UC_ERR_TIMEOUT, UC_MGMT_RC_BUSY},
+	{-ECANCELED, UC_ERR_TIMEOUT, UC_MGMT_RC_BUSY},
 	{-EBUSY, UC_ERR_BUSY, UC_MGMT_RC_BUSY},
 	{-EAGAIN, UC_ERR_BUSY, UC_MGMT_RC_BUSY},
 	{-ENOMEM, UC_ERR_NO_MEM, UC_MGMT_RC_NO_MEM},
@@ -237,7 +238,44 @@ ZTEST(uc_common, test_value_from_double)
 	zassert_ok(uc_value_from_double(OBJECT_DEVICE, PROP_APDU_TIMEOUT, 4294967295.0, &v));
 	zassert_equal(v.type.Unsigned_Int, 4294967295U);
 
+	/* numeric standard objects of remote devices (uc_remote_write) */
+	zassert_ok(uc_value_from_double(OBJECT_INTEGER_VALUE, PROP_PRESENT_VALUE, -7.0, &v));
+	zassert_equal(v.tag, BACNET_APPLICATION_TAG_SIGNED_INT);
+	zassert_equal(v.type.Signed_Int, -7);
+	zassert_ok(uc_value_from_double(OBJECT_INTEGER_VALUE, PROP_COV_INCREMENT, 2.0, &v));
+	zassert_equal(v.tag, BACNET_APPLICATION_TAG_UNSIGNED_INT);
+	zassert_ok(uc_value_from_double(OBJECT_INTEGER_VALUE, PROP_HIGH_LIMIT, -2.0, &v));
+	zassert_equal(v.tag, BACNET_APPLICATION_TAG_SIGNED_INT);
+	zassert_ok(uc_value_from_double(OBJECT_POSITIVE_INTEGER_VALUE, PROP_PRESENT_VALUE, 9.0,
+					&v));
+	zassert_equal(v.tag, BACNET_APPLICATION_TAG_UNSIGNED_INT);
+	zassert_equal(v.type.Unsigned_Int, 9);
+	zassert_ok(uc_value_from_double(OBJECT_LARGE_ANALOG_VALUE, PROP_PRESENT_VALUE, 1e300, &v));
+	zassert_equal(v.tag, BACNET_APPLICATION_TAG_DOUBLE);
+	zassert_equal(v.type.Double, 1e300);
+	zassert_ok(uc_value_from_double(OBJECT_LARGE_ANALOG_VALUE, PROP_PRIORITY_ARRAY, 0.5, &v));
+	zassert_equal(v.tag, BACNET_APPLICATION_TAG_DOUBLE);
+	zassert_ok(uc_value_from_double(OBJECT_LOOP, PROP_SETPOINT, 21.5, &v));
+	zassert_equal(v.tag, BACNET_APPLICATION_TAG_REAL);
+	zassert_ok(uc_value_from_double(OBJECT_LOOP, PROP_PROPORTIONAL_CONSTANT, 0.8, &v));
+	zassert_equal(v.tag, BACNET_APPLICATION_TAG_REAL);
+	zassert_ok(uc_value_from_double(OBJECT_LOOP, PROP_ACTION, 1.0, &v));
+	zassert_equal(v.tag, BACNET_APPLICATION_TAG_ENUMERATED);
+	zassert_ok(uc_value_from_double(OBJECT_LIGHTING_OUTPUT, PROP_PRESENT_VALUE, 50.0, &v));
+	zassert_equal(v.tag, BACNET_APPLICATION_TAG_REAL);
+	zassert_ok(uc_value_from_double(OBJECT_BINARY_LIGHTING_OUTPUT, PROP_PRESENT_VALUE, 2.0,
+					&v));
+	zassert_equal(v.tag, BACNET_APPLICATION_TAG_ENUMERATED);
+	zassert_equal(v.type.Enumerated, 2);
+	/* range checks of those datatypes */
+	zassert_equal(uc_value_from_double(OBJECT_INTEGER_VALUE, PROP_PRESENT_VALUE, 0.5, &v),
+		      -EINVAL);
+	zassert_equal(uc_value_from_double(OBJECT_POSITIVE_INTEGER_VALUE, PROP_PRESENT_VALUE,
+					   -1.0, &v),
+		      -EINVAL);
+
 	/* not numeric (checked before the value) */
+	zassert_equal(uc_value_from_double(OBJECT_COMMAND, PROP_ACTION, 1.0, &v), -EBADMSG);
 	zassert_equal(uc_value_from_double(OBJECT_ANALOG_INPUT, PROP_OBJECT_NAME, 1.0, &v),
 		      -EBADMSG);
 	zassert_equal(uc_value_from_double(OBJECT_ANALOG_INPUT, PROP_STATUS_FLAGS, 1.0, &v),

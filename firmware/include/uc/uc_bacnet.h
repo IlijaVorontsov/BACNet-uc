@@ -191,16 +191,23 @@ void uc_bn_set_write_hook(uc_bn_write_hook_t hook);
 
 /** ReadProperty. Binds the device (static binding, address cache or
  *  Who-Is) first. Returns 0, -ETIMEDOUT, -EHOSTUNREACH, -EREMOTEIO,
- *  -EBUSY (no free transaction slot) or -EINVAL. */
+ *  -EBUSY (no free transaction slot), -EINVAL or -ECANCELED.
+ *  cancel (optional): while it is non-zero no request is started, and a
+ *  caller waiting for a confirmation gives up within
+ *  UC_BN_CANCEL_POLL_MS once it becomes non-zero (the request is abandoned;
+ *  a late confirmation is dropped). */
+#define UC_BN_CANCEL_POLL_MS 50
 int uc_bn_remote_read(uint32_t device, uint16_t type, uint32_t instance,
 		      uint32_t prop, int32_t index,
-		      BACNET_APPLICATION_DATA_VALUE *out, uint32_t timeout_ms);
+		      BACNET_APPLICATION_DATA_VALUE *out, uint32_t timeout_ms,
+		      const atomic_t *cancel);
 
-/** WriteProperty (value NULL tag = relinquish). */
+/** WriteProperty (value NULL tag = relinquish); cancel as above. */
 int uc_bn_remote_write(uint32_t device, uint16_t type, uint32_t instance,
 		       uint32_t prop, int32_t index,
 		       const BACNET_APPLICATION_DATA_VALUE *value,
-		       uint8_t priority, uint32_t timeout_ms);
+		       uint8_t priority, uint32_t timeout_ms,
+		       const atomic_t *cancel);
 
 /* ---------------------------------------------------------------------- */
 /* COV subscriptions for applications                                      */

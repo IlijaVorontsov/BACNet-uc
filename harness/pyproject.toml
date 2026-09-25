@@ -41,6 +41,7 @@ asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 markers = [
     "e2e: end-to-end tests against the native_sim firmware (skipped unless BACNET_UC_FIRMWARE names its zephyr.exe)",
+    "real_port_check: simulation test that uses the real host UDP port check",
 ]
 filterwarnings = [
     # pyroute2 forks to create network namespaces (netns simulation)

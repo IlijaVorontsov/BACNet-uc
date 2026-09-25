@@ -226,3 +226,9 @@ def test_mcuboot_image_hash(tmp_path: Path) -> None:
     (bdir / "zephyr" / "zephyr.signed.bin").write_bytes(hdr + body + prot + unprot)
     assert firmware.update_image(bdir).name == "zephyr.signed.bin"
     assert firmware.firmware_info(bdir)["updatable"] is True
+
+
+def test_node_add_serial_url(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+    rc, out, _ = run(capsys, tmp_path, "node", "add", "bench", "--serial",
+                     "socket://localhost:7777", "--no-probe")
+    assert rc == 0 and "serial:socket://localhost:7777:115200" in out

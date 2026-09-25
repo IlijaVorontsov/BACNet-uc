@@ -94,6 +94,8 @@ int uc_err_to_api(int err)
 	case -EPERM:
 		return UC_ERR_PERM;
 	case -ETIMEDOUT:
+	case -ECANCELED:
+		/* ECANCELED: request abandoned because the app is stopping */
 		return UC_ERR_TIMEOUT;
 	case -EBUSY:
 	case -EAGAIN:
@@ -140,6 +142,7 @@ int uc_err_to_mgmt(int err)
 	case -EPERM:
 		return UC_MGMT_RC_PERM;
 	case -ETIMEDOUT:
+	case -ECANCELED:
 	case -EBUSY:
 	case -EAGAIN:
 		return UC_MGMT_RC_BUSY;
@@ -186,6 +189,8 @@ const char *uc_err_str(int err)
 		return "permission denied";
 	case -ETIMEDOUT:
 		return "timeout";
+	case -ECANCELED:
+		return "cancelled";
 	case -EBUSY:
 	case -EAGAIN:
 		return "busy";
@@ -388,10 +393,69 @@ int uc_value_to_double(const BACNET_APPLICATION_DATA_VALUE *v, double *out)
 }
 
 /*
+ * Datatype of the present value (also Relinquish_Default and the
+ * Priority_Array elements) of an object type, for the local object types
+ * and the numeric standard object types an application may write on a
+ * remote device (uc_remote_write). -1: not a single numeric datatype.
+ */
+static int present_value_tag(uint16_t object_type)
+{
+	if (uc_obj_type_is_analog(object_type)) {
+		return BACNET_APPLICATION_TAG_REAL;
+	}
+	if (uc_obj_type_is_binary(object_type)) {
+		return BACNET_APPLICATION_TAG_ENUMERATED;
+	}
+	if (uc_obj_type_is_multistate(object_type)) {
+		return BACNET_APPLICATION_TAG_UNSIGNED_INT;
+	}
+
+	switch (object_type) {
+	case OBJECT_LOOP:
+	case OBJECT_PULSE_CONVERTER:
+	case OBJECT_LIGHTING_OUTPUT:
+		return BACNET_APPLICATION_TAG_REAL;
+	case OBJECT_LARGE_ANALOG_VALUE:
+		return BACNET_APPLICATION_TAG_DOUBLE;
+	case OBJECT_INTEGER_VALUE:
+		return BACNET_APPLICATION_TAG_SIGNED_INT;
+	case OBJECT_POSITIVE_INTEGER_VALUE:
+	case OBJECT_ACCUMULATOR:
+		return BACNET_APPLICATION_TAG_UNSIGNED_INT;
+	case OBJECT_BINARY_LIGHTING_OUTPUT:
+		/* BACnetBinaryLightingPV */
+		return BACNET_APPLICATION_TAG_ENUMERATED;
+	default:
+		return -1;
+	}
+}
+
+/* Limits and increments of the value objects whose present value is not
+ * REAL have the datatype of the present value (COV_Increment and Deadband
+ * of Integer Value are Unsigned). */
+static int value_limit_tag(uint16_t object_type, uint32_t property)
+{
+	switch (object_type) {
+	case OBJECT_LARGE_ANALOG_VALUE:
+		return BACNET_APPLICATION_TAG_DOUBLE;
+	case OBJECT_INTEGER_VALUE:
+		return ((property == PROP_COV_INCREMENT) || (property == PROP_DEADBAND))
+			       ? BACNET_APPLICATION_TAG_UNSIGNED_INT
+			       : BACNET_APPLICATION_TAG_SIGNED_INT;
+	case OBJECT_POSITIVE_INTEGER_VALUE:
+		return BACNET_APPLICATION_TAG_UNSIGNED_INT;
+	default:
+		return BACNET_APPLICATION_TAG_REAL;
+	}
+}
+
+/*
  * Datatype of a numeric property. bacapp_known_property_tag() only knows
  * the constructed datatypes and returns -1 for primitive ones, so the
- * primitive numeric properties of the supported object types (and of the
- * device object) are listed here.
+ * primitive numeric properties of the supported object types, of the
+ * device object and of the numeric standard objects a remote device may
+ * have (Loop, Lighting Output, Integer / Large Analog / Positive Integer
+ * Value, ...) are listed here.
  */
 static int numeric_property_tag(uint16_t object_type, uint32_t property)
 {
@@ -399,16 +463,7 @@ static int numeric_property_tag(uint16_t object_type, uint32_t property)
 	case PROP_PRESENT_VALUE:
 	case PROP_RELINQUISH_DEFAULT:
 	case PROP_PRIORITY_ARRAY:
-		if (uc_obj_type_is_analog(object_type)) {
-			return BACNET_APPLICATION_TAG_REAL;
-		}
-		if (uc_obj_type_is_binary(object_type)) {
-			return BACNET_APPLICATION_TAG_ENUMERATED;
-		}
-		if (uc_obj_type_is_multistate(object_type)) {
-			return BACNET_APPLICATION_TAG_UNSIGNED_INT;
-		}
-		return -1;
+		return present_value_tag(object_type);
 	case PROP_COV_INCREMENT:
 	case PROP_HIGH_LIMIT:
 	case PROP_LOW_LIMIT:
@@ -416,7 +471,26 @@ static int numeric_property_tag(uint16_t object_type, uint32_t property)
 	case PROP_MIN_PRES_VALUE:
 	case PROP_MAX_PRES_VALUE:
 	case PROP_RESOLUTION:
+		return value_limit_tag(object_type, property);
+	/* Loop */
+	case PROP_SETPOINT:
+	case PROP_CONTROLLED_VARIABLE_VALUE:
+	case PROP_PROPORTIONAL_CONSTANT:
+	case PROP_INTEGRAL_CONSTANT:
+	case PROP_DERIVATIVE_CONSTANT:
+	case PROP_BIAS:
+	case PROP_MAXIMUM_OUTPUT:
+	case PROP_MINIMUM_OUTPUT:
+	/* Lighting Output */
+	case PROP_TRACKING_VALUE:
+	case PROP_DEFAULT_RAMP_RATE:
+	case PROP_DEFAULT_STEP_INCREMENT:
+	case PROP_MIN_ACTUAL_VALUE:
+	case PROP_MAX_ACTUAL_VALUE:
 		return BACNET_APPLICATION_TAG_REAL;
+	case PROP_ACTION:
+		/* Loop: BACnetAction (Command: a list of action lists) */
+		return (object_type == OBJECT_LOOP) ? BACNET_APPLICATION_TAG_ENUMERATED : -1;
 	case PROP_OUT_OF_SERVICE:
 	case PROP_DAYLIGHT_SAVINGS_STATUS:
 	case PROP_EVENT_DETECTION_ENABLE:
@@ -447,6 +521,8 @@ static int numeric_property_tag(uint16_t object_type, uint32_t property)
 	case PROP_ELAPSED_ACTIVE_TIME:
 	case PROP_MAX_INFO_FRAMES:
 	case PROP_MAX_MASTER:
+	case PROP_UPDATE_INTERVAL:
+	case PROP_DEFAULT_FADE_TIME:
 		return BACNET_APPLICATION_TAG_UNSIGNED_INT;
 	case PROP_UTC_OFFSET:
 		return BACNET_APPLICATION_TAG_SIGNED_INT;

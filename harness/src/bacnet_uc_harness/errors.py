@@ -60,6 +60,30 @@ class SmpError(HarnessError):
         super().__init__(message)
 
 
+class ReloadError(SmpError):
+    """``uc_node reload`` failed for at least one document.
+
+    The node loads and applies each requested document on its own: with
+    ``"all"`` the documents that did not fail are active and applied, and the
+    response carries ``reboot_required`` next to the first error.
+
+    Attributes:
+        doc: the requested document (``"device"``, ``"io"``, ``"apps"`` or
+            ``"all"``).
+        reboot_required: a document that was applied needs a reboot.
+    """
+
+    def __init__(self, doc: str, exc: SmpError) -> None:
+        self.doc = doc
+        self.reboot_required = bool(exc.response.get("reboot_required", False))
+        what = ("a document failed; the others were applied" if doc == "all"
+                else f"{doc}.json failed")
+        super().__init__(exc.group, exc.rc, exc.rc_name,
+                         f"uc_node reload {doc}: rc={exc.rc} ({exc.rc_name}): {what}"
+                         f"{'; reboot required' if self.reboot_required else ''} (the node "
+                         "log names the document)", exc.response)
+
+
 class BacnetError(HarnessError):
     """A BACnet confirmed request was answered with Error, Reject or Abort.
 

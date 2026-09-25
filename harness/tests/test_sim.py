@@ -33,14 +33,31 @@ def fake_exe(tmp_path: Path) -> Path:
     return exe
 
 
+@pytest.fixture(autouse=True)
+def _host_ports_free(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Host-mode tests with the fake executable must not depend on UDP 1337 and
+    47808 being free on the machine (other nodes may run there)."""
+    if "real_port_check" not in request.keywords:
+        monkeypatch.setattr(sim, "_udp_port_free", lambda port, host="0.0.0.0": True)
+
+
 class FakeBackend(sim.NetBackend):
     name = "fake"
 
-    def __init__(self, fail_on: str | None = None) -> None:
+    def __init__(self, fail_on: str | None = None, existing: set[str] | None = None) -> None:
         self.calls: list[tuple[Any, ...]] = []
         self.fail_on = fail_on
+        self.existing = existing or set()
+
+    def link_exists(self, name: str) -> bool:
+        return name in self.existing
+
+    def netns_exists(self, ns: str) -> bool:
+        return ns in self.existing
 
     def setup_bridge(self, bridge: str, host_cidr: str) -> None:
+        if bridge == self.fail_on:
+            raise HarnessError("RTNETLINK answers: File exists")
         self.calls.append(("bridge", bridge, host_cidr))
 
     def add_node(self, ns: str, host_if: str, cidr: str, bridge: str, gateway: str) -> None:
@@ -209,8 +226,34 @@ def test_netns_setup_failure_rolls_back(tmp_path: Path, fake_exe: Path,
     mgr = sim.SimManager(tmp_path, "netns", backend=backend)
     with pytest.raises(HarnessError, match="network setup failed"):
         mgr.start(m.load_system(EXAMPLES / "sim-demo.yaml"), fake_exe)
-    assert backend.calls[-1][0] == "teardown"
+    assert backend.calls[-1] == ("teardown", "bnuc0", ("bnuc-sim-a", "bnuc-sim-b"))
     assert not (tmp_path / sim.STATE_FILE).exists()
+
+
+@pytest.mark.parametrize("existing", [{"bnuc0"}, {"bnuc-sim-b"}, {"vbnuc1"}])
+def test_netns_refuses_to_reuse_another_simulations_network(
+        tmp_path: Path, fake_exe: Path, monkeypatch: pytest.MonkeyPatch,
+        existing: set[str]) -> None:
+    """The bridge and namespaces of a running simulation are never torn down
+    by a start that cannot set up its own network (HAR-4)."""
+    monkeypatch.setattr(sim, "_has_caps", lambda *caps: True)
+    backend = FakeBackend(existing=existing)
+    mgr = sim.SimManager(tmp_path, "netns", backend=backend)
+    with pytest.raises(HarnessError, match="already exist"):
+        mgr.start(m.load_system(EXAMPLES / "sim-demo.yaml"), fake_exe)
+    assert backend.calls == []  # nothing set up, nothing torn down
+    assert not (tmp_path / sim.STATE_FILE).exists()
+
+
+def test_netns_bridge_failure_keeps_foreign_namespaces(tmp_path: Path, fake_exe: Path,
+                                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sim, "_has_caps", lambda *caps: True)
+    backend = FakeBackend(fail_on="bnuc0")
+    mgr = sim.SimManager(tmp_path, "netns", backend=backend)
+    with pytest.raises(HarnessError, match="network setup failed"):
+        mgr.start(m.load_system(EXAMPLES / "sim-demo.yaml"), fake_exe)
+    # only the half-made bridge of this call; no namespace was created
+    assert backend.calls == [("teardown", "bnuc0", ())]
 
 
 def test_process_exiting_at_start(tmp_path: Path) -> None:
@@ -300,3 +343,77 @@ async def test_rebooter_falls_back_to_smp(tmp_path: Path, fake_exe: Path,
         caps["ok"] = True
         mgr.stop()
         await ctx.close()
+
+
+@pytest.mark.real_port_check
+def test_host_mode_refuses_ports_in_use(tmp_path: Path, fake_exe: Path,
+                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    """A second host-mode node would run without its SMP server while the
+    harness manages the node that owns the port (HAR-3)."""
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as smp, \
+            socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as free:
+        smp.bind(("0.0.0.0", 0))
+        free.bind(("0.0.0.0", 0))
+        taken, spare = smp.getsockname()[1], free.getsockname()[1]
+        free.close()
+        monkeypatch.setattr(sim, "SMP_PORT", taken)
+        doc = {"apiVersion": "bacnet-uc/v1", "kind": "System", "metadata": {"name": "one"},
+               "nodes": [{"name": "solo", "board": "native_sim/native/64",
+                          "transport": {"kind": "sim"}, "bacnet": {"udp_port": spare},
+                          "device": {"instance": 5, "name": "solo"}}]}
+        mgr = sim.SimManager(tmp_path / "wd", "host")
+        with pytest.raises(HarnessError, match=f"UDP {taken} \\(SMP\\) already in use"):
+            mgr.start(m.load_system_dict(doc), fake_exe, startup_wait=0.1)
+        assert mgr.state is None and not (tmp_path / "wd" / sim.STATE_FILE).exists()
+    # both free again: the start goes ahead
+    mgr = sim.SimManager(tmp_path / "wd", "host")
+    mgr.start(m.load_system_dict(doc), fake_exe, startup_wait=0.1)
+    mgr.stop()
+
+
+def test_bind_failure_in_the_log_fails_the_start(tmp_path: Path) -> None:
+    exe = tmp_path / "busy.exe"
+    exe.write_text("#!/bin/sh\necho '[00:00:00.010,000] <err> smp_udp: Could not bind to "
+                   "receive socket (IPv4), err: 98'\nexec sleep 30\n")
+    exe.chmod(0o755)
+    mgr = sim.SimManager(tmp_path / "wd", "host")
+    with pytest.raises(HarnessError, match="could not bind"):
+        mgr.start(one_node_system(), exe, startup_wait=0.3)
+    assert not (tmp_path / "wd" / sim.STATE_FILE).exists()
+
+
+def test_stale_state_never_signals_a_reused_pid(tmp_path: Path, fake_exe: Path) -> None:
+    """After a host reboot or crash, a pid in sim-state.json may belong to an
+    unrelated process: it is neither reported alive nor killed (HAR-5)."""
+    import subprocess
+    import time
+
+    other = subprocess.Popen(["sleep", "30"], start_new_session=True)
+    try:
+        wd = tmp_path / "wd"
+        wd.mkdir()
+        node = sim.SimNode(name="solo", index=1, address="127.0.0.1",
+                           flash=str(wd / "solo.flash.bin"), log=str(wd / "solo.log"), seed=1,
+                           command=[str(fake_exe)], pid=other.pid,
+                           started_at=time.time() - 86400, proc_start=time.time() - 86400)
+        state = sim.SimState(system="one", mode="host", workdir=str(wd), exe=str(fake_exe),
+                             nodes={"solo": node})
+        (wd / sim.STATE_FILE).write_text(__import__("json").dumps(state.to_dict()))
+        mgr = sim.SimManager.load(wd)
+        assert mgr.status()["nodes"]["solo"]["alive"] is False
+        assert mgr.stop() == {"stopped": ["solo"], "errors": []}
+        assert other.poll() is None  # the unrelated process survived
+        # the stale state does not block a new start
+        new = sim.SimManager(wd, "host")
+        new.start(one_node_system(), fake_exe, startup_wait=0.1)
+        try:
+            st = new.status()["nodes"]["solo"]
+            assert st["alive"] and st["pid"] != other.pid
+        finally:
+            new.stop()
+        assert other.poll() is None
+    finally:
+        other.kill()
+        other.wait()

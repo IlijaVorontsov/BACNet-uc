@@ -300,6 +300,35 @@ async def test_build_and_deploy_app(server: Any, fake_node: FakeNode,
         assert exc.value.payload["error"] == "WasmBuildError" and exc.value.payload["output"]
 
 
+@needs_clang
+async def test_deploy_aot_derives_perms_from_its_wasm(
+        server: Any, make_fake_node: Callable[..., Awaitable[FakeNode]], tmp_path: Path) -> None:
+    """An .aot file has no readable imports: the permissions come from the
+    .wasm next to it, never a fixed guess (HAR-6)."""
+    node = await make_fake_node(1005, wasm_aot=True)
+    async with connect(server) as client:
+        await add(client, "n1", node)
+        src = REPO / "wasm" / "examples" / "blinky" / "blinky.c"
+        built = await client.call("build_app", name="blinky", source_path=str(src),
+                                  output_dir=str(tmp_path))
+        aot = tmp_path / "blinky.aot"
+        aot.write_bytes(b"\0aot" + b"\0" * 60)  # stands in for build_app(aot_board=...)
+        res = await client.call("deploy_app", node="n1", name="blinky", module_path=str(aot))
+        assert res["perms_derived"] == built["wasm"]["perms"] == ["bacnet.local", "io"]
+        assert res["perms_derived_from"] == str(tmp_path / "blinky.wasm")
+        assert node.apps["blinky"]["perms"] == ["bacnet.local", "io"]
+        # without the .wasm the permissions must be given
+        lone = tmp_path / "lone" / "x.aot"
+        lone.parent.mkdir()
+        lone.write_bytes(aot.read_bytes())
+        with pytest.raises(ToolCallError) as exc:
+            await client.call("deploy_app", node="n1", name="x", module_path=str(lone))
+        assert "pass perms" in exc.value.payload["message"]
+        res = await client.call("deploy_app", node="n1", name="x", module_path=str(lone),
+                                perms=["bacnet.local"])
+        assert node.apps["x"]["perms"] == ["bacnet.local"] and "perms_derived" not in res
+
+
 async def test_deploy_rejects_bad_module(server: Any, fake_node: FakeNode,
                                          tmp_path: Path) -> None:
     async with connect(server) as client:

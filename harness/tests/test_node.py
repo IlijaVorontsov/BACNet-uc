@@ -12,7 +12,7 @@ import pytest
 
 from bacnet_uc_harness.errors import HarnessError, SmpError
 from bacnet_uc_harness.manifest import ManifestError
-from bacnet_uc_harness.node import Node
+from bacnet_uc_harness.node import Node, SmpTarget
 from bacnet_uc_harness.render import doc_bytes
 from bacnet_uc_harness.smp import groups as g
 from bacnet_uc_harness.testing import FakeNode
@@ -90,6 +90,41 @@ async def test_push_config_without_reload(node: Node, fake_node: FakeNode) -> No
     assert "/lfs/cfg/io.json" not in fake_node.files
     assert await node.reload("io") is False  # activates the staged document
     assert fake_node.files["/lfs/cfg/io.json"] == doc_bytes(IO)
+
+
+async def test_push_in_sync_removes_a_stale_staged_document(node: Node,
+                                                            fake_node: FakeNode) -> None:
+    """A document staged without reload must not win at the next reload or
+    boot after the active one was pushed again (HAR-2)."""
+    await node.push_config("io", IO)
+    other = {"schema": 1, "points": [{"channel": "ai1", "type": "analog-input", "instance": 7}]}
+    staged = await node.push_config("io", other, reload=False)
+    assert staged["uploaded"] and "/lfs/cfg/io.json.new" in fake_node.files
+    again = await node.push_config("io", IO)
+    assert not again["uploaded"] and again["activated"] and again["staged_cleared"]
+    assert "/lfs/cfg/io.json.new" not in fake_node.files
+    fake_node._reset()  # a reboot activates staged documents
+    assert fake_node.files["/lfs/cfg/io.json"] == doc_bytes(IO)
+    assert (0, 7) not in fake_node.objects
+
+
+async def test_clear_staged_without_shell_overwrites(node: Node, fake_node: FakeNode,
+                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without the shell group the stale staged file becomes the active one."""
+    await node.push_config("io", IO)
+    other = {"schema": 1, "points": []}
+    await node.push_config("io", other, reload=False)
+
+    async def no_shell(argv: list[str]) -> tuple[int, str]:
+        raise SmpError(None, g.MGMT_ERR_ENOTSUP)
+
+    monkeypatch.setattr(node, "shell", no_shell)
+    res = await node.clear_staged("io")
+    assert res["cleared"] and res["how"] == "replaced by the active document"
+    assert fake_node.files["/lfs/cfg/io.json.new"] == fake_node.files["/lfs/cfg/io.json"]
+    assert await node.reload("io") is False
+    assert fake_node.files["/lfs/cfg/io.json"] == doc_bytes(IO)
+    assert (await node.clear_staged("io"))["cleared"] is False  # nothing staged now
 
 
 async def test_push_config_needs_staging_firmware(node: Node, fake_node: FakeNode) -> None:
@@ -191,3 +226,19 @@ async def test_deploy_large_manifest_via_apps_json(node: Node, fake_node: FakeNo
     res = await node.deploy_app("big", wasm_module, params=params, perms=["bacnet.local"])
     assert res["installed_via"] == "apps.json" and res["status"]["state"] == "running"
     assert fake_node.apps["big"]["params"]["key0"] == "w"
+
+
+@pytest.mark.parametrize(("spec", "device", "baud"), [
+    ("serial:/dev/ttyACM0", "/dev/ttyACM0", 115200),
+    ("serial:/dev/ttyACM0:57600", "/dev/ttyACM0", 57600),
+    ("/dev/ttyUSB1:9600", "/dev/ttyUSB1", 9600),
+    ("serial:socket://localhost:7777", "socket://localhost:7777", 115200),
+    ("serial:rfc2217://bench:4000", "rfc2217://bench:4000", 115200),
+    ("serial:socket://localhost:7777:57600", "socket://localhost:7777", 57600),
+    ("serial:loop://", "loop://", 115200),
+])
+def test_smp_target_serial_urls(spec: str, device: str, baud: int) -> None:
+    """A pyserial URL keeps its port; the baud rate follows it (HAR-9)."""
+    t = SmpTarget.parse(spec)
+    assert (t.kind, t.device, t.baud) == ("serial", device, baud)
+    assert SmpTarget.parse(str(t)) == t

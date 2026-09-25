@@ -520,3 +520,55 @@ async def test_paging(smp_client: SmpClient, fake_node: FakeNode, wasm_module: b
     assert len(objects) == 22
     reads = [e for e in fake_node.smp_log if e[1:] == (g.GROUP_UC_NODE, g.UC_NODE_OBJECTS)]
     assert len(reads) == 3  # pages of 8
+
+
+@pytest.mark.parametrize("lost_off", [0, 1, -1], ids=["first", "second", "last"])
+async def test_fs_upload_survives_a_lost_response(fake_node: FakeNode, lost_off: int) -> None:
+    """A lost chunk response makes the client retransmit a chunk the node has
+    already written (Zephyr's fs_mgmt then answers with a wrong offset or
+    FILE_OFFSET_NOT_VALID): the file must still end up intact (HAR-1)."""
+    data = bytes((i * 7 + 3) & 0xFF for i in range(3000))
+    client = await connect_udp(fake_node.host, fake_node.smp_port, timeout=0.2)
+    try:
+        await client.max_frame()
+        offsets: list[int] = []
+        real = fake_node._smp_handlers[(g.GROUP_FS, g.FS_FILE)][1]
+
+        def record(req: dict) -> dict:
+            offsets.append(req["off"])
+            return real(req)
+
+        fake_node._smp_handlers[(g.GROUP_FS, g.FS_FILE)] = (None, record)
+        await client.fs_upload("/lfs/apps/p.bin", data)  # learn the chunk offsets
+        chunk_offs = sorted(set(offsets))
+        assert len(chunk_offs) >= 3
+        target = chunk_offs[lost_off]
+        fake_node.drop_next_smp_response(1, match=lambda r: r.get("off") == target
+                                         and r.get("name") == "/lfs/apps/x.bin")
+        await client.fs_upload("/lfs/apps/x.bin", data)
+        assert fake_node._drop_smp_rsp == 0  # the response was really dropped
+        assert fake_node.files["/lfs/apps/x.bin"] == data
+    finally:
+        await client.close()
+
+
+async def test_fs_upload_rejects_an_offset_it_did_not_ask_for(fake_node: FakeNode) -> None:
+    """A reply offset other than off + len(chunk) restarts the upload."""
+    data = bytes(range(256)) * 12
+    client = await connect_udp(fake_node.host, fake_node.smp_port, timeout=0.5)
+    try:
+        real = fake_node._smp_handlers[(g.GROUP_FS, g.FS_FILE)][1]
+        bogus = {"left": 1}
+
+        def skewed(req: dict) -> dict:
+            rsp = real(req)
+            if req["off"] == 0 and bogus["left"]:
+                bogus["left"] -= 1
+                return {"off": rsp["off"] * 2}  # as after a double write
+            return rsp
+
+        fake_node._smp_handlers[(g.GROUP_FS, g.FS_FILE)] = (None, skewed)
+        await client.fs_upload("/lfs/apps/y.bin", data)
+        assert fake_node.files["/lfs/apps/y.bin"] == data
+    finally:
+        await client.close()

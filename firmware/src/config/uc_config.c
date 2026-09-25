@@ -9,19 +9,22 @@
  *    object only; for nested objects and array elements that information is
  *    lost. Numbers are therefore decoded as JSON_TOK_FLOAT tokens (pointer
  *    and length of the number text, pointer NULL when the key is absent) and
- *    converted and range checked here with strtoll()/strtod(). Strings use
- *    JSON_TOK_STRING_BUF (unescaped into a fixed buffer; too long -> error;
- *    empty when absent). Booleans are preset to their default before
- *    parsing. The input buffer is not modified by these token types.
+ *    converted and range checked here with strtoll()/strtod(). Strings are
+ *    decoded as JSON_TOK_OPAQUE tokens (the escaped text between the
+ *    quotes, pointer NULL when the key is absent) and unescaped here by
+ *    tok_str(): the library's own JSON_TOK_STRING_BUF leaves \uXXXX escapes
+ *    as literal text and applies the length limit to the escaped text.
+ *    Booleans are preset to their default before parsing. The input buffer
+ *    is not modified by these token types.
  *  - Keys unknown to the descriptors are skipped by the library. The schemas
  *    forbid them ("additionalProperties": false); the firmware tolerates them.
  *  - Array overflow: the library returns -ENOSPC for a too long array in an
  *    object; an overflow inside an array element (apps[].params, apps[].perms)
  *    is reported by the library as a syntax error (-EINVAL).
  *
- * The parse scratch structures and the cache are large (io.json: ~11 KB
- * scratch + ~7 KB result); they live on the kernel heap or in .bss, never on
- * the caller's stack.
+ * The parse scratch structures and the cache are large (io.json: ~7 KB
+ * result); they live on the kernel heap or in .bss, never on the caller's
+ * stack.
  *
  * Staged documents: a client uploads <doc>.new (SMP fs group) and requests a
  * reload; load_doc() validates the staged file and renames it over the
@@ -159,6 +162,147 @@ static int tok_num(const struct json_obj_token *t, double *out)
 	}
 
 	*out = v;
+	return 0;
+}
+
+/* Four hex digits of a \uXXXX escape at p (p[0] == '\\', p[1] == 'u'). */
+static int esc_u16(const char *p, const char *end, uint32_t *out)
+{
+	uint32_t v = 0;
+
+	if ((end - p) < 6 || p[0] != '\\' || p[1] != 'u') {
+		return -EINVAL;
+	}
+	for (int i = 2; i < 6; i++) {
+		char c = p[i];
+
+		v <<= 4;
+		if (c >= '0' && c <= '9') {
+			v |= (uint32_t)(c - '0');
+		} else if (c >= 'a' && c <= 'f') {
+			v |= (uint32_t)(c - 'a' + 10);
+		} else if (c >= 'A' && c <= 'F') {
+			v |= (uint32_t)(c - 'A' + 10);
+		} else {
+			return -EINVAL;
+		}
+	}
+	*out = v;
+	return 0;
+}
+
+/* UTF-8 encoding of code point cp (1..0x10FFFF, no surrogate) into buf[4]. */
+static size_t utf8_put(uint32_t cp, char *buf)
+{
+	if (cp < 0x80U) {
+		buf[0] = (char)cp;
+		return 1;
+	}
+	if (cp < 0x800U) {
+		buf[0] = (char)(0xC0U | (cp >> 6));
+		buf[1] = (char)(0x80U | (cp & 0x3FU));
+		return 2;
+	}
+	if (cp < 0x10000U) {
+		buf[0] = (char)(0xE0U | (cp >> 12));
+		buf[1] = (char)(0x80U | ((cp >> 6) & 0x3FU));
+		buf[2] = (char)(0x80U | (cp & 0x3FU));
+		return 3;
+	}
+	buf[0] = (char)(0xF0U | (cp >> 18));
+	buf[1] = (char)(0x80U | ((cp >> 12) & 0x3FU));
+	buf[2] = (char)(0x80U | ((cp >> 6) & 0x3FU));
+	buf[3] = (char)(0x80U | (cp & 0x3FU));
+	return 4;
+}
+
+/*
+ * String field (JSON_TOK_OPAQUE token: the text between the quotes as it
+ * is in the document) unescaped into dst: \" \\ \/ \b \f \n \r \t and
+ * \uXXXX (UTF-16; a surrogate pair is one code point) as UTF-8. The size
+ * limit applies to the unescaped value (at most size - 1 bytes). An absent
+ * key gives "". Returns 0 or -EINVAL: too long, \u0000 (would end the C
+ * string), an unpaired surrogate or an unknown escape.
+ */
+static int tok_str(const struct json_obj_token *t, char *dst, size_t size)
+{
+	const char *p = t->start;
+	const char *end;
+	size_t n = 0;
+
+	if (size == 0U) {
+		return -EINVAL;
+	}
+	dst[0] = '\0';
+	if (p == NULL) {
+		return 0;
+	}
+	end = p + t->length;
+
+	while (p < end) {
+		char buf[4];
+		size_t len = 1;
+		uint32_t cp;
+		uint32_t lo;
+
+		if (*p != '\\') {
+			buf[0] = *p++;
+		} else if ((end - p) < 2) {
+			return -EINVAL;
+		} else {
+			switch (p[1]) {
+			case '"':
+			case '\\':
+			case '/':
+				buf[0] = p[1];
+				break;
+			case 'b':
+				buf[0] = '\b';
+				break;
+			case 'f':
+				buf[0] = '\f';
+				break;
+			case 'n':
+				buf[0] = '\n';
+				break;
+			case 'r':
+				buf[0] = '\r';
+				break;
+			case 't':
+				buf[0] = '\t';
+				break;
+			case 'u':
+				if (esc_u16(p, end, &cp) < 0) {
+					return -EINVAL;
+				}
+				if (cp >= 0xD800U && cp <= 0xDBFFU) {
+					/* high surrogate: the low one must follow */
+					if (esc_u16(p + 6, end, &lo) < 0 || lo < 0xDC00U ||
+					    lo > 0xDFFFU) {
+						return -EINVAL;
+					}
+					cp = 0x10000U + ((cp - 0xD800U) << 10) + (lo - 0xDC00U);
+					p += 6;
+				} else if ((cp >= 0xDC00U && cp <= 0xDFFFU) || cp == 0U) {
+					return -EINVAL;
+				}
+				len = utf8_put(cp, buf);
+				p += 4; /* the hex digits; the escape itself below */
+				break;
+			default:
+				return -EINVAL;
+			}
+			p += 2;
+		}
+
+		if (n + len >= size) {
+			return -EINVAL;
+		}
+		memcpy(dst + n, buf, len);
+		n += len;
+	}
+
+	dst[n] = '\0';
 	return 0;
 }
 
@@ -342,29 +486,30 @@ static int map_parse_error(int64_t ret, const char *doc)
 /* device.json                                                             */
 /* ---------------------------------------------------------------------- */
 
+/* Strings are JSON_TOK_OPAQUE tokens, unescaped by tok_str(). */
 struct jd_device {
 	struct json_obj_token instance;
-	char name[UC_NAME_MAX];
-	char description[UC_NAME_MAX];
-	char location[UC_NAME_MAX];
+	struct json_obj_token name;
+	struct json_obj_token description;
+	struct json_obj_token location;
 };
 
 struct jd_network {
 	bool dhcp;
-	char ipv4[16];
-	char netmask[16];
-	char gateway[16];
+	struct json_obj_token ipv4;
+	struct json_obj_token netmask;
+	struct json_obj_token gateway;
 };
 
 struct jd_fd {
-	char bbmd[16];
+	struct json_obj_token bbmd;
 	struct json_obj_token port;
 	struct json_obj_token ttl_s;
 };
 
 struct jd_binding {
 	struct json_obj_token device;
-	char address[16];
+	struct json_obj_token address;
 	struct json_obj_token port;
 };
 
@@ -375,12 +520,11 @@ struct jd_bacnet {
 	struct jd_fd foreign_device;
 	struct jd_binding static_bindings[CONFIG_UC_BACNET_STATIC_BINDINGS_MAX];
 	size_t static_bindings_len;
-	/* larger than the limit so that a long password gets its own message */
-	char password[UC_NAME_MAX];
+	struct json_obj_token password;
 };
 
 struct jd_log {
-	char level[8];
+	struct json_obj_token level;
 };
 
 struct jd_doc {
@@ -393,27 +537,27 @@ struct jd_doc {
 
 static const struct json_obj_descr jd_device_descr[] = {
 	JSON_OBJ_DESCR_PRIM(struct jd_device, instance, JSON_TOK_FLOAT),
-	JSON_OBJ_DESCR_PRIM(struct jd_device, name, JSON_TOK_STRING_BUF),
-	JSON_OBJ_DESCR_PRIM(struct jd_device, description, JSON_TOK_STRING_BUF),
-	JSON_OBJ_DESCR_PRIM(struct jd_device, location, JSON_TOK_STRING_BUF),
+	JSON_OBJ_DESCR_PRIM(struct jd_device, name, JSON_TOK_OPAQUE),
+	JSON_OBJ_DESCR_PRIM(struct jd_device, description, JSON_TOK_OPAQUE),
+	JSON_OBJ_DESCR_PRIM(struct jd_device, location, JSON_TOK_OPAQUE),
 };
 
 static const struct json_obj_descr jd_network_descr[] = {
 	JSON_OBJ_DESCR_PRIM(struct jd_network, dhcp, JSON_TOK_TRUE),
-	JSON_OBJ_DESCR_PRIM(struct jd_network, ipv4, JSON_TOK_STRING_BUF),
-	JSON_OBJ_DESCR_PRIM(struct jd_network, netmask, JSON_TOK_STRING_BUF),
-	JSON_OBJ_DESCR_PRIM(struct jd_network, gateway, JSON_TOK_STRING_BUF),
+	JSON_OBJ_DESCR_PRIM(struct jd_network, ipv4, JSON_TOK_OPAQUE),
+	JSON_OBJ_DESCR_PRIM(struct jd_network, netmask, JSON_TOK_OPAQUE),
+	JSON_OBJ_DESCR_PRIM(struct jd_network, gateway, JSON_TOK_OPAQUE),
 };
 
 static const struct json_obj_descr jd_fd_descr[] = {
-	JSON_OBJ_DESCR_PRIM(struct jd_fd, bbmd, JSON_TOK_STRING_BUF),
+	JSON_OBJ_DESCR_PRIM(struct jd_fd, bbmd, JSON_TOK_OPAQUE),
 	JSON_OBJ_DESCR_PRIM(struct jd_fd, port, JSON_TOK_FLOAT),
 	JSON_OBJ_DESCR_PRIM(struct jd_fd, ttl_s, JSON_TOK_FLOAT),
 };
 
 static const struct json_obj_descr jd_binding_descr[] = {
 	JSON_OBJ_DESCR_PRIM(struct jd_binding, device, JSON_TOK_FLOAT),
-	JSON_OBJ_DESCR_PRIM(struct jd_binding, address, JSON_TOK_STRING_BUF),
+	JSON_OBJ_DESCR_PRIM(struct jd_binding, address, JSON_TOK_OPAQUE),
 	JSON_OBJ_DESCR_PRIM(struct jd_binding, port, JSON_TOK_FLOAT),
 };
 
@@ -425,11 +569,11 @@ static const struct json_obj_descr jd_bacnet_descr[] = {
 	JSON_OBJ_DESCR_OBJ_ARRAY(struct jd_bacnet, static_bindings,
 				 CONFIG_UC_BACNET_STATIC_BINDINGS_MAX, static_bindings_len,
 				 jd_binding_descr, ARRAY_SIZE(jd_binding_descr)),
-	JSON_OBJ_DESCR_PRIM(struct jd_bacnet, password, JSON_TOK_STRING_BUF),
+	JSON_OBJ_DESCR_PRIM(struct jd_bacnet, password, JSON_TOK_OPAQUE),
 };
 
 static const struct json_obj_descr jd_log_descr[] = {
-	JSON_OBJ_DESCR_PRIM(struct jd_log, level, JSON_TOK_STRING_BUF),
+	JSON_OBJ_DESCR_PRIM(struct jd_log, level, JSON_TOK_OPAQUE),
 };
 
 /* Order defines the bits of the json_obj_parse() result. */
@@ -454,9 +598,19 @@ static const struct {
 	{"dbg", LOG_LEVEL_DBG},
 };
 
+/* Dotted IPv4 string field (optional): "" when absent. */
+static int tok_ipv4(const struct json_obj_token *t, char out[16], bool (*valid)(const char *))
+{
+	if (tok_str(t, out, 16) < 0) {
+		return -EINVAL;
+	}
+	return (out[0] == '\0' || valid(out)) ? 0 : -EINVAL;
+}
+
 static int device_from_json(const struct jd_doc *d, uint64_t fields, struct uc_device_cfg *out)
 {
 	static const char doc[] = "device.json";
+	char text[UC_NAME_MAX];
 
 	if (!schema_ok(fields, JD_HAS_SCHEMA, &d->schema)) {
 		return bad(doc, -1, "schema");
@@ -468,32 +622,27 @@ static int device_from_json(const struct jd_doc *d, uint64_t fields, struct uc_d
 	/* device */
 	REQ_INT(&d->device.instance, 0, UC_INSTANCE_MAX, out->instance, doc, -1,
 		"device.instance");
-	if (d->device.name[0] == '\0') {
+	if (tok_str(&d->device.name, out->name, sizeof(out->name)) < 0 ||
+	    out->name[0] == '\0') {
 		return bad(doc, -1, "device.name");
 	}
-	(void)uc_strlcpy(out->name, d->device.name, sizeof(out->name));
-	(void)uc_strlcpy(out->description, d->device.description, sizeof(out->description));
-	(void)uc_strlcpy(out->location, d->device.location, sizeof(out->location));
+	if (tok_str(&d->device.description, out->description, sizeof(out->description)) < 0) {
+		return bad(doc, -1, "device.description");
+	}
+	if (tok_str(&d->device.location, out->location, sizeof(out->location)) < 0) {
+		return bad(doc, -1, "device.location");
+	}
 
 	/* network */
 	out->dhcp = d->network.dhcp;
-	if (d->network.ipv4[0] != '\0') {
-		if (!ipv4_valid(d->network.ipv4)) {
-			return bad(doc, -1, "network.ipv4");
-		}
-		(void)uc_strlcpy(out->ipv4, d->network.ipv4, sizeof(out->ipv4));
+	if (tok_ipv4(&d->network.ipv4, out->ipv4, ipv4_valid) < 0) {
+		return bad(doc, -1, "network.ipv4");
 	}
-	if (d->network.netmask[0] != '\0') {
-		if (!netmask_valid(d->network.netmask)) {
-			return bad(doc, -1, "network.netmask");
-		}
-		(void)uc_strlcpy(out->netmask, d->network.netmask, sizeof(out->netmask));
+	if (tok_ipv4(&d->network.netmask, out->netmask, netmask_valid) < 0) {
+		return bad(doc, -1, "network.netmask");
 	}
-	if (d->network.gateway[0] != '\0') {
-		if (!ipv4_valid(d->network.gateway)) {
-			return bad(doc, -1, "network.gateway");
-		}
-		(void)uc_strlcpy(out->gateway, d->network.gateway, sizeof(out->gateway));
+	if (tok_ipv4(&d->network.gateway, out->gateway, ipv4_valid) < 0) {
+		return bad(doc, -1, "network.gateway");
 	}
 	if (!out->dhcp) {
 		if (out->ipv4[0] == '\0') {
@@ -511,13 +660,11 @@ static int device_from_json(const struct jd_doc *d, uint64_t fields, struct uc_d
 	OPT_INT(&d->bacnet.apdu_retries, 0, 10, out->apdu_retries, doc, -1,
 		"bacnet.apdu_retries");
 
-	if (d->bacnet.foreign_device.bbmd[0] != '\0') {
-		if (!ipv4_valid(d->bacnet.foreign_device.bbmd)) {
-			return bad(doc, -1, "bacnet.foreign_device.bbmd");
-		}
+	if (tok_ipv4(&d->bacnet.foreign_device.bbmd, out->fd_bbmd, ipv4_valid) < 0) {
+		return bad(doc, -1, "bacnet.foreign_device.bbmd");
+	}
+	if (out->fd_bbmd[0] != '\0') {
 		out->fd_enabled = true;
-		(void)uc_strlcpy(out->fd_bbmd, d->bacnet.foreign_device.bbmd,
-				 sizeof(out->fd_bbmd));
 		OPT_INT(&d->bacnet.foreign_device.port, 1, UINT16_MAX, out->fd_port, doc, -1,
 			"bacnet.foreign_device.port");
 		OPT_INT(&d->bacnet.foreign_device.ttl_s, 10, UINT16_MAX, out->fd_ttl_s, doc, -1,
@@ -535,10 +682,9 @@ static int device_from_json(const struct jd_doc *d, uint64_t fields, struct uc_d
 
 		REQ_INT(&b->device, 0, UC_INSTANCE_MAX, o->device, doc, (int)i,
 			"bacnet.static_bindings.device");
-		if (!ipv4_valid(b->address)) {
+		if (tok_ipv4(&b->address, o->address, ipv4_valid) < 0 || o->address[0] == '\0') {
 			return bad(doc, (int)i, "bacnet.static_bindings.address");
 		}
-		(void)uc_strlcpy(o->address, b->address, sizeof(o->address));
 		o->port = UC_BACNET_PORT_DEFAULT;
 		OPT_INT(&b->port, 1, UINT16_MAX, o->port, doc, (int)i,
 			"bacnet.static_bindings.port");
@@ -547,25 +693,25 @@ static int device_from_json(const struct jd_doc *d, uint64_t fields, struct uc_d
 	/* The schema requires 1..20 printable ASCII characters; "" (absent)
 	 * means no password.
 	 */
-	if (d->bacnet.password[0] != '\0') {
-		if (strlen(d->bacnet.password) > UC_PASSWORD_MAX) {
+	if (tok_str(&d->bacnet.password, out->bacnet_password, sizeof(out->bacnet_password)) <
+	    0) {
+		return bad(doc, -1, "bacnet.password");
+	}
+	for (const char *c = out->bacnet_password; *c != '\0'; c++) {
+		if (*c < 0x20 || *c > 0x7e) {
 			return bad(doc, -1, "bacnet.password");
 		}
-		for (const char *c = d->bacnet.password; *c != '\0'; c++) {
-			if (*c < 0x20 || *c > 0x7e) {
-				return bad(doc, -1, "bacnet.password");
-			}
-		}
-		(void)uc_strlcpy(out->bacnet_password, d->bacnet.password,
-				 sizeof(out->bacnet_password));
 	}
 
 	/* log */
-	if (d->log.level[0] != '\0') {
+	if (tok_str(&d->log.level, text, sizeof(text)) < 0) {
+		return bad(doc, -1, "log.level");
+	}
+	if (text[0] != '\0') {
 		size_t i;
 
 		for (i = 0; i < ARRAY_SIZE(log_levels); i++) {
-			if (strcmp(d->log.level, log_levels[i].name) == 0) {
+			if (strcmp(text, log_levels[i].name) == 0) {
 				out->log_level = log_levels[i].level;
 				break;
 			}
@@ -615,12 +761,12 @@ int uc_config_parse_device(char *json, size_t len, struct uc_device_cfg *out)
 /* ---------------------------------------------------------------------- */
 
 struct ji_point {
-	char channel[UC_CHANNEL_NAME_MAX];
-	char type[24];
+	struct json_obj_token channel;
+	struct json_obj_token type;
 	struct json_obj_token instance;
-	char name[UC_NAME_MAX];
-	char description[UC_NAME_MAX];
-	char units[48];
+	struct json_obj_token name;
+	struct json_obj_token description;
+	struct json_obj_token units;
 	struct json_obj_token scale;
 	struct json_obj_token offset;
 	struct json_obj_token min;
@@ -638,12 +784,12 @@ struct ji_doc {
 };
 
 static const struct json_obj_descr ji_point_descr[] = {
-	JSON_OBJ_DESCR_PRIM(struct ji_point, channel, JSON_TOK_STRING_BUF),
-	JSON_OBJ_DESCR_PRIM(struct ji_point, type, JSON_TOK_STRING_BUF),
+	JSON_OBJ_DESCR_PRIM(struct ji_point, channel, JSON_TOK_OPAQUE),
+	JSON_OBJ_DESCR_PRIM(struct ji_point, type, JSON_TOK_OPAQUE),
 	JSON_OBJ_DESCR_PRIM(struct ji_point, instance, JSON_TOK_FLOAT),
-	JSON_OBJ_DESCR_PRIM(struct ji_point, name, JSON_TOK_STRING_BUF),
-	JSON_OBJ_DESCR_PRIM(struct ji_point, description, JSON_TOK_STRING_BUF),
-	JSON_OBJ_DESCR_PRIM(struct ji_point, units, JSON_TOK_STRING_BUF),
+	JSON_OBJ_DESCR_PRIM(struct ji_point, name, JSON_TOK_OPAQUE),
+	JSON_OBJ_DESCR_PRIM(struct ji_point, description, JSON_TOK_OPAQUE),
+	JSON_OBJ_DESCR_PRIM(struct ji_point, units, JSON_TOK_OPAQUE),
 	JSON_OBJ_DESCR_PRIM(struct ji_point, scale, JSON_TOK_FLOAT),
 	JSON_OBJ_DESCR_PRIM(struct ji_point, offset, JSON_TOK_FLOAT),
 	JSON_OBJ_DESCR_PRIM(struct ji_point, min, JSON_TOK_FLOAT),
@@ -683,18 +829,19 @@ static bool io_type_allowed(uint16_t t)
 static int io_point_from_json(const struct ji_point *p, int idx, struct uc_io_point_cfg *o)
 {
 	static const char doc[] = "io.json";
+	char text[48];
 	double v;
 	int rc;
 
 	uc_config_io_point_defaults(o);
 
-	if (p->channel[0] == '\0') {
+	if (tok_str(&p->channel, o->channel, sizeof(o->channel)) < 0 || o->channel[0] == '\0') {
 		return bad(doc, idx, "points.channel");
 	}
-	(void)uc_strlcpy(o->channel, p->channel, sizeof(o->channel));
 
 	/* text names only (the schema enumerates them) */
-	if (p->type[0] < 'a' || uc_obj_type_from_str(p->type, &o->object_type) < 0 ||
+	if (tok_str(&p->type, text, 24) < 0 || text[0] < 'a' ||
+	    uc_obj_type_from_str(text, &o->object_type) < 0 ||
 	    !io_type_allowed(o->object_type)) {
 		return bad(doc, idx, "points.type");
 	}
@@ -702,10 +849,18 @@ static int io_point_from_json(const struct ji_point *p, int idx, struct uc_io_po
 	REQ_INT(&p->instance, 0, UC_INSTANCE_MAX, o->object_instance, doc, idx,
 		"points.instance");
 
-	(void)uc_strlcpy(o->name, (p->name[0] != '\0') ? p->name : p->channel, sizeof(o->name));
-	(void)uc_strlcpy(o->description, p->description, sizeof(o->description));
+	if (tok_str(&p->name, o->name, sizeof(o->name)) < 0) {
+		return bad(doc, idx, "points.name");
+	}
+	if (o->name[0] == '\0') {
+		(void)uc_strlcpy(o->name, o->channel, sizeof(o->name));
+	}
+	if (tok_str(&p->description, o->description, sizeof(o->description)) < 0) {
+		return bad(doc, idx, "points.description");
+	}
 
-	if (p->units[0] != '\0' && uc_units_from_str(p->units, &o->units) < 0) {
+	if (tok_str(&p->units, text, sizeof(text)) < 0 ||
+	    (text[0] != '\0' && uc_units_from_str(text, &o->units) < 0)) {
 		return bad(doc, idx, "points.units");
 	}
 
@@ -819,22 +974,22 @@ out:
 #define JA_PERMS_MAX 4
 
 struct ja_param {
-	char key[sizeof(((struct uc_app_param *)0)->key)];
-	char value[sizeof(((struct uc_app_param *)0)->value)];
+	struct json_obj_token key;
+	struct json_obj_token value;
 };
 
 struct ja_app {
-	char name[UC_APP_NAME_MAX];
-	char file[UC_PATH_MAX];
+	struct json_obj_token name;
+	struct json_obj_token file;
 	bool autostart;
 	struct json_obj_token period_ms;
 	struct json_obj_token heap_kb;
 	struct json_obj_token stack_kb;
-	char perms[JA_PERMS_MAX][16];
+	struct json_obj_token perms[JA_PERMS_MAX];
 	size_t perms_len;
 	struct ja_param params[CONFIG_UC_APP_PARAMS_MAX];
 	size_t params_len;
-	char sha256[65];
+	struct json_obj_token sha256;
 };
 
 struct ja_doc {
@@ -844,21 +999,21 @@ struct ja_doc {
 };
 
 static const struct json_obj_descr ja_param_descr[] = {
-	JSON_OBJ_DESCR_PRIM(struct ja_param, key, JSON_TOK_STRING_BUF),
-	JSON_OBJ_DESCR_PRIM(struct ja_param, value, JSON_TOK_STRING_BUF),
+	JSON_OBJ_DESCR_PRIM(struct ja_param, key, JSON_TOK_OPAQUE),
+	JSON_OBJ_DESCR_PRIM(struct ja_param, value, JSON_TOK_OPAQUE),
 };
 
 static const struct json_obj_descr ja_app_descr[] = {
-	JSON_OBJ_DESCR_PRIM(struct ja_app, name, JSON_TOK_STRING_BUF),
-	JSON_OBJ_DESCR_PRIM(struct ja_app, file, JSON_TOK_STRING_BUF),
+	JSON_OBJ_DESCR_PRIM(struct ja_app, name, JSON_TOK_OPAQUE),
+	JSON_OBJ_DESCR_PRIM(struct ja_app, file, JSON_TOK_OPAQUE),
 	JSON_OBJ_DESCR_PRIM(struct ja_app, autostart, JSON_TOK_TRUE),
 	JSON_OBJ_DESCR_PRIM(struct ja_app, period_ms, JSON_TOK_FLOAT),
 	JSON_OBJ_DESCR_PRIM(struct ja_app, heap_kb, JSON_TOK_FLOAT),
 	JSON_OBJ_DESCR_PRIM(struct ja_app, stack_kb, JSON_TOK_FLOAT),
-	JSON_OBJ_DESCR_ARRAY(struct ja_app, perms, JA_PERMS_MAX, perms_len, JSON_TOK_STRING_BUF),
+	JSON_OBJ_DESCR_ARRAY(struct ja_app, perms, JA_PERMS_MAX, perms_len, JSON_TOK_OPAQUE),
 	JSON_OBJ_DESCR_OBJ_ARRAY(struct ja_app, params, CONFIG_UC_APP_PARAMS_MAX, params_len,
 				 ja_param_descr, ARRAY_SIZE(ja_param_descr)),
-	JSON_OBJ_DESCR_PRIM(struct ja_app, sha256, JSON_TOK_STRING_BUF),
+	JSON_OBJ_DESCR_PRIM(struct ja_app, sha256, JSON_TOK_OPAQUE),
 };
 
 static const struct json_obj_descr ja_doc_descr[] = {
@@ -933,17 +1088,16 @@ static int apps_cfg_validate(const struct uc_apps_cfg *cfg)
 static int app_from_json(const struct ja_app *a, int idx, struct uc_app_cfg *o)
 {
 	static const char doc[] = "apps.json";
+	char text[65];
 
 	uc_config_app_defaults(o);
 
-	if (!uc_app_name_valid(a->name)) {
+	if (tok_str(&a->name, o->name, sizeof(o->name)) < 0 || !uc_app_name_valid(o->name)) {
 		return bad(doc, idx, "apps.name");
 	}
-	(void)uc_strlcpy(o->name, a->name, sizeof(o->name));
-	if (!app_file_valid(a->file)) {
+	if (tok_str(&a->file, o->file, sizeof(o->file)) < 0 || !app_file_valid(o->file)) {
 		return bad(doc, idx, "apps.file");
 	}
-	(void)uc_strlcpy(o->file, a->file, sizeof(o->file));
 
 	o->autostart = a->autostart;
 	OPT_INT(&a->period_ms, 0, 3600000, o->period_ms, doc, idx, "apps.period_ms");
@@ -951,8 +1105,11 @@ static int app_from_json(const struct ja_app *a, int idx, struct uc_app_cfg *o)
 	OPT_INT(&a->stack_kb, 1, 64, o->stack_kb, doc, idx, "apps.stack_kb");
 
 	for (size_t k = 0; k < a->perms_len; k++) {
-		uint32_t bit = uc_perm_from_str(a->perms[k]);
+		uint32_t bit = 0;
 
+		if (tok_str(&a->perms[k], text, 16) == 0) {
+			bit = uc_perm_from_str(text);
+		}
 		if (bit == 0U || (o->perms & bit) != 0U) {
 			return bad(doc, idx, "apps.perms");
 		}
@@ -961,17 +1118,25 @@ static int app_from_json(const struct ja_app *a, int idx, struct uc_app_cfg *o)
 
 	for (size_t k = 0; k < a->params_len; k++) {
 		const struct ja_param *p = &a->params[k];
+		struct uc_app_param *op = &o->params[k];
 
-		if (!uc_key_valid(p->key, UC_PARAM_KEY_MAX)) {
+		if (tok_str(&p->key, op->key, sizeof(op->key)) < 0 ||
+		    !uc_key_valid(op->key, UC_PARAM_KEY_MAX)) {
 			return bad(doc, idx, "apps.params.key");
 		}
-		(void)uc_strlcpy(o->params[k].key, p->key, sizeof(o->params[k].key));
-		(void)uc_strlcpy(o->params[k].value, p->value, sizeof(o->params[k].value));
+		/* the value's limit applies after unescaping (uc_config_encode_apps()
+		 * escapes '"', '\\' and control characters) */
+		if (tok_str(&p->value, op->value, sizeof(op->value)) < 0) {
+			return bad(doc, idx, "apps.params.value");
+		}
 	}
 	o->param_count = a->params_len;
 
-	if (a->sha256[0] != '\0') {
-		if (!sha256_parse(a->sha256, o->sha256)) {
+	if (tok_str(&a->sha256, text, sizeof(text)) < 0) {
+		return bad(doc, idx, "apps.sha256");
+	}
+	if (text[0] != '\0') {
+		if (!sha256_parse(text, o->sha256)) {
 			return bad(doc, idx, "apps.sha256");
 		}
 		o->has_sha256 = true;
@@ -1208,11 +1373,12 @@ int uc_config_encode_apps(const struct uc_apps_cfg *cfg, char *buf, size_t buf_l
 /* ---------------------------------------------------------------------- */
 
 static K_MUTEX_DEFINE(cfg_lock);  /* protects the cache */
-/* serialises document loads (shell and SMP may reload at the same time; a
- * staged document must be validated and renamed by one of them only)
+/* serialises document loads and uc_config_set_apps() (shell and SMP may
+ * reload at the same time; a staged document must be validated and renamed
+ * by one of them only, and a load must not commit an apps.json it read
+ * before a concurrent uc_config_set_apps() wrote a new one)
  */
 static K_MUTEX_DEFINE(load_lock);
-static K_MUTEX_DEFINE(apps_lock); /* serialises uc_config_set_apps() */
 
 static struct uc_device_cfg cache_device;
 static struct uc_io_cfg cache_io;
@@ -1550,7 +1716,7 @@ int uc_config_set_apps(const struct uc_apps_cfg *cfg)
 		return -ENOMEM;
 	}
 
-	k_mutex_lock(&apps_lock, K_FOREVER);
+	k_mutex_lock(&load_lock, K_FOREVER);
 
 	len = uc_config_encode_apps(cfg, buf, CONFIG_UC_CONFIG_DOC_MAX + 1);
 	if (len < 0) {
@@ -1572,7 +1738,7 @@ int uc_config_set_apps(const struct uc_apps_cfg *cfg)
 	LOG_INF("%s written (%u apps)", UC_FILE_APPS_CFG, (unsigned int)cfg->count);
 
 out:
-	k_mutex_unlock(&apps_lock);
+	k_mutex_unlock(&load_lock);
 	k_free(buf);
 	return rc;
 }

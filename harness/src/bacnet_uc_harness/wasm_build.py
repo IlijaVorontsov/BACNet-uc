@@ -588,9 +588,10 @@ def aot_compile(wasm: Path | str, board: str, out: Path | str | None = None, *,
         pass
     if uc_aot is not None:
         cmd = [sys.executable, str(uc_aot), "--board", board, "-O", str(opt_level), "-o",
-               str(target_path), str(src)]
+               str(target_path)]
         if wamrc:
-            cmd[3:3] = ["--wamrc", wamrc]
+            cmd += ["--wamrc", wamrc]
+        cmd.append(str(src))
         tool = "uc-aot"
     else:
         exe = find_wamrc(wamrc)

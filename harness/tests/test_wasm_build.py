@@ -230,3 +230,34 @@ def test_aot_compile(tmp_path: Path) -> None:
     assert aot.target == "thumbv8m.main"
     with pytest.raises(wb.WasmBuildError):
         wb.aot_compile(res.path, "esp32")
+
+
+def test_aot_compile_wamrc_option_keeps_board_argument(tmp_path: Path,
+                                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    """--wamrc must not be inserted between --board and its value (HAR-8)."""
+    wasm = tmp_path / "m.wasm"
+    wasm.write_bytes(module([], ["uc_app_api_version"]))
+    seen: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_: object) -> object:
+        seen.append(list(cmd))
+        out = Path(cmd[cmd.index("-o") + 1])
+        out.write_bytes(wb.AOT_MAGIC + b"\x00" * 12)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(wb.subprocess, "run", fake_run)
+    res = wb.aot_compile(wasm, "nucleo_f767zi", tmp_path / "m.aot", wamrc="/x/wamrc")
+    cmd = seen[0]
+    if res.tool == "uc-aot":
+        assert cmd[cmd.index("--board") + 1] == "nucleo_f767zi"
+        assert cmd[cmd.index("--wamrc") + 1] == "/x/wamrc"
+        assert cmd[-1] == str(wasm.resolve())
+
+
+@needs_clang
+@pytest.mark.skipif(wb.find_wamrc() is None, reason="wamrc not installed")
+def test_aot_compile_explicit_wamrc(tmp_path: Path) -> None:
+    res = wb.build_c([EXAMPLES / "blinky" / "blinky.c"], tmp_path / "blinky.wasm")
+    aot = wb.aot_compile(res.path, "nucleo_f767zi", tmp_path / "blinky.aot",
+                         wamrc=wb.find_wamrc())
+    assert aot.path.read_bytes()[:4] == wb.AOT_MAGIC

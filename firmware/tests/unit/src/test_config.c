@@ -628,6 +628,151 @@ ZTEST(uc_config, test_apps_encode_round_trip)
 }
 
 /* ---------------------------------------------------------------------- */
+/* String escapes                                                          */
+/* ---------------------------------------------------------------------- */
+
+/* \uXXXX escapes (as written by encoders that escape non-ASCII, e.g.
+ * Python's json.dump) are decoded to UTF-8, including surrogate pairs;
+ * the other escapes as before. */
+ZTEST(uc_config, test_string_unicode_escapes)
+{
+	zassert_ok(parse_device("{\"schema\":1,\"device\":{\"instance\":1,"
+				"\"name\":\"K\\u00fchlraum\","
+				"\"description\":\"\\u00DC \\ud83d\\ude00 \\u20ac\","
+				"\"location\":\"a\\\"b\\\\c\\/d\\te\\u0041\"}}"));
+	zassert_str_equal(dev.name, "K\xc3\xbchlraum");
+	zassert_equal(strlen(dev.name), 9);
+	zassert_str_equal(dev.description, "\xc3\x9c \xf0\x9f\x98\x80 \xe2\x82\xac");
+	zassert_str_equal(dev.location, "a\"b\\c/d\teA");
+
+	/* an escaped password character is decoded before the ASCII check */
+	zassert_ok(parse_device("{\"schema\":1,\"device\":{\"instance\":1,\"name\":\"n\"},"
+				"\"bacnet\":{\"password\":\"\\u0070w\"}}"));
+	zassert_str_equal(dev.bacnet_password, "pw");
+
+	/* io.json and apps.json strings */
+	zassert_ok(parse_io("{\"schema\":1,\"points\":[{\"channel\":\"\\u0061i0\","
+			    "\"type\":\"analog-input\",\"instance\":1,"
+			    "\"name\":\"Au\\u00dfen\",\"units\":\"degrees-\\u0063elsius\"}]}"));
+	zassert_str_equal(io.points[0].channel, "ai0");
+	zassert_str_equal(io.points[0].name, "Au\xc3\x9f" "en");
+	zassert_equal(io.points[0].units, UNITS_DEGREES_CELSIUS);
+	zassert_ok(parse_apps("{\"schema\":1,\"apps\":[{\"name\":\"\\u0061\","
+			      "\"file\":\"/lfs/apps/a.wasm\",\"perms\":[\"k\\u0076\"],"
+			      "\"params\":[{\"key\":\"k\",\"value\":\"a\\u001fb \\u00e4\"}]}]}"));
+	zassert_str_equal(apps.apps[0].name, "a");
+	zassert_equal(apps.apps[0].perms, UC_PERM_KV);
+	zassert_str_equal(apps.apps[0].params[0].value, "a\x1f" "b \xc3\xa4");
+}
+
+ZTEST(uc_config, test_string_escapes_invalid)
+{
+#define DEV(name) "{\"schema\":1,\"device\":{\"instance\":1,\"name\":\"" name "\"}}"
+	static const char *const bad[] = {
+		DEV("a\\u0000b"),       /* NUL would end the C string */
+		DEV("a\\ud83d"),        /* high surrogate without the low one */
+		DEV("a\\ud83dx"),
+		DEV("a\\ud83d\\u0041"), /* high surrogate + no low surrogate */
+		DEV("a\\ude00"),        /* low surrogate alone */
+		DEV("a\\u12"),          /* short escape (syntax) */
+		DEV("a\\x41"),          /* unknown escape (syntax) */
+	};
+#undef DEV
+
+	for (size_t i = 0; i < ARRAY_SIZE(bad); i++) {
+		zassert_equal(parse_device(bad[i]), -EINVAL, "document %u accepted", (unsigned)i);
+	}
+}
+
+/* The length limits apply to the unescaped value, not to its escaped text. */
+ZTEST(uc_config, test_string_limit_after_unescape)
+{
+	static char doc[1024];
+	int n;
+
+	/* 63 characters (the limit of an object name) written as \u0041 */
+	n = snprintf(doc, sizeof(doc), "{\"schema\":1,\"device\":{\"instance\":1,\"name\":\"");
+	for (int i = 0; i < UC_NAME_MAX - 1; i++) {
+		n += snprintf(doc + n, sizeof(doc) - n, "\\u0041");
+	}
+	snprintf(doc + n, sizeof(doc) - n, "\"}}");
+	zassert_ok(parse_device(doc));
+	zassert_equal(strlen(dev.name), UC_NAME_MAX - 1);
+	zassert_equal(dev.name[0], 'A');
+
+	/* 64 characters are one too many, escaped or not */
+	n = snprintf(doc, sizeof(doc), "{\"schema\":1,\"device\":{\"instance\":1,\"name\":\"");
+	for (int i = 0; i < UC_NAME_MAX; i++) {
+		n += snprintf(doc + n, sizeof(doc) - n, "\\u0041");
+	}
+	snprintf(doc + n, sizeof(doc) - n, "\"}}");
+	zassert_equal(parse_device(doc), -EINVAL);
+
+	/* a 3-byte UTF-8 character that does not fit any more */
+	n = snprintf(doc, sizeof(doc), "{\"schema\":1,\"device\":{\"instance\":1,\"name\":\"");
+	for (int i = 0; i < UC_NAME_MAX - 3; i++) {
+		doc[n++] = 'x';
+	}
+	snprintf(doc + n, sizeof(doc) - n, "\\u20ac\"}}");
+	zassert_equal(parse_device(doc), -EINVAL);
+}
+
+/* Every parameter value an install accepts (up to 95 bytes, any byte but
+ * NUL) survives apps.json: the encoder escapes '"', '\\' and control
+ * characters, and the parser's limit applies to the unescaped value. */
+ZTEST(uc_config, test_apps_escaped_values_round_trip)
+{
+	static const char *const values[] = {
+		/* 40 x 'a"' = 80 bytes, 120 escaped */
+		"a\"a\"a\"a\"a\"a\"a\"a\"a\"a\"a\"a\"a\"a\"a\"a\"a\"a\"a\"a\""
+		"a\"a\"a\"a\"a\"a\"a\"a\"a\"a\"a\"a\"a\"a\"a\"a\"a\"a\"a\"a\"",
+		"a\x1f" "b",
+		"\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10",
+		"K\xc3\xbchlraum \\ \" /",
+	};
+	struct uc_app_cfg *a;
+	int len;
+
+	memset(&apps2, 0, sizeof(apps2));
+	apps2.count = 1;
+	a = &apps2.apps[0];
+	uc_config_app_defaults(a);
+	strcpy(a->name, "q");
+	strcpy(a->file, "/lfs/apps/q.wasm");
+	a->param_count = ARRAY_SIZE(values) + 1;
+	for (size_t k = 0; k < ARRAY_SIZE(values); k++) {
+		snprintf(a->params[k].key, sizeof(a->params[k].key), "p%u", (unsigned)k);
+		zassert_true(strlen(values[k]) < sizeof(a->params[k].value));
+		strcpy(a->params[k].value, values[k]);
+	}
+	/* the longest value: 95 quotes, 190 bytes escaped */
+	strcpy(a->params[ARRAY_SIZE(values)].key, "quotes");
+	memset(a->params[ARRAY_SIZE(values)].value, '"', sizeof(a->params[0].value) - 1);
+	a->params[ARRAY_SIZE(values)].value[sizeof(a->params[0].value) - 1] = '\0';
+
+	len = uc_config_encode_apps(&apps2, enc_buf, sizeof(enc_buf));
+	zassert_true(len > 0, "encode failed: %d", len);
+	zassert_ok(uc_config_parse_apps(enc_buf, (size_t)len, &apps));
+	zassert_equal(apps.count, 1);
+	zassert_equal(apps.apps[0].param_count, a->param_count);
+	for (size_t k = 0; k < a->param_count; k++) {
+		zassert_str_equal(apps.apps[0].params[k].key, a->params[k].key);
+		zassert_str_equal(apps.apps[0].params[k].value, a->params[k].value,
+				  "param %u changed", (unsigned)k);
+	}
+
+	/* the same through the cache and the file (uc_config_set_apps() and a
+	 * reload read apps.json back) */
+	stub_fs_set_ready(true);
+	zassert_ok(uc_config_set_apps(&apps2));
+	zassert_ok(uc_config_reload(UC_CFG_APPS));
+	uc_config_get_apps(&apps);
+	zassert_equal(apps.count, 1);
+	zassert_str_equal(apps.apps[0].params[0].value, values[0]);
+	zassert_str_equal(apps.apps[0].params[1].value, values[1]);
+}
+
+/* ---------------------------------------------------------------------- */
 /* Cache                                                                   */
 /* ---------------------------------------------------------------------- */
 

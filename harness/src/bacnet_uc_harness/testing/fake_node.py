@@ -389,6 +389,10 @@ class FakeNode:
         self.smp_port = 0
         self.bacnet_port = 0
         self._drop_smp = 0
+        self._drop_smp_rsp = 0
+        self._drop_smp_rsp_match: Any = None
+        # FS upload context of Zephyr's fs_mgmt (path, offset, length)
+        self._fs_up: dict[str, Any] | None = None
         self._img_buf = bytearray()
         self._img_len = 0
         self._img_sha = b""
@@ -447,8 +451,17 @@ class FakeNode:
         """Silently drop the next ``count`` SMP requests (tests retries)."""
         self._drop_smp += count
 
+    def drop_next_smp_response(self, count: int = 1, match: Any = None) -> None:
+        """Handle the next ``count`` SMP requests (only those whose request
+        map satisfies ``match(req)`` when given) but drop their responses: a
+        lost or late answer, so the client retransmits a request the node has
+        already executed."""
+        self._drop_smp_rsp += count
+        self._drop_smp_rsp_match = match
+
     def _boot(self) -> None:
         self._boot_time = time.monotonic()
+        self._fs_up = None
         for ch in self.io_channels.values():
             ch.forced = False
             ch.value = _normalise(ch.kind, ch.initial)
@@ -971,7 +984,7 @@ class FakeNode:
             (g.GROUP_FS, g.FS_STATUS): (self._fs_status, None),
             (g.GROUP_FS, g.FS_HASH_CHECKSUM): (self._fs_hash, None),
             (g.GROUP_FS, g.FS_SUPPORTED_HASH_CHECKSUM): (self._fs_supported_hash, None),
-            (g.GROUP_FS, g.FS_OPENED_FILE): (None, lambda req: {}),
+            (g.GROUP_FS, g.FS_OPENED_FILE): (None, self._fs_close),
             (g.GROUP_SHELL, g.SHELL_EXEC): (None, self._shell_exec),
             (g.GROUP_UC_APP, g.UC_APP_LIST): (self._app_list, None),
             (g.GROUP_UC_APP, g.UC_APP_INSTALL): (None, self._app_install),
@@ -1019,6 +1032,10 @@ class FakeNode:
             log.exception("fake node: SMP handler failed")
             rsp = {"rc": g.MGMT_ERR_EUNKNOWN}
         self._sync_io()
+        if self._drop_smp_rsp > 0 and (self._drop_smp_rsp_match is None
+                                       or self._drop_smp_rsp_match(req)):
+            self._drop_smp_rsp -= 1
+            return None
         return encode_frame(hdr.op + 1, hdr.group, hdr.cmd, hdr.seq, rsp, version=hdr.version)
 
     # request field helpers (uc groups: rc INVALID)
@@ -1158,6 +1175,13 @@ class FakeNode:
         return name
 
     def _fs_upload(self, req: dict[str, Any]) -> dict[str, Any]:
+        """``fs_mgmt_file_upload()`` of Zephyr 4.4: one upload context (path,
+        offset, length) stays open until the announced length is written or
+        ``fs_close``. A chunk at offset 0 truncates the file but does not
+        reset the context's offset (a retransmitted first chunk is written
+        again and the reply advances by its length again); a chunk at another
+        offset must match the context's offset, else the context is closed
+        and rc ``FILE_OFFSET_NOT_VALID`` carries the file length."""
         name = self._fs_name(req)
         off = req.get("off")
         data = req.get("data")
@@ -1165,16 +1189,31 @@ class FakeNode:
             raise _Legacy(g.MGMT_ERR_EINVAL)
         if not name.startswith("/lfs/"):
             raise _Rc(g.FS_RC_MOUNT_POINT_NOT_FOUND)
+        if off == 0 and not isinstance(req.get("len"), int):
+            raise _Legacy(g.MGMT_ERR_EINVAL)
+        up = self._fs_up
+        if up is None or up["path"] != name:
+            up = self._fs_up = {"path": name, "off": 0, "len": 0}
+            self.files.setdefault(name, b"")  # FS_O_CREATE
         if off == 0:
-            if not isinstance(req.get("len"), int):
-                raise _Legacy(g.MGMT_ERR_EINVAL)
-            self.files[name] = bytes(data)
-        else:
-            current = self.files.get(name, b"")
-            if off != len(current):
-                raise _Rc(g.FS_RC_FILE_OFFSET_NOT_VALID, len=len(current))
-            self.files[name] = current + bytes(data)
-        return {"off": len(self.files[name])}
+            up["len"] = req["len"]
+        elif up["off"] == 0:
+            up["off"] = len(self.files[name])
+        if off > 0 and off != up["off"]:
+            current = up["off"]
+            self._fs_up = None
+            raise _Rc(g.FS_RC_FILE_OFFSET_NOT_VALID, len=current)
+        if data:
+            self.files[name] = (b"" if off == 0 else self.files[name]) + bytes(data)
+            up["off"] += len(data)
+        reply = up["off"]
+        if up["len"] > 0 and up["off"] >= up["len"]:
+            self._fs_up = None  # upload finished: file closed
+        return {"off": reply}
+
+    def _fs_close(self, req: dict[str, Any]) -> dict[str, Any]:
+        self._fs_up = None
+        return {}
 
     def _fs_download(self, req: dict[str, Any]) -> dict[str, Any]:
         name = self._fs_name(req)

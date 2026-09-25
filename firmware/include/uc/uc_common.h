@@ -12,6 +12,7 @@
  *   -ENOENT       not found                 UC_ERR_NOT_FOUND    NOT_FOUND
  *   -EACCES       permission                UC_ERR_PERM         PERM
  *   -ETIMEDOUT    no confirmation           UC_ERR_TIMEOUT      BUSY
+ *   -ECANCELED    request abandoned (stop)  UC_ERR_TIMEOUT      BUSY
  *   -EBUSY/-EAGAIN busy / slots exhausted   UC_ERR_BUSY         BUSY
  *   -ENOMEM       allocation failed         UC_ERR_NO_MEM       NO_MEM
  *   -EREMOTEIO    BACnet Error/Reject/Abort UC_ERR_BACNET       UNKNOWN

@@ -336,6 +336,15 @@ def _points_changes(old: list[dict[str, Any]], new: list[dict[str, Any]]) -> dic
             "changed": sorted(c for c in set(o) & set(n) if o[c] != n[c])}
 
 
+def _aot_source_module(aot: Path) -> Path | None:
+    """The .wasm an .aot file was compiled from, when it lies next to it:
+    ``app.aot`` (build_app) or ``app.<board>.aot`` (aot_compile default)."""
+    for cand in (aot.with_suffix(".wasm"), aot.with_name(aot.name.split(".")[0] + ".wasm")):
+        if cand.is_file() and cand.read_bytes()[:4] == b"\x00asm":
+            return cand
+    return None
+
+
 def check_io_points(points: list[dict[str, Any]], catalog: dict[str, Any] | None,
                     foreign_objects: set[tuple[str, int]] | None = None) -> list[Issue]:
     """Validate io.json points against the schema, the node's catalog (channel
@@ -528,7 +537,9 @@ def create_server(ctx: HarnessContext | None = None) -> Any:
         """Replace a configuration document on a node after schema validation: it is
         uploaded as /lfs/cfg/<doc>.json.new and activated by the reload (the node rejects
         an invalid document, deletes it and keeps its configuration: rc INVALID; without
-        reload the staged file waits for the next reload/boot). Changes of device
+        reload the staged file waits for the next reload/boot). When the node already runs
+        this document nothing is uploaded, and a staged file left behind is removed
+        (staged_cleared) so that no later reload or boot activates it. Changes of device
         instance, network or BACnet port report reboot_required=true (reboot with
         apply_system or node_shell 'kernel reboot'). After an io reload the apps of the
         node that use its IO objects (stock apps, uc-link) are restarted."""
@@ -800,7 +811,8 @@ def create_server(ctx: HarnessContext | None = None) -> Any:
         stack_kb: int = 4,
         perms: Annotated[list[Literal["bacnet.local", "bacnet.remote", "io", "kv"]] | None,
                          Field(description="Permissions; default: derived from the module's "
-                               "imports")] = None,
+                               "imports (for an .aot file from the .wasm next to it, as "
+                               "build_app writes them; required otherwise)")] = None,
         params: Annotated[dict[str, str | float | int | bool] | None, Field(
             description="Deployment parameters (uc_param_get); values become strings")]
         = None,
@@ -813,14 +825,22 @@ def create_server(ctx: HarnessContext | None = None) -> Any:
         path = ctx.resolve_path(module_path)
         data = path.read_bytes()
         derived = None
+        derived_from = None
         if perms is None:
-            if data[:4] == b"\x00asm":
-                chk = check_module(data)
-                if not chk.ok:
-                    raise WasmError("module violates the application ABI", chk.errors)
-                derived = chk.perms
-            else:
-                derived = ["bacnet.local", "bacnet.remote"]
+            source = data
+            if data[:4] != b"\x00asm":
+                # an AOT file has no readable import list: use the module it
+                # was compiled from (build_app: <name>.wasm next to <name>.aot)
+                wasm = _aot_source_module(path)
+                if wasm is None:
+                    raise HarnessError(
+                        f"cannot derive the permissions of {path.name}: no .wasm next to it "
+                        f"({path.with_suffix('.wasm').name}); pass perms explicitly")
+                source, derived_from = wasm.read_bytes(), str(wasm)
+            chk = check_module(source)
+            if not chk.ok:
+                raise WasmError("module violates the application ABI", chk.errors)
+            derived = chk.perms
         str_params = {k: (("true" if v else "false") if isinstance(v, bool) else str(v))
                       for k, v in (params or {}).items()}
         async with ctx.lock(node):
@@ -831,6 +851,8 @@ def create_server(ctx: HarnessContext | None = None) -> Any:
                                      params=str_params, force=force)
         if derived is not None:
             res["perms_derived"] = derived
+            if derived_from is not None:
+                res["perms_derived_from"] = derived_from
         return res
 
     @tool(destructive=True)
@@ -1072,8 +1094,9 @@ def create_server(ctx: HarnessContext | None = None) -> Any:
                                      "manifest")] = False,
     ) -> dict[str, Any]:
         """Compare a system manifest with the live nodes and list the actions apply_system
-        would take (push_config, reload, deploy_app, start_app, remove_app) plus notes
-        such as unreachable nodes or pending reboots. Builds the apps (cached)."""
+        would take (clear_staged, push_config, reload, deploy_app, start_app, remove_app,
+        restart_app) plus notes such as unreachable nodes or pending reboots. Builds the apps
+        (cached)."""
         _, p, _, live = await _plan(system, prune)
         out = p.to_dict()
         out["nodes"] = {n: s.to_dict() for n, s in live.items()}

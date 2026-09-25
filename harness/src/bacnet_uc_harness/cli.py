@@ -63,7 +63,8 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("name")
     t = a.add_mutually_exclusive_group(required=True)
     t.add_argument("--udp", metavar="HOST[:PORT]", help="SMP over UDP")
-    t.add_argument("--serial", metavar="DEVICE[:BAUD]", help="SMP over the console UART")
+    t.add_argument("--serial", metavar="DEVICE[:BAUD]",
+                   help="SMP over the console UART (or a pyserial URL, socket://host:port[:BAUD])")
     t.add_argument("--sim", metavar="HOST", help="simulated node address")
     a.add_argument("--bacnet", metavar="HOST[:PORT]", help="BACnet/IP address")
     a.add_argument("--board")
@@ -256,11 +257,10 @@ async def _dispatch(args: argparse.Namespace, tools: dict[str, Any]) -> Any:
                 kw.update(transport="udp", host=host if sep else args.udp,
                           port=int(port) if sep else 1337)
             elif args.serial:
-                dev, sep, baud = args.serial.rpartition(":")
-                if sep and baud.isdigit():
-                    kw.update(transport="serial", device=dev, baud=int(baud))
-                else:
-                    kw.update(transport="serial", device=args.serial)
+                from bacnet_uc_harness.node import SmpTarget
+
+                target = SmpTarget.parse(f"serial:{args.serial}")
+                kw.update(transport="serial", device=target.device, baud=target.baud)
             else:
                 kw.update(transport="sim", host=args.sim)
             return await _call(tools, "add_node", **kw)

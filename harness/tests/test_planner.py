@@ -431,6 +431,54 @@ async def test_plan_apply_fake_nodes(make_fake_node: Callable[..., Awaitable[Fak
                              ("b", "restart_app", "link")]
         assert (await pl.apply(p3, nodes)).ok
         assert (await pl.plan_system(system, nodes, artifacts=arts))[0].empty
+        # a stale staged io.json (set_config without reload) is not "in sync":
+        # the next reload or reboot would activate it (HAR-2)
+        await nodes["a"].push_config("io", {"schema": 1, "points": []}, reload=False)
+        p4, _, _, live4 = await pl.plan_system(system, nodes, artifacts=arts)
+        assert live4["a"].staged_sha256["io"] is not None
+        assert kinds(p4) == [("a", "clear_staged", "io")]
+        assert (await pl.apply(p4, nodes, reboot=True)).ok
+        assert "/lfs/cfg/io.json.new" not in fa.files
+        assert fa.files["/lfs/cfg/io.json"] == r.doc_bytes(renders["a"].io)
+        assert (await pl.plan_system(system, nodes, artifacts=arts))[0].empty
     finally:
         for n in nodes.values():
             await n.close()
+
+
+# --- build cache ------------------------------------------------------------------------------
+
+
+def test_source_dependencies_follow_local_includes(tmp_path: Path) -> None:
+    (tmp_path / "inc").mkdir()
+    (tmp_path / "app.c").write_text('#include <bacnet_uc.h>\n#include "cfg.h"\n'
+                                    '#if 0\n  #  include "inc/opt.h"\n#endif\n'
+                                    '#include "missing.h"\n')
+    (tmp_path / "cfg.h").write_text('#include "cfg.h"\n#define SETPOINT 21\n')
+    (tmp_path / "inc" / "opt.h").write_text('#include "../cfg.h"\n')
+    deps = pl.source_dependencies(tmp_path / "app.c")
+    assert deps == sorted([(tmp_path / f).resolve() for f in ("app.c", "cfg.h", "inc/opt.h")])
+
+
+@needs_clang
+def test_build_cache_sees_local_header_changes(tmp_path: Path) -> None:
+    """A change of a header next to the app source invalidates the cached
+    module (HAR-7)."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "app.c").write_text(
+        '#include <bacnet_uc.h>\n#include "cfg.h"\nUC_APP_DECLARE()\n'
+        'UC_EXPORT(uc_app_init) int32_t uc_app_init(void) '
+        '{ return uc_set_tick_period(SETPOINT); }\n')
+    (src / "cfg.h").write_text("#define SETPOINT 21\n")
+    app = m.AppSpec(name="app", node="n", source=src / "app.c")
+    builder = pl.ArtifactBuilder(tmp_path / "cache")
+    first = builder.wasm_for(app)
+    assert builder.wasm_for(app) == first and len(builder.log) == 1  # cached
+    (src / "cfg.h").write_text("#define SETPOINT 35\n")
+    second = builder.wasm_for(app)
+    assert second != first and len(builder.log) == 2
+    assert second.read_bytes() != first.read_bytes()
+    # another opt level or heap size is another key as well
+    assert pl.ArtifactBuilder(tmp_path / "cache", opt="-O2").wasm_key(app) != \
+        builder.wasm_key(app)

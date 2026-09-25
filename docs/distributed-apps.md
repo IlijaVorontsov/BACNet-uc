@@ -385,6 +385,9 @@ simulated nodes by the simulation manager (kill and re-spawn) when it may
 Configuration documents are uploaded as staged `<doc>.json.new` files and
 activated by the reload; if the node rejects a document (rc `INVALID`) it
 deletes the staged file and keeps its configuration, and the action fails.
+A staged file found on a node that the plan does not replace (left by a
+`set_config` without reload) is removed first (`clear_staged`), since the
+next reload or the apply's own reboot would activate it.
 
 ## 8. Timing and latency budget
 

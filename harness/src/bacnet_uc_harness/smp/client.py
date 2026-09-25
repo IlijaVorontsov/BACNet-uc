@@ -20,7 +20,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from bacnet_uc_harness.bacnet import enums as bn_enums
-from bacnet_uc_harness.errors import HarnessError, HarnessTimeout, SmpError
+from bacnet_uc_harness.errors import HarnessError, HarnessTimeout, ReloadError, SmpError
 from bacnet_uc_harness.smp import groups as g
 from bacnet_uc_harness.smp.codec import decode_frame, encode_frame
 from bacnet_uc_harness.smp.transport import SerialTransport, SmpTransport, UdpTransport
@@ -116,8 +116,10 @@ class SmpClient:
         timeout: float | None = None,
         *,
         legacy_rc_is_error: bool = True,
+        retries: int | None = None,
     ) -> dict[str, Any]:
-        """Send one request and return the response map.
+        """Send one request and return the response map. ``retries`` overrides
+        the client's number of retransmissions (0: send once).
 
         Raises:
             SmpError: the node answered with a non-zero rc.
@@ -129,7 +131,8 @@ class SmpClient:
         t = self.timeout if timeout is None else timeout
         last: HarnessTimeout | None = None
         raw: bytes | None = None
-        for attempt in range(self.retries + 1):
+        tries = (self.retries if retries is None else retries) + 1
+        for attempt in range(tries):
             try:
                 raw = await self.transport.request(frame, seq, t)
                 break
@@ -144,7 +147,7 @@ class SmpClient:
                 )
         if raw is None:
             raise HarnessTimeout(
-                f"SMP {g.group_name(group)}/{cmd}: no response after {self.retries + 1} attempts"
+                f"SMP {g.group_name(group)}/{cmd}: no response after {tries} attempt(s)"
                 f" ({last})"
             )
         hdr, rsp = decode_frame(raw)
@@ -223,37 +226,114 @@ class SmpClient:
         return size
 
     async def fs_upload(
-        self, path: str, data: bytes, progress: ProgressCallback | None = None
+        self, path: str, data: bytes, progress: ProgressCallback | None = None, *,
+        verify: bool = True, attempts: int = 3,
     ) -> None:
-        """Upload ``data`` to ``path`` (FS group ``file`` write, chunked)."""
+        """Upload ``data`` to ``path`` (FS group ``file`` write, chunked).
+
+        Zephyr's fs_mgmt keeps one upload open between chunks, and a chunk
+        whose response was lost is sent again (same sequence number):
+
+        - at an offset > 0 the node answers ``FILE_OFFSET_NOT_VALID`` with the
+          length it has; when that is the end of this chunk the upload goes on
+          from there;
+        - the first chunk of a multi-chunk upload is never sent twice: at
+          offset 0 the node truncates the file but keeps its upload offset,
+          so a repeated first chunk would be written twice.
+
+        Any other surprise (no answer to the first chunk, a reply offset other
+        than offset + chunk length) closes the upload (``fs_close``) and starts
+        it again from offset 0. With ``verify`` the SHA-256 of the file on the
+        node is compared with ``data`` at the end (a mismatch is another
+        attempt; nodes that cannot hash are trusted).
+
+        Raises:
+            HarnessError: the file is still not right after ``attempts``
+                attempts.
+            SmpError: the node rejected the upload (e.g. unknown mount point).
+            HarnessTimeout: no answer to a later chunk despite the retries.
+        """
         data = bytes(data)
         total = len(data)
         max_frame = await self.max_frame()
         template = {"off": total, "data": b"", "len": total, "name": path}
         chunk = self._chunk_size(max_frame, template, g.GROUP_FS, g.FS_FILE)
+        why = ""
+        for attempt in range(max(1, attempts)):
+            if attempt:
+                log.info("fs upload %s: %s; starting again", path, why)
+                try:
+                    await self.fs_close()
+                except (SmpError, HarnessTimeout):
+                    pass
+            problem = await self._fs_upload_pass(path, data, chunk, progress)
+            if problem is None and verify and total:
+                problem = await self._fs_verify(path, data)
+            if problem is None:
+                return
+            why = problem
+        raise HarnessError(f"fs upload {path}: {why} (gave up after {max(1, attempts)} "
+                           "attempts)")
+
+    async def _fs_upload_pass(self, path: str, data: bytes, chunk: int,
+                              progress: ProgressCallback | None) -> str | None:
+        """One upload from offset 0; the reason to start again, or None."""
+        total = len(data)
         off = 0
-        stalls = 0
+        resumed = False
         while True:
             piece = data[off : off + chunk]
             req: dict[str, Any] = {"off": off, "data": piece, "name": path}
             if off == 0:
                 req["len"] = total
-            rsp = await self.write(g.GROUP_FS, g.FS_FILE, req)
-            new_off = rsp.get("off")
-            if not isinstance(new_off, int):
-                raise HarnessError(f"fs upload {path}: response without offset: {rsp}")
-            if new_off <= off and piece:
-                stalls += 1
-                if stalls > 3:
-                    raise HarnessError(f"fs upload {path}: offset does not advance ({new_off})")
-            else:
-                stalls = 0
+            # a repeated first chunk of a longer file is written twice
+            once = off == 0 and len(piece) < total
+            try:
+                rsp = await self.request(g.OP_WRITE, g.GROUP_FS, g.FS_FILE, req,
+                                         retries=0 if once else None)
+                new_off = rsp.get("off")
+                if not isinstance(new_off, int):
+                    raise HarnessError(f"fs upload {path}: response without offset: {rsp}")
+                if new_off != off + len(piece):
+                    return (f"the node answered offset {new_off} to {len(piece)} bytes at "
+                            f"offset {off}")
+            except HarnessTimeout:
+                if not once:
+                    raise
+                return "no response to the first chunk"
+            except SmpError as exc:
+                have = exc.response.get("len")
+                if exc.group != g.GROUP_FS or exc.rc != g.FS_RC_FILE_OFFSET_NOT_VALID:
+                    raise
+                if off == 0 or not isinstance(have, int) or not off < have <= off + len(piece):
+                    return f"the node has {have} bytes where {off} were expected"
+                # the chunk was written, only its response was lost; the node
+                # closed the upload and continues the file at its length
+                new_off = have
+                resumed = True
             off = new_off
             await _report(progress, min(off, total), total)
             if off >= total:
                 break
-        if off != total:
-            raise HarnessError(f"fs upload {path}: node reports offset {off}, expected {total}")
+        if resumed:
+            # a continued upload has no length: the node keeps the file open
+            try:
+                await self.fs_close()
+            except SmpError:
+                pass
+        return None
+
+    async def _fs_verify(self, path: str, data: bytes) -> str | None:
+        try:
+            got = await self.fs_hash(path, "sha256")
+        except SmpError as exc:
+            if exc.rc_name in ("CHECKSUM_HASH_NOT_FOUND", "ENOTSUP", "NOT_SUPPORTED"):
+                return None  # the node cannot hash: trust the offsets
+            raise
+        want = hashlib.sha256(data).digest()
+        if got != want:
+            return f"SHA-256 of the file on the node is {got.hex()}, expected {want.hex()}"
+        return None
 
     async def fs_download(self, path: str, progress: ProgressCallback | None = None, *,
                           fresh: bool = True) -> bytes:
@@ -442,8 +522,18 @@ class SmpClient:
         return await self.read(g.GROUP_UC_NODE, g.UC_NODE_INFO, {})
 
     async def node_reload(self, doc: str = "all") -> bool:
-        """Re-read a configuration document; returns ``reboot_required``."""
-        rsp = await self.write(g.GROUP_UC_NODE, g.UC_NODE_RELOAD, {"doc": doc})
+        """Re-read a configuration document; returns ``reboot_required``.
+
+        Raises:
+            ReloadError: a document failed (with ``"all"`` the others were
+                applied); it carries the node's ``reboot_required``.
+        """
+        try:
+            rsp = await self.write(g.GROUP_UC_NODE, g.UC_NODE_RELOAD, {"doc": doc})
+        except SmpError as exc:
+            if exc.group == g.GROUP_UC_NODE:
+                raise ReloadError(doc, exc) from exc
+            raise
         return bool(rsp.get("reboot_required", False))
 
     async def node_objects(self, offset: int = 0, count: int | None = None) -> dict[str, Any]:

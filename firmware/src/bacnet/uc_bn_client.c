@@ -10,8 +10,9 @@
  * fills the slot and waits; the BACnet thread binds the device (static
  * binding, address cache or Who-Is), sends the request, and completes the
  * slot from the confirmation handlers or on deadline. A caller that gives
- * up marks the slot abandoned; the BACnet thread then only frees it and
- * never touches the caller's memory again.
+ * up (its own deadline, or its cancel flag: an application being stopped)
+ * marks the slot abandoned; the BACnet thread then only frees it and never
+ * touches the caller's memory again.
  */
 #include <errno.h>
 #include <string.h>
@@ -369,15 +370,20 @@ static int cl_local(bool write, uint16_t type, uint32_t instance, uint32_t prop,
 	return -EREMOTEIO;
 }
 
+static bool cl_cancelled(const atomic_t *cancel)
+{
+	return (cancel != NULL) && (atomic_get(cancel) != 0);
+}
+
 static int cl_transact(bool write, uint32_t device, uint16_t type, uint32_t instance,
 		       uint32_t prop, int32_t index, BACNET_APPLICATION_DATA_VALUE *out,
 		       const BACNET_APPLICATION_DATA_VALUE *value, uint8_t priority,
-		       uint32_t timeout_ms)
+		       uint32_t timeout_ms, const atomic_t *cancel)
 {
 	BACNET_APPLICATION_DATA_VALUE null_value = { 0 };
 	struct cl_slot *s = NULL;
 	k_spinlock_key_t key;
-	k_timepoint_t end;
+	int64_t end;
 	int len = 0;
 
 	if (uc_bn_in_thread()) {
@@ -402,6 +408,9 @@ static int cl_transact(bool write, uint32_t device, uint16_t type, uint32_t inst
 	}
 	if (!uc_bn_started()) {
 		return -EHOSTUNREACH;
+	}
+	if (cl_cancelled(cancel)) {
+		return -ECANCELED;
 	}
 	if (timeout_ms == 0) {
 		timeout_ms = CL_TIMEOUT_DEFAULT_MS;
@@ -462,9 +471,22 @@ static int cl_transact(bool write, uint32_t device, uint16_t type, uint32_t inst
 	k_spin_unlock(&cl_lock, key);
 	uc_bn_wake();
 
-	end = sys_timepoint_calc(K_MSEC(timeout_ms + CL_WAIT_MARGIN_MS));
+	end = k_uptime_get() + (int64_t)timeout_ms + CL_WAIT_MARGIN_MS;
 	for (;;) {
-		int rc = k_sem_take(&s->sem, sys_timepoint_timeout(end));
+		int64_t left = end - k_uptime_get();
+		bool cancelled = false;
+		bool expired = false;
+
+		if (left > 0) {
+			/* with a cancel flag, wake up periodically to look at it */
+			(void)k_sem_take(&s->sem, K_MSEC((cancel != NULL)
+							 ? MIN(left, UC_BN_CANCEL_POLL_MS)
+							 : left));
+			cancelled = cl_cancelled(cancel);
+			expired = (k_uptime_get() >= end);
+		} else {
+			expired = true;
+		}
 
 		key = k_spin_lock(&cl_lock);
 		if (s->state == CL_DONE) {
@@ -475,28 +497,31 @@ static int cl_transact(bool write, uint32_t device, uint16_t type, uint32_t inst
 			k_spin_unlock(&cl_lock, key);
 			return result;
 		}
-		if (rc != 0) {
-			/* the BACnet thread did not answer in time */
+		if (cancelled || expired) {
+			/* given up: the BACnet thread did not answer in time, or
+			 * the caller is being stopped */
 			s->out = NULL;
 			s->state = CL_ABANDONED;
 			k_spin_unlock(&cl_lock, key);
 			uc_bn_wake();
-			return -ETIMEDOUT;
+			return cancelled ? -ECANCELED : -ETIMEDOUT;
 		}
 		k_spin_unlock(&cl_lock, key);
 	}
 }
 
 int uc_bn_remote_read(uint32_t device, uint16_t type, uint32_t instance, uint32_t prop,
-		      int32_t index, BACNET_APPLICATION_DATA_VALUE *out, uint32_t timeout_ms)
+		      int32_t index, BACNET_APPLICATION_DATA_VALUE *out, uint32_t timeout_ms,
+		      const atomic_t *cancel)
 {
-	return cl_transact(false, device, type, instance, prop, index, out, NULL, 0, timeout_ms);
+	return cl_transact(false, device, type, instance, prop, index, out, NULL, 0, timeout_ms,
+			   cancel);
 }
 
 int uc_bn_remote_write(uint32_t device, uint16_t type, uint32_t instance, uint32_t prop,
 		       int32_t index, const BACNET_APPLICATION_DATA_VALUE *value,
-		       uint8_t priority, uint32_t timeout_ms)
+		       uint8_t priority, uint32_t timeout_ms, const atomic_t *cancel)
 {
 	return cl_transact(true, device, type, instance, prop, index, NULL, value, priority,
-			   timeout_ms);
+			   timeout_ms, cancel);
 }

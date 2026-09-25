@@ -352,7 +352,7 @@ sequenceDiagram
     participant H as harness
     participant N as node
     H->>H: build apps (uc-cc, cached by content hash), render documents
-    H->>N: node_info, fs hash device.json/io.json, apps.json, uc_app list, fs hash modules, objects
+    H->>N: node_info, fs hash device.json/io.json and staged *.json.new, apps.json, uc_app list, fs hash modules, objects
     H->>H: diff -> actions
     H->>N: 1 device.json staged upload (.new) + reload (reboot_required?)
     H->>N: 2 io.json staged upload (.new) + reload (IO objects re-created)
@@ -375,6 +375,7 @@ the other points are bound.
 
 | Action | When |
 |--------|------|
+| `clear_staged device/io/apps` | a staged `<doc>.json.new` is on the node that differs from the rendered document (any staged `apps.json.new`) and no `push_config` replaces it: the next reload or boot would activate it |
 | `push_config device/io` | file missing or SHA-256 differs |
 | `reload io` | `io.json` current but IO objects missing |
 | `deploy_app` | not installed, module hash differs (upload), or manifest fields differ (install only) |

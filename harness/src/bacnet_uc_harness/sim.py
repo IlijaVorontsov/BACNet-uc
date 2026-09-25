@@ -9,6 +9,9 @@ the configured port of whatever network the process runs in. Three modes:
     One ``zephyr.exe`` directly on the host network. Only **one** node is
     possible (SMP port 1337 is fixed at build time). The node is reached at
     127.0.0.1; its BACnet/IP address is loopback (no ``network`` section).
+    The start is refused while UDP 1337 or the node's BACnet/IP port is in
+    use on the host: a second node would keep running without its SMP
+    server, and the harness would manage whichever node owns the port.
 
 ``netns``
     One Linux network namespace per node (``bnuc-<node>``), each with a veth
@@ -30,7 +33,9 @@ the configured port of whatever network the process runs in. Three modes:
 Each node runs with ``--flash=<workdir>/<node>.flash.bin`` (persistent
 LittleFS image) and a unique ``--seed``. Process ids, addresses and commands
 are kept in ``<workdir>/sim-state.json`` so another process can stop the
-simulation.
+simulation. A process id from that file is only trusted (signalled, reported
+alive) while the process still has the start time recorded at spawn: after a
+host reboot or a crash the id may belong to an unrelated process.
 
 Rebooting: the firmware's native_sim build sets ``CONFIG_NATIVE_SIM_REBOOT=y``,
 so ``os reset`` / ``kernel reboot`` restart the process in place (same pid,
@@ -48,6 +53,7 @@ import os
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import time
 from collections.abc import Callable, Sequence
@@ -72,6 +78,9 @@ DEFAULT_IMAGE = "ubuntu:24.04"
 CAP_NET_ADMIN = 12
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 CAP_SYS_ADMIN = 21
+SMP_PORT = 1337  # CONFIG_MCUMGR_TRANSPORT_UDP_PORT of the firmware
+#: log lines of a node whose SMP (smp_udp) or BACnet/IP (bip-init) socket could not be bound
+_BIND_FAILED = re.compile(r"Could not bind|zsock_bind\(\) failure")
 
 
 @dataclass
@@ -90,6 +99,8 @@ class SimNode:
     board: str = "native_sim/native/64"
     bacnet_port: int = 47808
     started_at: float | None = None
+    #: start time of process ``pid`` (epoch seconds, from /proc) at spawn
+    proc_start: float | None = None
 
 
 @dataclass
@@ -127,6 +138,16 @@ def _has_caps(*caps: int) -> bool:
     return os.geteuid() == 0
 
 
+def _udp_port_free(port: int, host: str = "0.0.0.0") -> bool:
+    """Whether a UDP socket can bind ``host:port`` (like the node would)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        try:
+            s.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
 def host_if_name(index: int) -> str:
     return f"vbnuc{index}"
 
@@ -157,6 +178,19 @@ class NetBackend:
 
     def preexec(self, ns: str) -> Callable[[], None] | None:
         return None
+
+    def link_exists(self, name: str) -> bool:
+        """Whether a network interface ``name`` exists in the network
+        namespace of this process (an ioctl, unlike /sys/class/net)."""
+        try:
+            socket.if_nametoindex(name)
+        except OSError:
+            return False
+        return True
+
+    def netns_exists(self, ns: str) -> bool:
+        """Whether the named network namespace ``ns`` exists."""
+        return os.path.exists(f"{NETNS_RUN_DIR}/{ns}")
 
 
 class IpCommandBackend(NetBackend):
@@ -440,6 +474,47 @@ class SimManager:
         }
 
     # -- lifecycle
+    def _netns_in_use(self, backend: NetBackend, nodes: Sequence[SimNode]) -> list[str]:
+        """The bridge, namespaces and host veth names of this plan that exist."""
+        out = []
+        if backend.link_exists(self.bridge):
+            out.append(f"bridge {self.bridge}")
+        for n in nodes:
+            if n.netns and backend.netns_exists(n.netns):
+                out.append(f"namespace {n.netns}")
+            if n.host_if and backend.link_exists(n.host_if):
+                out.append(f"interface {n.host_if}")
+        return out
+
+    @staticmethod
+    def _host_ports_in_use(nodes: Sequence[SimNode]) -> list[str]:
+        """UDP ports a host-mode node needs that are taken on this host."""
+        busy = []
+        for n in nodes:
+            for what, port in (("SMP", SMP_PORT), ("BACnet/IP", n.bacnet_port)):
+                if not _udp_port_free(port):
+                    busy.append(f"UDP {port} ({what})")
+        return busy
+
+    def _check_host_ports(self, nodes: Sequence[SimNode]) -> None:
+        busy = self._host_ports_in_use(nodes)
+        if busy:
+            raise HarnessError(
+                f"mode 'host': {', '.join(busy)} already in use on this host (another node or "
+                "simulation?); the node would start without its SMP server and the harness "
+                "would talk to whatever owns the port. Stop it, or use mode 'netns' or "
+                "'compose'")
+
+    def _bind_failures(self, node: SimNode, since: int) -> list[str]:
+        """Log lines written since offset ``since`` that report a failed bind."""
+        try:
+            with open(node.log, "rb") as f:
+                f.seek(since)
+                text = f.read().decode(errors="replace")
+        except OSError:
+            return []
+        return [_ANSI.sub("", ln) for ln in text.splitlines() if _BIND_FAILED.search(ln)]
+
     def _spawn(self, node: SimNode, cwd: Path) -> None:
         log = open(node.log, "ab")  # noqa: SIM115 - handed to the child
         try:
@@ -453,6 +528,7 @@ class SimManager:
             log.close()
         node.pid = proc.pid
         node.started_at = time.time()
+        node.proc_start = _proc_start_time(proc.pid)
         self._procs[node.name] = proc
 
     def start(self, system: System, firmware_exe: Path | str, workdir: Path | str | None = None,
@@ -468,9 +544,11 @@ class SimManager:
         wd.mkdir(parents=True, exist_ok=True)
         if (wd / STATE_FILE).is_file():
             old = SimManager.load(wd)
-            if any(_alive(n.pid) for n in (old.state.nodes.values() if old.state else [])):
+            if any(_node_alive(n) for n in (old.state.nodes.values() if old.state else [])):
                 raise HarnessError(f"a simulation is already running in {wd}; stop it first")
         nodes = self.plan_nodes(system, exe, wd)
+        if self.mode == "host":
+            self._check_host_ports(nodes)
         if erase_flash:
             for n in nodes:
                 Path(wd / f"{n.name}.flash.bin").unlink(missing_ok=True)
@@ -492,30 +570,52 @@ class SimManager:
                 raise HarnessError("mode 'netns' needs root (CAP_NET_ADMIN and CAP_SYS_ADMIN); "
                                    "use mode 'compose' or run the harness as root")
             backend = self.backend
+            taken = self._netns_in_use(backend, nodes)
+            if taken:
+                self.state = None
+                raise HarnessError(
+                    f"mode 'netns': {', '.join(taken)} already exist(s): another netns "
+                    "simulation is running (sim_status / sim_stop), or they are left over from "
+                    f"one that crashed (remove them: ip link del {self.bridge}; ip netns del "
+                    "<name>)")
             self.state.backend = backend.name
             self.state.bridge = self.bridge
             self.state.host_address = f"{self.subnet}.254"
             self._save()
+            # tear down only what this call creates: never another simulation's
+            # bridge or namespaces
+            bridge: str | None = None
+            created: list[str] = []
             try:
+                bridge = self.bridge  # did not exist: ours even if half made
                 backend.setup_bridge(self.bridge, self.host_cidr())
                 for n in nodes:
+                    created.append(n.netns or "")
                     backend.add_node(n.netns or "", n.host_if or "", f"{n.address}/24",
                                      self.bridge, SIM_HOST_ADDRESS if self.subnet == SIM_SUBNET
                                      else f"{self.subnet}.254")
             except Exception as exc:
-                backend.teardown(self.bridge, [n.netns for n in nodes if n.netns])
+                backend.teardown(bridge, [ns for ns in created if ns])
                 self.state = None
                 (wd / STATE_FILE).unlink(missing_ok=True)
                 raise HarnessError(f"network setup failed: {exc}") from exc
+        log_start = {}
         for n in nodes:
+            log_start[n.name] = _file_size(n.log)
             self._spawn(n, wd)
         self._save()
         time.sleep(startup_wait)
-        dead = [n.name for n in nodes if not _alive(n.pid)]
+        dead = [n.name for n in nodes if not _node_alive(n)]
         if dead:
             tails = {d: self.log_tail(d, 10) for d in dead}
             self.stop()
             raise HarnessError(f"simulated node(s) exited right after start: {tails}")
+        unbound = {n.name: lines for n in nodes
+                   if (lines := self._bind_failures(n, log_start[n.name]))}
+        if unbound:
+            self.stop()
+            raise HarnessError(f"simulated node(s) could not bind their sockets (port in use?): "
+                               f"{unbound}")
         return {n.name: n.address for n in nodes}
 
     def _compose(self, args: list[str]) -> str:
@@ -533,20 +633,20 @@ class SimManager:
         return res.stdout
 
     def _kill(self, node: SimNode, timeout: float = 3.0) -> None:
-        if not _alive(node.pid):
-            return
+        if not _node_alive(node):
+            return  # gone, or the pid now belongs to another process
         pid = node.pid or 0
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(pid, signal.SIGTERM)
         deadline = time.monotonic() + timeout
-        while _alive(pid) and time.monotonic() < deadline:
+        while _node_alive(node) and time.monotonic() < deadline:
             proc = self._procs.get(node.name)
             if proc is not None:
                 with contextlib.suppress(subprocess.TimeoutExpired):
                     proc.wait(0.1)
             else:
                 time.sleep(0.1)
-        if _alive(pid):
+        if _node_alive(node):
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(pid, signal.SIGKILL)
         proc = self._procs.pop(node.name, None)
@@ -611,11 +711,19 @@ class SimManager:
             self._compose(["restart", node])
             return n
         self._kill(n)
+        if self.state.mode == "host":
+            self._check_host_ports([n])
+        since = _file_size(n.log)
         self._spawn(n, Path(self.state.workdir))
         self._save()
         time.sleep(wait)
-        if not _alive(n.pid):
+        if not _node_alive(n):
             raise HarnessError(f"node {node!r} exited after restart: {self.log_tail(node, 10)}")
+        unbound = self._bind_failures(n, since)
+        if unbound:
+            self._kill(n)
+            raise HarnessError(f"node {node!r} could not bind its sockets after the restart "
+                               f"(port in use?): {unbound}")
         return n
 
     def status(self) -> dict[str, Any]:
@@ -626,7 +734,7 @@ class SimManager:
         for n in st.nodes.values():
             nodes[n.name] = {"address": n.address, "smp": f"udp:{n.address}:1337",
                              "bacnet": f"{n.address}:{n.bacnet_port}", "pid": n.pid,
-                             "alive": _alive(n.pid) if st.mode != "compose" else None,
+                             "alive": _node_alive(n) if st.mode != "compose" else None,
                              "netns": n.netns, "flash": n.flash, "log": n.log,
                              "device_instance": n.device_instance}
         return {"running": True, "system": st.system, "mode": st.mode, "workdir": st.workdir,
@@ -650,6 +758,48 @@ class SimManager:
                  "bacnet_address": f"{n.address}:{n.bacnet_port}", "board": n.board,
                  "device_instance": n.device_instance, "system": self.state.system}
                 for n in self.state.nodes.values()]
+
+
+def _file_size(path: str) -> int:
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+
+def _proc_start_time(pid: int) -> float | None:
+    """Start time of process ``pid`` in seconds since the epoch (Linux
+    /proc), ``None`` when unknown."""
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        ticks = int(fields[19])  # field 22, starttime (clock ticks after boot)
+        btime = next(int(ln.split()[1]) for ln in Path("/proc/stat").read_text().splitlines()
+                     if ln.startswith("btime "))
+        return btime + ticks / os.sysconf("SC_CLK_TCK")
+    except (OSError, IndexError, ValueError, StopIteration):
+        return None
+
+
+def _same_process(node: SimNode) -> bool:
+    """Whether ``node.pid`` is still the process the manager started: its
+    start time matches the one recorded at spawn (state files without it:
+    ``started_at``). Without /proc the pid is trusted."""
+    if not node.pid:
+        return False
+    now = _proc_start_time(node.pid)
+    if now is None:
+        return not Path("/proc/self/stat").exists()
+    if node.proc_start is not None:
+        return abs(now - node.proc_start) < 1.0
+    if node.started_at is not None:
+        # recorded right after the spawn: the process started just before
+        return -5.0 < node.started_at - now < 5.0
+    return False
+
+
+def _node_alive(node: SimNode) -> bool:
+    """The node's process is running and is still the one that was started."""
+    return _alive(node.pid) and _same_process(node)
 
 
 def _alive(pid: int | None) -> bool:

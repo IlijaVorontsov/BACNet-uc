@@ -180,7 +180,7 @@ depending on the error, `issues` (JSON-pointer paths), `group`/`rc`/`rc_name`
 | Tool | Purpose | Key arguments | Hints | Gate |
 |------|---------|---------------|-------|------|
 | `validate_system` | schema, placeholders, semantic checks (object collisions, link priorities, value objects), rendered document hashes, WAMR pool budget per node (`wamr_pool`; builds the apps, warning above 90 %) | `system` (manifest path), `live_catalogs?` (false) | ro, idem | |
-| `plan_system` | diff manifest vs. live nodes; list of actions (`push_config`, `reload`, `remove_app`, `deploy_app`, `start_app`, `restart_app`) and notes (builds apps, cached) | `system`, `prune?` (false) | ro | |
+| `plan_system` | diff manifest vs. live nodes; list of actions (`clear_staged`, `push_config`, `reload`, `remove_app`, `deploy_app`, `start_app`, `restart_app`) and notes (builds apps, cached) | `system`, `prune?` (false) | ro | |
 | `apply_system` | execute the plan: device → IO → apps → links (then app restarts); reboot nodes that need it | `system`, `dry_run?` (**true**), `prune?` (false), `reboot?` (true) | destr | dry run by default |
 | `run_system_tests` | manifest acceptance tests (force, release, write, wait, expect) | `system`, `tests?`, `stop_on_failure?` (true) | destr | forced channels are released after each test |
 | `system_status` | per node: reachability, firmware, identity, uptime, app states, pending actions | `system` | ro | |
@@ -333,7 +333,7 @@ sequenceDiagram
     A->>H: plan_system("systems/hvac.yaml")
     H->>H: build apps (content-hash cache), render documents
     H->>N: node_info, fs hash of documents and modules, uc_app list, objects
-    H-->>A: actions (push_config, reload, deploy_app, start_app, remove_app, restart_app), notes
+    H-->>A: actions (clear_staged, push_config, reload, deploy_app, start_app, remove_app, restart_app), notes
     A->>H: apply_system("systems/hvac.yaml")
     H-->>A: dry run: the same actions with status "dry-run"
     A->>H: apply_system("systems/hvac.yaml", dry_run=false)
@@ -677,7 +677,7 @@ A server started separately with `--http` is added with
 | One manifest per target | simulation and hardware variants are separate files (overlay **Planned**) |
 | The WAMR pool budget is an estimate | `validate_system` predicts each node's pool use from the built modules and warns above 90 % of `CONFIG_UC_APP_POOL_SIZE`; the constants are fitted to `native_sim` (64-bit) measurements, so they are conservative for the boards, and Thumb AOT files are not calibrated. A node that runs out still fails the start (`NO_MEM`, `last_error`) |
 | Value objects ignore priorities | AV, BV and MSV on BACnet-uc nodes have no priority array: `validate_system` rejects two links to one value object and priority 6 on outputs, and warns about a priority or a `null` test write on a value object |
-| A staged document waits for the next reload | a `set_config(reload=false)` leaves `<doc>.json.new` on the node, and the next reload or boot activates it even if a later `set_config` was skipped because the active document already matched |
+| A staged document waits for the next reload | a `set_config(reload=false)` leaves `<doc>.json.new` on the node, and the next reload or boot activates it. A later `set_config` of the document that is already active removes it (`staged_cleared`), and `plan_system` plans `clear_staged` for a staged document that differs from the manifest, so `apply_system` removes it before any reload or reboot |
 | No partial apply per node | `apply_system` applies all nodes of a manifest; use a manifest with fewer nodes for a canary ([distributed-apps.md](distributed-apps.md#11-versioning-and-rollout)) |
 
 ## 12. Verification
