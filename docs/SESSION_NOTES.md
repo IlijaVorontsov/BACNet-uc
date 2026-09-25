@@ -1,5 +1,21 @@
 # Session notes: HIL rig (session `claude/hardware-in-loop-testing-x74tww`)
 
+### Decisions from the user (2026-09-25, read first)
+
+- **Boards the user owns:** FRDM-MCXN947, FRDM-MCXA156, FRDM-MCXN236, FRDM-MCXA153,
+  nRF54LM20 DK and several nRF54L15 DKs. **No NUCLEO-F767ZI is listed.** The rig
+  therefore moves its canonical DUT to the **FRDM-MCXN947** (both apps already build
+  for `frdm_mcxn947/mcxn947/cpu0`). The F767ZI stays a supported, optional profile. The
+  sections below still describe the F767 plan and are being updated (design v2.2).
+- **MS/TP UART = the planned one** in the BACnet branch's `docs/hardware.md` §5: the
+  Arduino UART with DE/RE on a GPIO (MCXN947: LPUART2 TX P4_2 D1, RX P4_3 D0, DE P0_24
+  D11; F767ZI: USART6 TX PG14 D1, RX PG9 D0, DE PD15 D9). This replaces the rig's
+  USART2 hardware-DE proposal (FW-07). The rig's MS/TP tests will measure the software
+  DE timing that the roadmap lists as an open question for 76 800 and 115 200 bit/s.
+- **`main` exists** (created at the BACnet tip `e62a095`, where the BACnet CI already
+  expects it). Integrate through pull requests into `main`. The repo default branch is
+  still the MQTT branch until the user switches it in the GitHub settings.
+
 The HIL session builds a hardware-in-the-loop rig that runs your firmware on real boards:
 - a host PC;
 - a NUCLEO-F767ZI DUT;
