@@ -142,4 +142,15 @@ storage on the device**; long-term history lives on the gateway.
 | M6 | **Logs over MQTT.** A log backend that copies WRN+ (level configurable via M5) into a RAM ring buffer. The MQTT thread publishes new entries, non-retained, QoS 0, rate-limited, to `<root>/<id>/log` as `{"t":<uptime ms>,"lvl":"wrn","src":"<module>","msg":"..."}`. Plus `{"cmd":"logs","arg":"<n>"}` to fetch the last n lines, including the boot messages from before the first connect. **Never publish from the log backend context** (recursion and blocking inside the net stack). Add `"logs"` to `caps.cmds`. | The harness needs to read logs to troubleshoot. Optionally also offer the BACnet firmware's `overlay-syslog.conf` approach. |
 | M7 | **Wall-clock time (optional).** SNTP from the DHCP/gateway NTP server, a `"ts"` (Unix ms) field in telemetry and log entries once time is valid, and then `CONFIG_MBEDTLS_HAVE_TIME_DATE` for certificate expiry checks (see your security notes). | Correct trend timestamps even when messages are delayed; certificate date validation. |
 
+#### Fit with the HIL rig contract (`claude/hardware-in-loop-testing-x74tww`)
+
+The HIL session published a contract after these requests were written. Its
+items take precedence where they overlap with M4-M7:
+
+- **FW-06:** announce the new UDP 1337 listener (M4), the MCUboot partitions (M4) and any change to the `APP_MQTT_*` site symbols (M5) in your notes *before* pushing.
+- **Release tier:** the rig builds your unmodified default build plus `APP_MQTT_BROKER_HOSTNAME` and the CA file. Keep the plain build as the release artifact and make MCUboot an extra sysbuild variant. Keys and layout for rig-signed images are HIL FW-11.
+- **M5 vs. site settings:** the rig's `APP_MQTT_*` values must stay effective. Stored settings override Kconfig only once they have been written explicitly, and a factory reset (`config_reset` command plus the SMP path) must return the board to the Kconfig defaults. This also covers HIL FW-08 for MQTT. Keep FW-02 (client ID, and hwid/mac/fw in `info`) and the FW-03 banner `MQTT over Ethernet + TLS on <board>`.
+- **M7 = HIL FW-12.** Their note: the `SNTP`/`NET_CONFIG_*` Kconfig symbols alone don't set the clock in mqtt_tls. Call `net_init_clock_via_sntp()` after the DHCP lease, or switch to `NET_CONFIG_SETTINGS` + `NET_CONFIG_AUTO_INIT` and drop `APP_DHCPV4`.
+- **WAMR glue drift (HIL finding):** your `modules/wasm-micro-runtime` still has `WAMR_OS_THREAD_STACKS`, which BACnet 2161be7 removed. Re-sync `modules/` from the BACnet tip.
+
 Please don't take on the hub-side changes (MQTT driver support for `config`/`logs`, persistent-session archiving into the time-series store); they belong to the harness session. M4 needs no hub change because the hub already speaks SMP over UDP.
