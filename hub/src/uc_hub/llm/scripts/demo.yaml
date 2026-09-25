@@ -1,7 +1,7 @@
 # Offline demo for the scripted LLM provider (llm.provider: scripted).
 #
-# Try "Commission room 204", "Run IO checkout for r204-ctl.", "What is the
-# temperature in room 204?" or "help". Rules are checked top to bottom on
+# Try "Commission room 204", "Run IO checkout for r201-ctl.", "What is the
+# temperature in room 201?" or "help". Rules are checked top to bottom on
 # every model call; the first match wins. Only the conversation drives the
 # script, so a run can be resumed after an approval or a question like a real
 # model run. The tool arguments and the results the rules look for are those
@@ -23,8 +23,8 @@ rules:
       text: >-
         This is the offline demo model. It can commission a room ("Commission
         room 204"), check a board's IO with you on site ("Run IO checkout for
-        r204-ctl.") or read a room temperature ("What is the temperature in
-        room 204?"). Every step uses the real tools, approvals and tests of
+        r201-ctl.") or read a room temperature ("What is the temperature in
+        room 201?"). Every step uses the real tools, approvals and tests of
         this hub.
 
   # Commission a room -----------------------------------------------------------
@@ -117,7 +117,7 @@ rules:
       result: '"plan_id"\s*:\s*"(?P<plan_id>[^"]+)"'
     respond:
       thinking: The plan is ready. Applying it needs the user's approval; the approval card shows the diff.
-      text: "Plan ${plan_id} is ready: ${summary}. Please review and approve it so I can apply it."
+      text: "The plan is ready (${summary}). Please review it and approve it so I can apply it."
       tool_calls:
         - name: apply
           args: {plan_id: "${plan_id}"}
@@ -204,7 +204,7 @@ rules:
   - id: io-valve
     when: {user: *checkout, tool: device_describe, ok: true}
     respond:
-      text: "First the valve output ao0: I'll force it to 100 %."
+      text: "First the valve output ao0: I'll force it to 100\u00a0%."
       tool_calls:
         - name: io_force
           args: {node: "${node}", channel: ao0, value: 100, lease_s: 300}
@@ -215,7 +215,7 @@ rules:
       tool_calls:
         - name: ask_user
           args:
-            question: "The valve output ao0 of ${node} is forced to 100 %. Is the valve fully open?"
+            question: "The valve output ao0 of ${node} is forced to 100\u00a0%. Is the valve fully open?"
             options: ["Yes", "No"]
 
   - id: io-valve-release
@@ -284,5 +284,5 @@ rules:
 fallback:
   text: >-
     The offline demo model only knows a few scenarios. Try "Commission room
-    204", "Run IO checkout for r204-ctl." or "What is the temperature in room
-    204?".
+    204", "Run IO checkout for r201-ctl." or "What is the temperature in room
+    201?".

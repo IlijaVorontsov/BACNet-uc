@@ -358,8 +358,7 @@ async def test_unreachable_node_blocks_the_plan(doc: dict[str, Any], nodes: Node
     plan = await make_plan(SiteManifest.from_dict(doc), nodes, uc_link, app_files)
     assert "r204-ctl" not in plan.targets and "r205-ctl" in plan.targets
     assert plan.blocked == {"r204-ctl": "DeviceTimeout: r204-ctl: no answer"}
-    assert plan.warnings[0] == ("r204-ctl: unreachable: DeviceTimeout: r204-ctl: no answer; no changes planned "
-                                "for it, and the plan cannot be applied until it answers")
+    assert not any("r204-ctl" in w for w in plan.warnings)  # blocked says it once
     assert plan.to_json()["blocked"] == plan.blocked
     with pytest.raises(InvalidRequest, match="cannot be applied; unreachable while planning: r204-ctl"):
         await apply_plan(plan, nodes, FakeGateway(), MemoryBackupStore())

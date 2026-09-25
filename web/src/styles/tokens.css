@@ -14,6 +14,7 @@
   --accent-soft: #e2e8f8;
   --ok: #1d8453;
   --ok-soft: #ddf1e6;
+  --ok-ink: #ffffff;
   --warn: #9a6110;
   --warn-soft: #f7ebd4;
   --crit: #be3129;
@@ -47,6 +48,7 @@
     --accent-soft: #1f2945;
     --ok: #4cc08a;
     --ok-soft: #173327;
+    --ok-ink: #0f1412;
     --warn: #e0a54a;
     --warn-soft: #3a2c14;
     --crit: #f07269;
@@ -77,6 +79,7 @@
   --accent-soft: #1f2945;
   --ok: #4cc08a;
   --ok-soft: #173327;
+  --ok-ink: #0f1412;
   --warn: #e0a54a;
   --warn-soft: #3a2c14;
   --crit: #f07269;

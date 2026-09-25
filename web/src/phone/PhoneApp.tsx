@@ -46,7 +46,10 @@ export function PhoneApp() {
   const siteName = (hub.site.data?.name ?? hub.health.data?.site ?? "").toUpperCase();
 
   const titles: Record<PhoneTab, [string, string]> = {
-    agent: [ui.runId ? (summary?.title ?? "Run") : "New run", ui.runId ? `${siteName} · ${runStateTone(state).label}` : siteName],
+    agent: [
+      ui.runId ? (summary?.title ?? "Run") : "New run",
+      ui.runId ? `${siteName} · ${runStateTone(state, view.turnError !== null).label}` : siteName,
+    ],
     site: [hub.site.data?.description || siteName, `${hub.site.data?.summary.devices ?? 0} devices`],
     changes: ["Approvals", approvals ? `${approvals} waiting` : "Nothing waiting"],
     field: ["Field", "Scan, identify, check"],
@@ -98,6 +101,7 @@ export function PhoneApp() {
               )}
             </div>
             <ErrorNote error={error ? { message: error } : null} />
+            <ErrorNote error={hub.runs.data ? null : hub.runs.error} />
             {status === "reconnecting" && <p className="small warn-t">Reconnecting…</p>}
             {ui.runPending ? (
               <p className="mute-t small">Loading runs…</p>

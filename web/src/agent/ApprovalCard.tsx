@@ -1,15 +1,16 @@
 /**
- * Approval card in the agent stream. Tier C on desktop needs a deliberate
- * gesture: Approve only appears inside the expanded card, next to the diff.
- * On phones the card sends the user to the Changes tab, where the sheet asks
- * for a hold (see ApprovalSheet).
+ * Approval card in the agent stream. Tier C needs a deliberate gesture: on
+ * desktop Approve only appears inside the expanded card, next to the diff;
+ * on phones the card sends the user to the Changes tab, where the sheet asks
+ * for a hold (see ApprovalSheet). Tier L (live and reversible, under a lease)
+ * is decided in place, so an IO checkout on a phone stays in the stream.
  */
 
 import { useState } from "react";
 import type { Approval } from "../api/types";
 import { formatClock, formatExpiry } from "../lib/format";
 import { useDecide } from "../state/actions";
-import { canApprove, useHub } from "../state/hub";
+import { canApprove, useHub, usePlanWarnings } from "../state/hub";
 import { useUi } from "../state/ui";
 import { ErrorNote, TierBadge } from "../ui/common";
 import { DiffView } from "../ui/DiffView";
@@ -35,18 +36,26 @@ export function DecisionLine({ approval }: { approval: Approval }) {
   return null;
 }
 
+/** The desktop card's toggle names what it reveals: the diff, or the approve step and a comment. */
+function toggleLabel(open: boolean, approval: Approval): string {
+  if (approval.diff) return open ? "Hide diff" : "Review diff";
+  if (open) return "Hide";
+  return approval.tier === "C" ? "Review" : "Comment";
+}
+
 export function ApprovalCard({ approval, variant }: { approval: Approval; variant: "desktop" | "phone" }) {
   const { me } = useHub();
   const ui = useUi();
   const [open, setOpen] = useState(false);
   const [comment, setComment] = useState("");
   const { decide, busy, error, local } = useDecide(approval);
+  const warnings = usePlanWarnings(local);
   const allowed = canApprove(me.data, local.tier);
   const pending = local.state === "pending";
   const needsExpand = local.tier === "C";
 
   return (
-    <section className={`appr ${local.state}`} aria-label={`Approval: ${local.title}`}>
+    <section className={`appr tier-${local.tier} ${local.state}`} aria-label={`Approval: ${local.title}`}>
       <h4>
         <TierBadge tier={local.tier} />
         {local.title}
@@ -54,7 +63,9 @@ export function ApprovalCard({ approval, variant }: { approval: Approval; varian
       {local.summary.length > 0 && (
         <ul>
           {local.summary.map((s, i) => (
-            <li key={i}>{s}</li>
+            <li key={i} className={warnings.has(s) ? "warn-t" : undefined}>
+              {s}
+            </li>
           ))}
         </ul>
       )}
@@ -63,19 +74,33 @@ export function ApprovalCard({ approval, variant }: { approval: Approval; varian
         {pending && ` · ${formatExpiry(local.expires_at)}`}
       </div>
       {!pending && <DecisionLine approval={local} />}
+      {pending && !allowed && <p className="mute-t small">Your role cannot approve tier {local.tier} changes.</p>}
       {pending && variant === "phone" && (
         <div className="row">
-          <button type="button" className="btn primary" onClick={() => ui.setPhoneTab("changes")}>
-            Review in Changes
-          </button>
+          {needsExpand ? (
+            <button type="button" className="btn primary" onClick={() => ui.setPhoneTab("changes")}>
+              Review in Changes
+            </button>
+          ) : (
+            <>
+              <button type="button" className="btn primary" disabled={busy || !allowed} onClick={() => void decide("approve")}>
+                Approve
+              </button>
+              <button type="button" className="btn" disabled={busy || !allowed} onClick={() => void decide("approve", undefined, "run")}>
+                Approve for this run
+              </button>
+              <button type="button" className="btn danger" disabled={busy || !allowed} onClick={() => void decide("reject")}>
+                Reject
+              </button>
+            </>
+          )}
         </div>
       )}
       {pending && variant === "desktop" && (
         <>
-          {!allowed && <p className="mute-t small">Your role cannot approve tier {local.tier} changes.</p>}
           {open && (
             <div className="apprbody">
-              {local.diff ? <DiffView diff={local.diff} label={`Diff of ${local.title}`} /> : <p className="mute-t small">No diff attached.</p>}
+              {local.diff && <DiffView diff={local.diff} label={`Diff of ${local.title}`} />}
               <label className="field">
                 <span>Comment for the agent (optional)</span>
                 <input value={comment} onChange={(e) => setComment(e.target.value)} disabled={busy} />
@@ -100,7 +125,7 @@ export function ApprovalCard({ approval, variant }: { approval: Approval; varian
               </button>
             )}
             <button type="button" className="btn" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
-              {open ? "Hide diff" : "Review diff"}
+              {toggleLabel(open, local)}
             </button>
             {local.plan_id && (
               <button type="button" className="btn link" onClick={() => ui.setWorkTab("changes")}>

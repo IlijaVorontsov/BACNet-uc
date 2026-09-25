@@ -44,6 +44,8 @@ async def test_requests_need_a_valid_token(api: httpx.AsyncClient) -> None:
     assert health.status_code == 200 and health.json()["dev_mode"] is False
     assert (await api.get("/api/me", headers=OPS)).json() == {"user": "tech1", "roles": ["operator"]}
     assert (await api.get("/api/me", headers={"Authorization": "bearer t-view"})).json()["user"] == "guest"
+    # A token is no ambient credential: where the request comes from does not matter.
+    assert (await api.get("/api/me", headers={**VIEW, "Origin": "https://other.example"})).status_code == 200
 
 
 async def test_roles(api: httpx.AsyncClient, secured: Hub) -> None:

@@ -437,7 +437,7 @@ table.pts { width: 100%; border-collapse: collapse; font-size: 13px; }
 .change { border-top: 1px solid var(--line-2); }
 .change:first-of-type { border-top: 0; }
 .chead { display: flex; align-items: center; gap: 8px; padding: 8px 12px; font-size: 13px; }
-.chead .tag { margin-left: auto; }
+.chead .tag { margin-left: auto; white-space: nowrap; }
 .target .code { border: 0; border-radius: 0; border-top: 1px solid var(--line-2); }
 .rollback { font-size: 12.5px; color: var(--ink-2); margin: 0; }
 
@@ -445,6 +445,8 @@ table.pts { width: 100%; border-collapse: collapse; font-size: 13px; }
 .tests { display: grid; gap: 8px; }
 .trow,
 .thdr { display: grid; grid-template-columns: minmax(0, 1fr) 130px 130px; gap: 10px; align-items: center; }
+.tests.live-only .trow,
+.tests.live-only .thdr { grid-template-columns: minmax(0, 1fr) 130px; }
 .trow { padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
 .trow .steps { color: var(--ink-3); font-size: 12px; font-family: var(--f-mono); }
 .thdr { padding: 0 12px; font-size: 11.5px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
@@ -536,6 +538,9 @@ table.pts { width: 100%; border-collapse: collapse; font-size: 13px; }
 .runlist .empty { padding: 6px 8px; }
 
 .stream { overflow: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+/* What scrolls out at the top fades instead of being cut off under the bar above. */
+.agent > .stream,
+.pview.tab-agent .stream { mask-image: linear-gradient(to bottom, transparent 0, #000 12px); }
 .stream > * { flex: none; }
 .intro-stream .newrun h4 { margin: 0 0 4px; font-family: var(--f-display); font-size: 18px; font-weight: 600; }
 .intro-stream .newrun p { margin: 0 0 6px; }
@@ -619,7 +624,9 @@ table.pts { width: 100%; border-collapse: collapse; font-size: 13px; }
   gap: 9px;
   font-size: 13px;
 }
+.appr.tier-L { border-top-color: var(--tier-l); }
 .appr h4 { margin: 0; font-size: 14.5px; font-weight: 600; display: flex; gap: 8px; align-items: center; }
+.appr .row .danger { margin-left: auto; }
 .appr ul { margin: 0; padding-left: 18px; display: grid; gap: 3px; color: var(--ink-2); }
 .appr .done { font-size: 12.5px; }
 .appr.approved { border-top-color: var(--ok); }
@@ -649,7 +656,7 @@ table.pts { width: 100%; border-collapse: collapse; font-size: 13px; }
   font-weight: 600;
 }
 .ask .opts button:hover:not(:disabled) { border-color: var(--accent); }
-.ask .opts button.yes { background: var(--ok); color: #fff; border-color: var(--ok); }
+.ask .opts button.yes { background: var(--ok); color: var(--ok-ink); border-color: var(--ok); }
 .ask .freeform { display: flex; gap: 8px; }
 .ask .freeform input { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; background: var(--surface); }
 .ask .answer { font-size: 13px; }
@@ -745,6 +752,8 @@ table.pts { width: 100%; border-collapse: collapse; font-size: 13px; }
 .phone .ask .freeform input { font-size: 16px; }
 .phone .ask .opts { grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); }
 .phone .ask .opts button { padding: 14px 6px; border-radius: 10px; font-size: 15px; min-height: 48px; }
+/* Tier L is decided in the stream on phones: thumb-sized buttons. */
+.phone .appr .row .btn { min-height: 44px; padding: 8px 14px; border-radius: 10px; font-size: 15px; }
 .phone .tool .fn { font-size: 11.5px; }
 .phone .msg-ai,
 .phone .msg-user { font-size: 14px; }
@@ -874,4 +883,6 @@ table.pts { width: 100%; border-collapse: collapse; font-size: 13px; }
   .search kbd { display: none; }
   .trow,
   .thdr { grid-template-columns: minmax(0, 1fr) 110px 110px; }
+  .tests.live-only .trow,
+  .tests.live-only .thdr { grid-template-columns: minmax(0, 1fr) 110px; }
 }

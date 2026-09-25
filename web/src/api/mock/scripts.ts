@@ -172,12 +172,32 @@ export function commission(env: ScriptEnv): Script {
       return;
     }
     ctx.emit({ type: "plan.updated", plan_id: null, revision: null, changes: 0 });
-    site.setTests(testResults("live", "running"));
-    ctx.emit({ type: "tests.updated", results: site.tests.map((t) => ({ ...t })) });
-    await ctx.tool("test_run", "L", { tests: [], target: "live" }, 38000, () => {
-      site.setTests(testResults("live", "pass"));
-      return { ok: true, summary: "3 of 3 passed · forces released" };
-    });
+    // Tests force and write on the live site: a tier L call with its own approval, as on the hub.
+    const tests = await ctx.gatedTool(
+      "test_run",
+      "L",
+      { tests: [] },
+      {
+        title: "Run 3 tests on the live site",
+        summary: [
+          "Valve opens when the room is cold: forces r204-ctl/ai0",
+          "Valve closes above setpoint: forces r204-ctl/ai0",
+          "Window contact reports open: forces r204-ctl/di0",
+        ],
+        diff: "",
+        rollback: "Every force is released and every write relinquished when a test ends",
+        planId: null,
+      },
+      38000,
+      () => {
+        site.setTests(testResults("live", "pass"));
+        return { ok: true, summary: "3 of 3 passed · forces released" };
+      },
+    );
+    if (tests.decision !== "approved") {
+      await ctx.say("Plan p17 is applied, but the acceptance tests did not run. Ask me to run them when the site is ready.");
+      return;
+    }
     ctx.emit({ type: "tests.updated", results: site.tests.map((t) => ({ ...t })) });
     await ctx.say(
       "Room 204 is commissioned. All 3 acceptance tests passed on the real board, and every force was released. I added the results to the handover report.",
@@ -219,10 +239,26 @@ const ioCheckout: Script = async (ctx) => {
   for (const c of CHECKS) {
     await ctx.say(c.act);
     if ("force" in c) {
-      await ctx.tool("io_force", "L", { node: "r204-ctl", channel: c.ch, value: c.force, lease_s: 60 }, 300, () => ({
-        ok: true,
-        summary: `Forced · auto-release at ${clock(ctx.now() + 60)}`,
-      }));
+      // Tier L: the first force asks; "Approve for this run" covers the others, as on the hub.
+      const { decision } = await ctx.gatedTool(
+        "io_force",
+        "L",
+        { node: "r204-ctl", channel: c.ch, value: c.force, lease_s: 60 },
+        {
+          title: `Force r204-ctl ${c.ch} to ${c.force} for 60 s`,
+          summary: [`r204-ctl: force channel ${c.ch} to ${c.force}, lease 60 s`],
+          diff: "",
+          rollback: "The force is released after 60 s, or earlier with io_release",
+          planId: null,
+        },
+        300,
+        () => ({ ok: true, summary: `Forced · auto-release at ${clock(ctx.now() + 60)}` }),
+      );
+      if (decision !== "approved") {
+        answers.push("Skip");
+        await ctx.say(`The force of ${c.ch} was not approved, so I skip that channel.`);
+        continue;
+      }
     } else {
       await ctx.tool("point_read", "R", { points: [c.point] }, 200, () => ({ ok: true, summary: "Reading live" }));
     }

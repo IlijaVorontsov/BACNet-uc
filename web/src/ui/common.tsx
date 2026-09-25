@@ -34,7 +34,16 @@ export function Chip({ tone = "", dot, children, className = "", title }: {
   );
 }
 
-export function RunStateChip({ state, reconnecting }: { state: RunState | null; reconnecting?: boolean }) {
+/** `error`: the last turn ended with an error event. */
+export function RunStateChip({
+  state,
+  reconnecting,
+  error,
+}: {
+  state: RunState | null;
+  reconnecting?: boolean;
+  error?: boolean;
+}) {
   if (reconnecting) {
     return (
       <Chip tone="warn" dot>
@@ -42,7 +51,7 @@ export function RunStateChip({ state, reconnecting }: { state: RunState | null; 
       </Chip>
     );
   }
-  const t = runStateTone(state);
+  const t = runStateTone(state, error);
   return (
     <Chip tone={t.tone} dot>
       {t.label}
@@ -54,11 +63,20 @@ export function Dot({ tone, label }: { tone: "ok" | "warn" | "off" | "crit"; lab
   return <i className={`dot ${tone}`} role={label ? "img" : undefined} aria-label={label} aria-hidden={label ? undefined : true} />;
 }
 
-export function ErrorNote({ error, children }: { error?: { message: string } | null; children?: ReactNode }) {
+const SIGN_IN_TEXT = "Sign-in needed: open the sign-in link your hub admin gave you once (it ends in ?token=…).";
+
+/** An error for the user; a 401 from the hub is explained instead of quoted. */
+export function ErrorNote({
+  error,
+  children,
+}: {
+  error?: { message: string; status?: number } | null;
+  children?: ReactNode;
+}) {
   if (!error && !children) return null;
   return (
     <p className="errnote" role="alert">
-      {children ?? error?.message}
+      {children ?? (error?.status === 401 ? SIGN_IN_TEXT : error?.message)}
     </p>
   );
 }

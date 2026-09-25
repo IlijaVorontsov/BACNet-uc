@@ -9,7 +9,7 @@
  * in real time.
  */
 
-import type { Approval, RunEvent, RunState, RunSummary, Tier } from "../types";
+import type { Approval, ApprovalScope, RunEvent, RunState, RunSummary, Tier } from "../types";
 import type { MockSite } from "./site";
 
 /** An event without the envelope fields the run assigns. */
@@ -154,16 +154,24 @@ export interface ContextOptions {
   virtualStart: number | null;
   /** Answers given to questions while fast-forwarding, as [answer, user]. */
   seedAnswers?: [string, string][];
+  /** Approvals given while fast-forwarding, in order. */
+  seedApprovals?: { user: string; scope: ApprovalScope }[];
   /** Called when fast-forward ends, i.e. the run waits for a person. */
   onLive?: () => void;
   approvalTtlS?: number;
 }
 
+/** Events inside one model step that do not end it; anything else completes its text first. */
+const IN_STEP: ReadonlySet<RunEvent["type"]> = new Set(["message.delta", "tool.call", "tool.args.delta"]);
+
 export class ScriptContext {
   readonly site: MockSite;
   readonly user: string;
   private virtual: number | null;
+  /** Text of the current model step, completed by `message.done` when the step ends, as the hub does. */
+  private stepText: string | null = null;
   private readonly seedAnswers: [string, string][];
+  private readonly seedApprovals: { user: string; scope: ApprovalScope }[];
   private readonly opts: ContextOptions;
 
   constructor(
@@ -175,6 +183,7 @@ export class ScriptContext {
     this.user = opts.user;
     this.virtual = opts.virtualStart;
     this.seedAnswers = [...(opts.seedAnswers ?? [])];
+    this.seedApprovals = [...(opts.seedApprovals ?? [])];
   }
 
   get fastForward(): boolean {
@@ -214,7 +223,14 @@ export class ScriptContext {
 
   emit(body: EventBody): RunEvent {
     if (this.run.cancelled) throw new Cancelled();
+    if (!IN_STEP.has(body.type)) this.endStep();
     return this.run.emit(body, this.now());
+  }
+
+  private endStep(): void {
+    const text = this.stepText;
+    this.stepText = null;
+    if (text !== null) this.run.emit({ type: "message.done", text }, this.now());
   }
 
   state(state: RunState, reason?: string): void {
@@ -238,9 +254,11 @@ export class ScriptContext {
     await this.stream("thinking.delta", text, 70);
   }
 
+  /** Assistant text; its `message.done` follows the step's tool calls (API.md "Run events"). */
   async say(text: string): Promise<void> {
+    this.endStep();
     await this.stream("message.delta", text, 45);
-    this.emit({ type: "message.done", text });
+    this.stepText = text;
   }
 
   private async callStart(tool: string, tier: Tier, args: Record<string, unknown>): Promise<string> {
@@ -252,6 +270,7 @@ export class ScriptContext {
       this.emit({ type: "tool.args.delta", call_id: callId, delta: json.slice(i, i + size) });
       await this.sleep(40);
     }
+    this.endStep();
     this.emit({ type: "tool.call", call_id: callId, tool, tier, args });
     return callId;
   }
@@ -347,24 +366,16 @@ export class ScriptContext {
     this.opts.addApproval(approval);
     this.emit({ type: "approval.request", approval: { ...approval } });
     this.state("waiting_approval");
-    this.goLive();
-    const decision = await new Promise<Decision>((resolve, reject) => {
-      const expireIn = Math.max(0, (approval.expires_at - Date.now() / 1000) * 1000);
-      const timer = setTimeout(() => {
-        approval.state = "expired";
-        approval.decided_at = Date.now() / 1000;
-        this.run.decide("expired");
-      }, expireIn);
-      this.run.approvalGate = { approval, resolve, reject, timer };
-    }).catch((err: unknown) => {
-      if (err instanceof Cancelled && approval.state === "pending") {
-        approval.state = "rejected";
-        approval.comment = "run cancelled";
-        approval.decided_at = Date.now() / 1000;
-        this.run.emit({ type: "approval.decided", approval: { ...approval } }, Date.now() / 1000);
-      }
-      throw err;
-    });
+    let decision: Decision = "approved";
+    const seeded = this.fastForward ? this.seedApprovals.shift() : undefined;
+    if (seeded) {
+      await this.sleep(6000);
+      Object.assign(approval, { state: "approved", scope: seeded.scope, decided_by: seeded.user, decided_at: this.now() });
+      if (seeded.scope === "run") this.run.runApprover = seeded.user;
+    } else {
+      this.goLive();
+      decision = await this.decision(approval);
+    }
     this.emit({ type: "approval.decided", approval: { ...approval } });
     this.site.addAudit({
       user: approval.decided_by ?? "system",
@@ -391,6 +402,27 @@ export class ScriptContext {
     const outcome = await exec();
     this.finish(callId, tool, tier, args, outcome, Math.max(durationMs, Math.round((this.now() - started) * 1000)));
     return { decision, outcome };
+  }
+
+  /** Waits for POST /api/approvals/{id} or the expiry; a cancelled run rejects the approval. */
+  private decision(approval: Approval): Promise<Decision> {
+    return new Promise<Decision>((resolve, reject) => {
+      const expireIn = Math.max(0, (approval.expires_at - Date.now() / 1000) * 1000);
+      const timer = setTimeout(() => {
+        approval.state = "expired";
+        approval.decided_at = Date.now() / 1000;
+        this.run.decide("expired");
+      }, expireIn);
+      this.run.approvalGate = { approval, resolve, reject, timer };
+    }).catch((err: unknown) => {
+      if (err instanceof Cancelled && approval.state === "pending") {
+        approval.state = "rejected";
+        approval.comment = "run cancelled";
+        approval.decided_at = Date.now() / 1000;
+        this.run.emit({ type: "approval.decided", approval: { ...approval } }, Date.now() / 1000);
+      }
+      throw err;
+    });
   }
 
   /** `ask_user`: a question event, then the answer from /answer (or a seeded one). */

@@ -160,11 +160,12 @@ class ToolRunner:
             result = ToolResult(False, clean_text(f"internal error in {tool.name}: {type(e).__name__}: {e}",
                                                   _ERROR_LIMIT), error_code="error")
         result = await self._store_large(result, ctx)
+        result.duration_ms = round((time.monotonic() - started) * 1000)
         detail = result.summary[:_DETAIL_LIMIT] + approval
         outcome = "ok" if result.ok else (result.error_code or "failed")
         await self._audit(ctx, prepared.name, tool.tier, prepared.args, outcome, detail)
-        logger.info("tool %s by %s (run %s): %s in %.0f ms", tool.name, ctx.user, ctx.run_id, outcome,
-                    (time.monotonic() - started) * 1000)
+        logger.info("tool %s by %s (run %s): %s in %d ms", tool.name, ctx.user, ctx.run_id, outcome,
+                    result.duration_ms)
         return result
 
     async def _store_large(self, result: ToolResult, ctx: ToolCallContext) -> ToolResult:
@@ -174,8 +175,7 @@ class ToolRunner:
         if size <= self.inline_limit:
             return result
         handle = f"result://{await self.store.put_result(result.data, run_id=ctx.run_id)}"
-        summary = f"{result.summary} [full result ({size} bytes): {handle}; page through it with result_get]"
-        return ToolResult(result.ok, summary, None, result.error_code, handle)
+        return ToolResult(result.ok, result.summary, None, result.error_code, handle)
 
     async def _refuse(self, ctx: ToolCallContext, name: str, args: dict[str, Any], tool: Tool | None, code: str,
                       message: str, data: Any = None) -> Prepared:

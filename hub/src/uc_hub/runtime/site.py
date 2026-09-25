@@ -582,7 +582,10 @@ class SiteRuntime:
 
     # -- watching -------------------------------------------------------------------------
     async def ensure_watched(self, refs: Iterable[PointRef]) -> None:
-        """Hold live updates for these points (reference counted)."""
+        """Hold live updates for these points (reference counted). A point it
+        refuses (``NotFound``) counts nothing; otherwise the counts are taken
+        before the drivers are asked, so a caller cancelled meanwhile holds
+        them and must release them."""
         refs = list(refs)
         for ref in refs:
             if ref.site != self.name:

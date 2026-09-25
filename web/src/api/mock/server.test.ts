@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { foldEvents, initialRunView, openQuestions, type AssistantItem, type RunView } from "../../state/runReducer";
+import { foldEvents, initialRunView, openQuestions, pendingApprovals, type AssistantItem, type RunView } from "../../state/runReducer";
 import { ApiClient, ApiError } from "../client";
 import type { Approval, Reading, RunEvent } from "../types";
 import { MockRun, runScript, ScriptContext } from "./runs";
@@ -88,17 +88,23 @@ describe("MockServer", () => {
   it("applies the plan when the approval is given", async () => {
     const { approvals } = await client.approvals("pending");
     const approval = approvals[0]!;
-    let decided = false;
+    const approved: string[] = [];
     const view = await follow(
       approval.run_id,
       (v) => v.state === "idle",
-      async () => {
-        if (decided) return;
-        decided = true;
-        const res = await client.decide(approval.id, { decision: "approve" });
-        expect(res.state).toBe("approved");
+      async (v) => {
+        for (const a of pendingApprovals(v)) {
+          if (approved.includes(a.id)) continue;
+          approved.push(a.id);
+          expect((await client.decide(a.id, { decision: "approve" })).state).toBe("approved");
+        }
       },
     );
+    // The apply (tier C), then the live acceptance tests (tier L), as on the hub.
+    expect(view.items.flatMap((i) => (i.kind === "approval" ? [[i.approval.tool, i.approval.tier]] : []))).toEqual([
+      ["apply", "C"],
+      ["test_run", "L"],
+    ]);
     const last = view.items.at(-1) as AssistantItem;
     expect(last.text).toMatch(/Room 204 is commissioned/);
     expect(view.plan).toMatchObject({ planId: null, changes: 0 });
@@ -151,6 +157,9 @@ describe("MockServer", () => {
       },
     );
     expect(answered.size).toBe(3);
+    // The first force was approved for the whole run, so the second one did not ask.
+    const forces = view.items.flatMap((i) => (i.kind === "approval" ? [i.approval] : []));
+    expect(forces.map((a) => [a.tool, a.state, a.scope, a.decided_by])).toEqual([["io_force", "approved", "run", "tech1"]]);
     const questions = view.items.filter((i) => i.kind === "question");
     expect(questions).toHaveLength(4);
     expect(questions[0]).toMatchObject({ answer: "Yes", answeredBy: "tech1" });

@@ -12,8 +12,9 @@ import { Scanner } from "./Scanner";
 function DevicePoints({ device }: { device: Device }) {
   const { client } = useHub();
   const page = useResource((s) => client.points({ device: device.name, limit: 8 }, s), [client, device.name]);
-  const { values } = useLive({ device: device.name });
-  const points = page.data?.points ?? [];
+  const points = useMemo(() => page.data?.points ?? [], [page.data]);
+  const ids = useMemo(() => points.map((p) => p.id), [points]);
+  const { values } = useLive({ ids });
   if (points.length === 0) return null;
   return (
     <section className="pstack" aria-label={`Live values of ${device.name}`}>

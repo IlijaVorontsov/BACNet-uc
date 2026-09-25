@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import signal
+import socket
 import sys
 from pathlib import Path
 
@@ -82,14 +83,22 @@ def test_format_plan() -> None:
     assert empty.endswith("Nothing to change: the devices and the gateway match the manifest.\n")
 
 
-def test_access_tokens_are_redacted_from_the_access_log() -> None:
-    record = logging.LogRecord("uvicorn.access", logging.INFO, "", 0, '%s - "%s %s"', (
-        "127.0.0.1", "GET", "/api/live?ids=a&access_token=s3cret&x=1"), None)
+@pytest.mark.parametrize(("path", "logged"), [
+    ("/api/live?ids=a&access_token=s3cret&x=1", "/api/live?ids=a&access_token=***&x=1"),
+    ("/?token=s3cret", "/?token=***"),  # the web app's sign-in link
+    ("/runs?x=1&token=s3cret", "/runs?x=1&token=***"),
+    ("/api/points?q=max_tokens=5", "/api/points?q=max_tokens=5"),
+])
+def test_access_tokens_are_redacted_from_the_access_log(path: str, logged: str) -> None:
+    record = logging.LogRecord("uvicorn.access", logging.INFO, "", 0, '%s - "%s %s"', ("127.0.0.1", "GET", path), None)
     cli._RedactTokens().filter(record)
-    assert record.getMessage() == '127.0.0.1 - "GET /api/live?ids=a&access_token=***&x=1"'
+    assert record.getMessage() == f'127.0.0.1 - "GET {logged}"'
 
 
-async def test_serve_runs_until_interrupted(tmp_path: Path) -> None:
+@pytest.mark.parametrize("stop", [signal.SIGINT, signal.SIGTERM], ids=["ctrl-c", "sigterm"])
+async def test_serve_runs_until_stopped_and_then_shuts_down(tmp_path: Path, stop: signal.Signals) -> None:
+    """SIGTERM is how systemd stops the hub; it must shut down in order (and
+    release the agent's leases), not die when uvicorn raises the signal again."""
     config = bare_hub(tmp_path)
     process = await asyncio.create_subprocess_exec(
         sys.executable, "-m", "uc_hub.cli", "serve", "-c", str(config), stderr=asyncio.subprocess.PIPE)
@@ -104,10 +113,58 @@ async def test_serve_runs_until_interrupted(tmp_path: Path) -> None:
                 url = found.group(1) if found else None
         async with httpx.AsyncClient(base_url=url) as client:
             assert (await client.get("/api/health")).json()["site"] == "hq"
-        process.send_signal(signal.SIGINT)
+        process.send_signal(stop)
         async with asyncio.timeout(30):
             await process.stderr.read()
             assert await process.wait() == 0
+    finally:
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
+
+
+@pytest.mark.parametrize("stop", [signal.SIGINT, signal.SIGTERM], ids=["ctrl-c", "sigterm"])
+async def test_mcp_stops_on_a_signal_while_its_client_is_connected(tmp_path: Path, stop: signal.Signals) -> None:
+    """The client keeps stdin open and says nothing: a stop signal must still
+    end the MCP server as well as the HTTP API, and then the hub in order."""
+    config = bare_hub(tmp_path, mcp={"user": "claude", "roles": ["viewer"]})
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-m", "uc_hub.cli", "mcp", "-c", str(config),
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    try:
+        assert process.stdin is not None and process.stdout is not None and process.stderr is not None
+        async with asyncio.timeout(30):
+            while not re.search(r"Uvicorn running on", line := (await process.stderr.readline()).decode()):
+                assert line, "mcp exited early"
+        process.send_signal(stop)
+        async with asyncio.timeout(30):
+            log = (await process.stderr.read()).decode()
+            assert await process.wait() == 0, log
+    finally:
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
+
+
+async def test_a_stopped_demo_stops_its_devices_and_removes_its_working_directory() -> None:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-m", "uc_hub.cli", "demo", "--free-ports", "--port", str(port),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+    try:
+        assert process.stdout is not None
+        async with asyncio.timeout(60):
+            line = (await process.stdout.readline()).decode()
+        found = re.search(r"working directory (\S+)\)", line)
+        assert found, line
+        workdir = Path(found.group(1))
+        assert (workdir / "hub.yaml").is_file()
+        process.send_signal(signal.SIGTERM)
+        async with asyncio.timeout(30):
+            assert await process.wait() == 0
+        assert not workdir.exists()
     finally:
         if process.returncode is None:
             process.kill()

@@ -74,10 +74,8 @@ async def describe_apply(ctx: ToolCallContext, args: dict[str, Any]) -> Approval
     manifests = ctx.services.manifests
     computed = await manifests.get_plan(args["plan_id"])
     manifests.check_applicable(computed)
-    summary = []
-    for target in computed.targets:
-        details = [c.summary for c in computed.changes if c.target == target]
-        summary.append(_clip(f"{target}: {'; '.join(details)}"))
+    summary = [_target_line(target, [c.summary for c in computed.changes if c.target == target])
+               for target in computed.targets]
     sections = manifests.changed_sections()
     if sections:
         summary.append(f"site.yaml: {', '.join(sections)}")
@@ -123,6 +121,20 @@ async def apply(ctx: ToolCallContext, args: dict[str, Any]) -> ToolResult:
 
 def _clip(text: str, limit: int = _SUMMARY_LIMIT) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _target_line(target: str, details: list[str], limit: int = _SUMMARY_LIMIT) -> str:
+    """``<target>: <change>; <change>; and 3 more``: whole changes, as many
+    as fit, so a card never ends in the middle of one."""
+    if not details:
+        return f"{target}: no changes"
+    for shown in range(len(details), 0, -1):
+        more = len(details) - shown
+        line = f"{target}: {'; '.join(details[:shown])}" + (f"; and {more} more" if more else "")
+        if len(line) <= limit:
+            return line
+    tail = f"; and {len(details) - 1} more" if len(details) > 1 else ""
+    return _clip(f"{target}: {details[0]}", limit - len(tail)) + tail
 
 
 def _s(n: int) -> str:

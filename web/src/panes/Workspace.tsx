@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { plural } from "../lib/format";
-import { devicesIn, PROTOCOL_LABELS, spacePath } from "../lib/site";
+import { crumbPath, devicesIn, PROTOCOL_LABELS } from "../lib/site";
 import { useHub } from "../state/hub";
 import { useUi, type WorkTab } from "../state/ui";
 import { Chip } from "../ui/common";
@@ -17,7 +17,7 @@ function Header() {
   if (!site) {
     return (
       <div className="whead">
-        <h2>{hub.health.data?.site ?? "Site"}</h2>
+        <h2>{hub.health.data?.site.toUpperCase() ?? "Site"}</h2>
       </div>
     );
   }
@@ -28,7 +28,7 @@ function Header() {
   let meta: ReactNode = null;
 
   if (scope.kind === "space") {
-    const path = spacePath(site, scope.id);
+    const path = crumbPath(site, scope.id);
     crumbs = [root, ...path.map((s) => s.name)];
     title = path.at(-1)?.name ?? scope.id;
     const devs = devicesIn(site, scope.id, true);
@@ -49,7 +49,7 @@ function Header() {
     );
   } else if (scope.kind === "device") {
     const d = site.devices.find((x) => x.name === scope.name);
-    crumbs = [root, ...spacePath(site, d?.space ?? null).map((s) => s.name), scope.name];
+    crumbs = [root, ...crumbPath(site, d?.space ?? null).map((s) => s.name), scope.name];
     title = scope.name;
     if (d) {
       meta = (

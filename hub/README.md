@@ -41,6 +41,10 @@ build it once: `cd ../web && pnpm install && pnpm build` (the hub serves
 ```sh
 .venv/bin/uc-hub demo                 # then open http://127.0.0.1:8080/
 .venv/bin/uc-hub demo --llm zai       # the real model; needs ZAI_API_KEY
+.venv/bin/uc-hub demo --free-ports --port 8090   # next to another demo
+export UC_HUB_DEMO_TOKEN=$(openssl rand -hex 16); echo "$UC_HUB_DEMO_TOKEN"
+.venv/bin/uc-hub demo --host 0.0.0.0 --token-env UC_HUB_DEMO_TOKEN
+                                      # on the LAN, for a phone: open /?token=<that token> once
 ```
 
 The demo runs everything in one process, on 127.0.0.1: five simulated
@@ -49,7 +53,13 @@ a simulated AHU controller on BACnet/IP (47830), mosquitto on a free port
 with an `apps/mqtt_tls` node (firmware 0.3.0) and a CO2 sensor (skipped
 with a warning when `mosquitto` is not installed), and the hub with
 `examples/demo/hub.yaml` and the scripted model. Each start uses a fresh
-temporary database.
+temporary database. `--free-ports` puts the simulated devices on free ports
+instead (the web app's `pnpm e2e:real` runs one demo per test that way).
+Without `--token-env` the demo runs in dev mode, which only listens on a
+loopback address; with it, every request needs that bearer token (user
+`demo`, role admin). Ctrl-C or SIGTERM stops the hub first (it releases the
+agent's leases), then the devices and the broker, and removes the working
+directory.
 
 Four room controllers are configured already. `r204-ctl` is installed but
 empty; in the agent panel try:
@@ -57,11 +67,12 @@ empty; in the agent panel try:
 - **Commission room 204**: the agent finds the room's devices, sees that
   the board is not configured, places and tags it in a draft, plans (the
   upload of its IO, thermostat and AHU link), applies after your approval
-  and runs the site's acceptance tests.
+  and, after a second approval (a live call), runs the site's acceptance
+  tests.
 - **IO checkout** (playbook) for `r201-ctl`: it forces the valve and the
   heater relay one after the other under a lease, asks you what you see,
   and releases them. "Approve for this run" covers the later live calls.
-- **What is the temperature in room 204?**
+- **What is the temperature in room 201?**
 
 `examples/demo/apps/uc-link.wasm` is a stand-in built from `uc-link.c`: the
 simulator emulates uc-link by the file name. Never install it on a real
@@ -120,8 +131,11 @@ claude mcp add uc-hub -- /path/to/hub/.venv/bin/uc-hub mcp -c /path/to/hub.yaml
 Calls run as `mcp.user` with `mcp.roles` (default `mcp` and `operator`).
 Each connection is a run of its own, visible in the web app. Tier L and C
 calls wait for a person to approve them in the web app (at most
-`mcp.approval_wait_s`, 10 minutes by default). Run either `serve` or `mcp`
-for one `data_dir`, not both.
+`mcp.approval_wait_s`, 10 minutes by default); when the client stops
+waiting (a timeout, a cancel), the approval expires. The hub stops when the
+client closes stdin, or on Ctrl-C or SIGTERM (also while a client is
+connected): calls in flight get a failed result, then the hub shuts down
+in order. Run either `serve` or `mcp` for one `data_dir`, not both.
 
 ## Layout (`src/uc_hub/`)
 
@@ -136,7 +150,7 @@ for one `data_dir`, not both.
 | `runtime/` | `hub.yaml` (`config`), the running site (`site`: drivers, point model, search, history, watches), bridges, leased live control, live tests, manifest revisions and apply, questions, and `Services`, which starts and stops everything in order |
 | `tools/` | The agent's tool catalogue and the `ToolRunner` (validation, policy, approval cards, audit, result handles) |
 | `agent/` | Runs: the loop between the model and the tools (`loop`), approvals (`approvals`), the system prompt, the site status and the playbooks |
-| `api/` | The HTTP API of API.md (FastAPI): auth, JSON endpoints, the event streams (SSE) and the web app |
+| `api/` | The HTTP API of API.md (FastAPI): auth, JSON endpoints, the event streams (SSE), the web app, and the server whose stop signals shut the hub down in order |
 | `mcp_server.py` | The tools over MCP |
 | `cli.py` | `uc-hub serve`, `validate`, `plan`, `mcp`, `demo` |
 | `demo.py` | The demo: simulated devices for `examples/demo` and a hub on them |
@@ -152,4 +166,5 @@ ruff check src tests
 Everything runs against the simulators on 127.0.0.1 with ephemeral ports;
 no test needs the internet or a model key. The MQTT tests start a local
 `mosquitto` (skipped when it is not installed). `tests/test_demo.py` drives
-the demo's scenarios through the HTTP API.
+the demo's scenarios through the HTTP API; `cd ../web && pnpm e2e:real`
+drives them through the browser app, against a `uc-hub demo` per test.

@@ -4,7 +4,7 @@
     uc-hub validate site.yaml
     uc-hub plan -c hub.yaml [--diff]
     uc-hub mcp -c hub.yaml [--insecure-listen]
-    uc-hub demo [--llm scripted|zai] [--host H] [--port P] [--dir DIR]
+    uc-hub demo [--llm scripted|zai] [--host H] [--port P] [--dir DIR] [--free-ports] [--token-env VAR]
 
 Logs go to stderr (for ``mcp``, stdout carries the protocol). Exit codes:
 0 ok, 1 an error, 2 a plan with blocked targets.
@@ -81,6 +81,12 @@ def _parser() -> argparse.ArgumentParser:
     demo.add_argument("--host", default="127.0.0.1")
     demo.add_argument("--port", type=int, default=8080)
     demo.add_argument("--dir", type=Path, help="the demo files (default: hub/examples/demo of this checkout)")
+    demo.add_argument("--free-ports", action="store_true",
+                      help="put the simulated devices on free ports instead of those site.yaml names "
+                           "(to run next to another demo)")
+    demo.add_argument("--token-env", metavar="VAR",
+                      help="require the bearer token in this environment variable (user demo, role admin) "
+                           "instead of dev mode; then --host may be a LAN address")
     demo.set_defaults(run=_demo)
     return parser
 
@@ -114,16 +120,15 @@ def _mcp(args: argparse.Namespace) -> int:
 
 
 async def _run_hub(config: Any, *, mcp: bool = False) -> None:
-    """The hub until a signal (or, with ``mcp``, until the MCP client leaves)."""
-    from .api import create_app
+    """The hub until a stop signal (with ``mcp``, also until the MCP client leaves)."""
+    from .api import HubServer, create_app
     from .runtime import Services
 
     services = Services(config)
     await services.start()
     try:
-        server = uvicorn.Server(uvicorn.Config(create_app(services), host=config.listen.host,
-                                               port=config.listen.port, log_config=None, lifespan="off",
-                                               timeout_graceful_shutdown=2))
+        server = HubServer(uvicorn.Config(create_app(services), host=config.listen.host, port=config.listen.port,
+                                          log_config=None, lifespan="off", timeout_graceful_shutdown=2))
         http = asyncio.create_task(server.serve(), name="http")
         while not server.started and not http.done():
             await asyncio.sleep(0.05)
@@ -132,11 +137,17 @@ async def _run_hub(config: Any, *, mcp: bool = False) -> None:
             return
         from .mcp_server import HubMcpServer
 
+        serving = asyncio.create_task(HubMcpServer(services).run_stdio_async(), name="mcp")
         try:
-            await HubMcpServer(services).run_stdio_async()
+            # The client leaving ends the MCP server; a stop signal ends the HTTP server, and then this one.
+            await asyncio.wait({http, serving}, return_when=asyncio.FIRST_COMPLETED)
         finally:
             server.should_exit = True
-            await http
+            serving.cancel()
+            await asyncio.wait({http, serving})
+        if not serving.cancelled():
+            serving.result()
+        await http
     finally:
         await services.stop()
 
@@ -190,14 +201,16 @@ def format_plan(plan: Plan, *, diff: bool = False) -> str:
 def _demo(args: argparse.Namespace) -> int:
     from .demo import DEMO_DIR, run_demo
 
-    asyncio.run(run_demo(host=args.host, port=args.port, llm=args.llm, demo_dir=args.dir or DEMO_DIR))
+    asyncio.run(run_demo(host=args.host, port=args.port, llm=args.llm, demo_dir=args.dir or DEMO_DIR,
+                         free_ports=args.free_ports, token_env=args.token_env))
     return 0
 
 
 class _RedactTokens(logging.Filter):
-    """Event streams may carry ``?access_token=``; the access log must not."""
+    """Event streams may carry ``?access_token=`` and the web app's sign-in
+    link ``?token=``; the access log must not."""
 
-    _TOKEN = re.compile(r"(access_token=)[^&\s]*")
+    _TOKEN = re.compile(r"([?&](?:access_)?token=)[^&\s]*")
 
     def filter(self, record: logging.LogRecord) -> bool:
         if isinstance(record.args, tuple):

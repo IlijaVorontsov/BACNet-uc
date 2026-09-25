@@ -101,7 +101,9 @@ export interface Tone {
   label: string;
 }
 
-export function runStateTone(state: RunState | null): Tone {
+/** `stoppedByError`: the last turn ended with an error event (the run is idle, but not done). */
+export function runStateTone(state: RunState | null, stoppedByError = false): Tone {
+  if (state === "idle" && stoppedByError) return { tone: "crit", label: "Stopped by an error" };
   switch (state) {
     case "running":
       return { tone: "acc", label: "Working" };

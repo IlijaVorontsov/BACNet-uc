@@ -96,3 +96,31 @@ async def _cached(hub: Hub, point: str) -> bool:
 
 async def _released(site: object, ref: object, count: int) -> bool:
     return site.watch_count(ref) == count  # type: ignore[attr-defined, no-any-return]
+
+
+async def test_a_client_that_leaves_while_the_watch_starts_releases_it(http: httpx.AsyncClient, hub: Hub) -> None:
+    site = hub.site
+    valve = hub.ref("r204-ctl/analog-output:1")
+    before = site.watch_count(valve)
+    asked, abandoned = asyncio.Event(), asyncio.Event()
+
+    async def slow_watch(refs: list[object]) -> None:  # a COV subscription to a device that does not answer
+        asked.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            abandoned.set()
+            raise
+
+    site._driver_watch = slow_watch
+
+    async def browse() -> None:
+        async with stream(http, "/api/live", params={"ids": "r204-ctl/analog-output:1"}) as live:
+            await live.next(timeout_s=30)
+
+    browsing = asyncio.create_task(browse())
+    await asyncio.wait_for(asked.wait(), 5)
+    browsing.cancel()  # the browser goes away before the first value
+    await asyncio.gather(browsing, return_exceptions=True)
+    await asyncio.wait_for(abandoned.wait(), 5)
+    await wait_for(lambda: _released(site, valve, before))

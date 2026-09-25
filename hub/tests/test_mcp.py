@@ -93,6 +93,46 @@ async def test_an_undecided_approval_expires_when_the_wait_ends(hub: Hub) -> Non
     assert hub.nodes["r204-ctl"].channels["ai0"].forced is None
 
 
+async def test_a_call_the_client_stops_waiting_for_expires_its_approval(hub: Hub) -> None:
+    server = HubMcpServer(hub.services)
+    store = hub.services.store
+    async with Client(server) as client:
+        calling = asyncio.create_task(client.call_tool("io_force", {"node": "r204-ctl", "channel": "ai0",
+                                                                    "value": 650}))
+        while not await store.list_approvals(state="pending"):
+            await asyncio.sleep(0.02)
+        calling.cancel()  # the MCP client cancels the request (a timeout, the user pressed stop)
+        await asyncio.gather(calling, return_exceptions=True)
+        async with asyncio.timeout(5):
+            while (await store.list_approvals())[0]["state"] == "pending":
+                await asyncio.sleep(0.02)
+    (approval,) = await store.list_approvals()
+    assert approval["state"] == "expired" and approval["comment"] == "the MCP client stopped waiting"
+    with pytest.raises(Conflict):
+        await hub.services.approvals.decide(approval["id"], "approve", user="boss", roles={"admin"})
+    session = await server.session()
+    events = await store.list_events(session)
+    (result,) = [e for e in events if e["type"] == "tool.result"]
+    assert not result["ok"] and result["summary"] == "the MCP client stopped waiting for this call"
+    assert [e["approval"]["state"] for e in events if e["type"] == "approval.decided"] == ["expired"]
+    assert (await store.get_run(session))["state"] == "idle"  # type: ignore[index]
+    assert hub.nodes["r204-ctl"].channels["ai0"].forced is None
+
+
+async def test_a_restart_closes_the_calls_a_session_had_in_flight(hub: Hub) -> None:
+    runs, store = hub.services.runs, hub.services.store
+    session = await runs.open_session(user="claude", roles={"operator"}, title="MCP session (claude)")
+    # The hub dies while a call runs: its tool.call is out, its result never comes.
+    await hub.services.events.append(session, "tool.call", call_id="mcp_1", tool="io_force", tier="L", args={})
+    await store.update_run(session, state="running")
+    await hub.restart()
+    store = hub.services.store
+    (result,) = [e for e in await store.list_events(session) if e["type"] == "tool.result"]
+    assert result["call_id"] == "mcp_1" and not result["ok"]
+    assert result["summary"].startswith("the hub restarted while this call ran; what it did is unknown")
+    assert (await store.get_run(session))["state"] == "idle"  # type: ignore[index]
+
+
 async def test_a_cancelled_session_takes_no_more_calls(hub: Hub) -> None:
     server = HubMcpServer(hub.services)
     async with Client(server) as client:

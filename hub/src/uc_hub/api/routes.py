@@ -45,18 +45,24 @@ def json_routes(services: Services, auth: Auth) -> APIRouter:
         return services.site.site_json()
 
     @router.get("/devices/{name}")
-    async def device(name: str, who: Identity = caller) -> dict[str, Any]:
+    async def device(name: str, refresh: bool = False, who: Identity = caller) -> dict[str, Any]:
+        """The last description; ``refresh`` describes an online device again,
+        for what changes while it runs (its apps' state, ticks and errors)."""
         site = services.site
         record = site.device(name)
         description = site.description(name)
-        if description is None:
+        if description is None or (refresh and record.online):
             try:
                 async with asyncio.timeout(DESCRIBE_TIMEOUT_S):
                     description = await site.describe(name)
             except (HubError, TimeoutError, OSError) as e:
-                # Never described: the record, and why its points are unknown.
                 why = str(e) or type(e).__name__
-                return DeviceDescription(record, extra={"error": f"not described yet: {why}"}).to_json()
+                if description is None:
+                    # Never described: the record, and why its points are unknown.
+                    return DeviceDescription(record, extra={"error": f"not described yet: {why}"}).to_json()
+                out = description.to_json()
+                out["extra"] = {**out["extra"], "error": f"not described again: {why}"}
+                return out
         return description.to_json()
 
     @router.get("/points")

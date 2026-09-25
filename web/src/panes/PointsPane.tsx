@@ -71,7 +71,9 @@ export function PointsPane({ scope, query }: { scope: Scope; query: string }) {
   const page = useResource<PointsPage>((s) => hub.client.points(params, s), [hub.client, params, siteData]);
   const points = page.data?.points ?? [];
   const ids = useMemo(() => points.map((p) => p.id), [points]);
-  const { values } = useLive(scope.kind === "device" && !q ? { device: scope.name } : { ids });
+  // By id, not ?device=: the hub watches the points a stream names when it opens, so a changed
+  // point list (a device that was just configured) must reopen the stream.
+  const { values } = useLive({ ids });
   const showDevice = scope.kind !== "device";
 
   const merged = (p: Point & { reading?: LiveValue["reading"] }): LiveValue | undefined =>

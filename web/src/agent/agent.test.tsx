@@ -142,6 +142,62 @@ describe("RunStream", () => {
     expect(client.calls.find((c) => c.method === "POST")?.body).toEqual({ decision: "approve", comment: "go ahead" });
   });
 
+  it("lets a phone decide a tier L call in the stream but sends tier C to the hold", async () => {
+    const force: Approval = { ...APPROVAL, id: "a_13", call_id: "c4", tool: "io_force", tier: "L", title: "Force ao0" };
+    const decided: Approval = { ...force, state: "approved", scope: "run", decided_by: "dev", decided_at: Date.now() / 1000 };
+    const v = view({ type: "approval.request", approval: APPROVAL }, { type: "approval.request", approval: force });
+    const client = setup(<RunStream view={v} runId="r_1" variant="phone" />, { ...base(), "POST /api/approvals/a_13": decided });
+    const apply = screen.getByRole("region", { name: "Approval: Apply plan p17" });
+    expect(within(apply).queryByRole("button", { name: /Approve/ })).toBeNull();
+    expect(within(apply).getByRole("button", { name: "Review in Changes" })).toBeTruthy();
+    const card = screen.getByRole("region", { name: "Approval: Force ao0" });
+    const forRun = within(card).getByRole<HTMLButtonElement>("button", { name: "Approve for this run" });
+    await waitFor(() => expect(forRun.disabled).toBe(false));
+    fireEvent.click(forRun);
+    await waitFor(() => expect(within(card).getByText(/Approved for this run by dev/)).toBeTruthy());
+    expect(client.calls.find((c) => c.method === "POST")).toEqual({
+      method: "POST",
+      path: "/api/approvals/a_13",
+      body: { decision: "approve", scope: "run" },
+    });
+  });
+
+  it("offers a comment instead of a diff review for an approval without a diff", async () => {
+    const tests: Approval = { ...APPROVAL, tier: "L", tool: "test_run", title: "Run 4 tests", diff: "", plan_id: null };
+    const v = view({ type: "approval.request", approval: tests });
+    setup(<RunStream view={v} runId="r_1" variant="desktop" />, base());
+    const card = screen.getByRole("region", { name: "Approval: Run 4 tests" });
+    expect(within(card).queryByRole("button", { name: "Review diff" })).toBeNull();
+    fireEvent.click(within(card).getByRole("button", { name: "Comment" }));
+    expect(within(card).getByRole("textbox", { name: "Comment for the agent (optional)" })).toBeTruthy();
+    expect(card.querySelector(".code.diff")).toBeNull();
+  });
+
+  it("tells screen readers that a run waiting for approval was cancelled", () => {
+    const waiting: Body[] = [
+      { type: "approval.request", approval: APPROVAL },
+      { type: "run.state", state: "waiting_approval" },
+    ];
+    const cancelled: Body[] = [
+      ...waiting,
+      { type: "approval.decided", approval: { ...APPROVAL, state: "expired" } },
+      { type: "run.state", state: "cancelled", reason: "cancelled by dev" },
+    ];
+    const client = new FakeClient(base());
+    const wrap = (v: ReturnType<typeof view>) => (
+      <HubProvider client={client} mock={false}>
+        <UiProvider>
+          <RunStream view={v} runId="r_1" variant="desktop" />
+        </UiProvider>
+      </HubProvider>
+    );
+    const { container, rerender } = render(wrap(view(...waiting)));
+    const live = container.querySelector(".sr-only[aria-live]")!;
+    expect(live.textContent).toBe("The agent asks for approval: Apply plan p17");
+    rerender(wrap(view(...cancelled)));
+    expect(live.textContent).toBe("The run was cancelled.");
+  });
+
   it("does not let a viewer approve", async () => {
     const v = view({ type: "approval.request", approval: APPROVAL });
     setup(<RunStream view={v} runId="r_1" variant="desktop" />, base(["viewer"]));

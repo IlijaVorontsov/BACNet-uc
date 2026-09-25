@@ -196,11 +196,11 @@ class _NodePlanner:
         return self.result
 
     def _blocked(self, reason: str) -> _NodeResult:
+        """No changes for this node, and the plan cannot be applied: ``Plan.blocked``
+        says so (with the reason), not a warning as well."""
         logger.warning("plan: %s unreachable: %s", self.name, reason)
         self.result.changes.clear()
         self.result.blocked = reason
-        self.warn(f"unreachable: {reason}; no changes planned for it, and the plan cannot be applied "
-                  "until it answers")
         return self.result
 
     async def _read_live(self, api: NodeApi) -> _LiveNode:

@@ -42,6 +42,18 @@ async def test_devices(api: httpx.AsyncClient) -> None:
     assert error(await api.get("/api/devices/nope")) == (404, "not_found")
 
 
+async def test_a_device_is_described_again_on_request(api: httpx.AsyncClient, hub: Hub) -> None:
+    hub.nodes["r204-ctl"].fw = "0.2.0"
+    assert (await api.get("/api/devices/r204-ctl")).json()["device"]["firmware"] == "0.1.0"
+    fresh = (await api.get("/api/devices/r204-ctl", params={"refresh": "1"})).json()
+    assert fresh["device"]["firmware"] == "0.2.0" and "error" not in fresh["extra"]
+    assert (await api.get("/api/devices/r204-ctl")).json()["device"]["firmware"] == "0.2.0"
+    hub.nodes["r204-ctl"].online = False
+    stale = (await api.get("/api/devices/r204-ctl", params={"refresh": "true"})).json()
+    assert stale["device"]["firmware"] == "0.2.0" and stale["points"]
+    assert stale["extra"]["error"].startswith("not described again: ")
+
+
 async def test_points_search_includes_child_spaces(api: httpx.AsyncClient, hub: Hub) -> None:
     await wait_for(lambda: _reading(api))
     everything = (await api.get("/api/points")).json()
@@ -185,6 +197,19 @@ async def test_approvals_errors(api: httpx.AsyncClient) -> None:
 async def test_bad_bodies_are_400(api: httpx.AsyncClient, content: bytes, fragment: str) -> None:
     response = await api.post("/api/runs", content=content, headers={"content-type": "application/json"})
     assert error(response) == (400, "invalid") and fragment in response.json()["error"]["message"]
+
+
+async def test_dev_mode_refuses_requests_from_other_sites(api: httpx.AsyncClient, hub: Hub) -> None:
+    """A page of another site can send forms and no-cors requests to 127.0.0.1; dev mode has no token to stop it."""
+    other = {"Origin": "https://evil.example", "Content-Type": "text/plain"}
+    assert error(await api.post("/api/devices/r204-ctl/identify", content=b'{"seconds": 5}', headers=other)) == (
+        403, "denied")
+    assert error(await api.post("/api/runs", content=b'{"message": "help"}', headers=other)) == (403, "denied")
+    assert error(await api.post("/api/runs", json={"message": "help"}, headers={"Origin": "null"})) == (403, "denied")
+    assert not hub.nodes["r204-ctl"].identifying
+    assert (await api.get("/api/runs")).json() == {"runs": []}
+    same = await api.post("/api/runs", json={"message": "help"}, headers={"Origin": "http://hub"})
+    assert same.status_code == 201
 
 
 async def test_routes_errors_and_headers(api: httpx.AsyncClient) -> None:

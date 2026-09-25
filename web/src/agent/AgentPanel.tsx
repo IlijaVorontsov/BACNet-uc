@@ -63,7 +63,9 @@ export function AgentPanel() {
       <div className="ahead">
         <h3>Agent</h3>
         {model && <span className="model">{model}</span>}
-        {ui.runId && <RunStateChip state={state} reconnecting={status === "reconnecting"} />}
+        {ui.runId && (
+          <RunStateChip state={state} reconnecting={status === "reconnecting"} error={view.turnError !== null} />
+        )}
       </div>
       <div className="runbar">
         <RunPicker current={summary} />

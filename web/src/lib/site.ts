@@ -13,6 +13,28 @@ export function childSpaces(site: Site, parent: string | null): Space[] {
   return site.spaces.filter((s) => s.parent === parent);
 }
 
+/**
+ * The space that holds all others when a site is one building (a single
+ * top-level space with children). The UI shows it as the site itself, so the
+ * tree and the breadcrumbs do not name the building twice.
+ */
+export function buildingSpace(site: Site): Space | null {
+  const top = childSpaces(site, null);
+  const only = top.length === 1 ? top[0]! : null;
+  return only && childSpaces(site, only.id).length > 0 ? only : null;
+}
+
+/** The spaces listed right under the site: the building's floors and wings, or the top-level spaces. */
+export function topSpaces(site: Site): Space[] {
+  return childSpaces(site, buildingSpace(site)?.id ?? null);
+}
+
+/** `spacePath` without the building space, for breadcrumbs that start at the site. */
+export function crumbPath(site: Site, id: string | null): Space[] {
+  const building = buildingSpace(site);
+  return spacePath(site, id).filter((s) => s.id !== building?.id);
+}
+
 /** The space and its ancestors, root first. Stops on cycles. */
 export function spacePath(site: Site, id: string | null): Space[] {
   const out: Space[] = [];

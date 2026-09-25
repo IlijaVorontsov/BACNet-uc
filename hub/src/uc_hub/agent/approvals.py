@@ -14,7 +14,8 @@ run's later tier L calls; the run keeps that grant (``RunManager.grant``).
 
 Decisions, expiries (``sweep``, called periodically) and closing a run's
 approvals are announced as ``approval.decided``, audited and handed to the
-waiting call. A decision reached while nobody waits (the hub restarted
+waiting call, also when the call starts waiting while the decision is
+being stored. A decision reached while nobody waits (the hub restarted
 since the request) is recorded but runs nothing.
 """
 
@@ -22,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import Counter
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -54,6 +56,8 @@ class ApprovalBroker:
     def __init__(self, services: Services) -> None:
         self.services = services
         self._waiting: dict[str, asyncio.Future[Decision]] = {}
+        #: Approvals a ``decide`` of this process is deciding (stored, not handed to the waiting call yet).
+        self._deciding: Counter[str] = Counter()
 
     async def request(self, prepared: Prepared, *, requested_by: str) -> dict[str, Any]:
         """Store the approval of a prepared call and announce it. The
@@ -81,10 +85,13 @@ class ApprovalBroker:
             future = self._waiting[approval_id] = asyncio.get_running_loop().create_future()
         if not future.done():
             row = await self.services.store.get_approval(approval_id)
-            if row is None or row["state"] != "pending":
+            if row is None:
                 self._drop(approval_id, future)
-                if row is None:
-                    raise NotFound(f"no approval {approval_id}")
+                raise NotFound(f"no approval {approval_id}")
+            # Decided before anyone waited (a restart) runs nothing; a decision
+            # this process is still handing over comes through the future.
+            if row["state"] != "pending" and not future.done() and approval_id not in self._deciding:
+                self._drop(approval_id, future)
                 return Decision(row)
         try:
             async with asyncio.timeout(timeout_s):
@@ -127,15 +134,28 @@ class ApprovalBroker:
         elif user != row["requested_by"] and not policy.can_approve(row["tier"], roles):
             raise PolicyDenied(f"only its requester or someone who may approve tier {row['tier']} calls may reject "
                                "this approval")
-        decided = await store.decide_approval(approval_id, decision, user=user, comment=comment,
-                                              scope=scope if decision == "approve" else "call")
-        detail = row["title"] + (" (and the run's later tier L calls)" if decided["scope"] == "run" else "")
-        await self._audit(decided, row["args"], user, detail + (f"; comment: {comment}" if comment else ""))
-        if decided["scope"] == "run" and decided["run_id"] is not None:
-            await self.services.runs.grant(decided["run_id"], decided, frozenset(roles))
-        await self._announce(decided)
-        self._resolve(Decision(decided, prepared, frozenset(roles)))
+        self._deciding[approval_id] += 1
+        try:
+            decided = await store.decide_approval(approval_id, decision, user=user, comment=comment,
+                                                  scope=scope if decision == "approve" else "call")
+        except BaseException:
+            self._decided(approval_id)
+            raise
+        try:
+            detail = row["title"] + (" (and the run's later tier L calls)" if decided["scope"] == "run" else "")
+            await self._audit(decided, row["args"], user, detail + (f"; comment: {comment}" if comment else ""))
+            if decided["scope"] == "run" and decided["run_id"] is not None:
+                await self.services.runs.grant(decided["run_id"], decided, frozenset(roles))
+            await self._announce(decided)
+        finally:
+            self._decided(approval_id)
+            self._resolve(Decision(decided, prepared, frozenset(roles)))
         return decided
+
+    def _decided(self, approval_id: str) -> None:
+        self._deciding[approval_id] -= 1
+        if not self._deciding[approval_id]:
+            del self._deciding[approval_id]
 
     async def sweep(self) -> list[dict[str, Any]]:
         """Expire the approvals whose time is up; returns them."""

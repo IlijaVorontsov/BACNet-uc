@@ -12,6 +12,7 @@ from support.site import Hub, start_hub
 from uc_hub.core.errors import PolicyDenied
 from uc_hub.core.types import ChangeResult
 from uc_hub.runtime.manifest import ApplyOutcome
+from uc_hub.tools.manifest import _target_line
 
 DOOR = {"channel": "di1", "type": "binary-input", "instance": 2, "name": "R204 Door"}
 
@@ -85,6 +86,15 @@ async def test_the_apply_approval_card(hub: Hub) -> None:
     assert stale.result is not None and stale.result.error_code == "conflict"
     unknown = await hub.prepare("apply", {"plan_id": "p77"})
     assert unknown.result is not None and unknown.result.error_code == "not_found"
+
+
+def test_a_long_target_line_of_the_card_ends_after_a_whole_change() -> None:
+    uploads = [f"upload /lfs/apps/app{i}.wasm (1657 bytes) for app app{i}" for i in range(8)]
+    line = _target_line("r204-ctl", uploads)
+    assert len(line) <= 300 and line.endswith("for app app4; and 3 more")
+    assert _target_line("gateway", ["tags: 1 point"]) == "gateway: tags: 1 point"
+    huge = _target_line("gateway", ["x" * 400, "tags: 1 point"])
+    assert len(huge) == 300 and huge.endswith("x…; and 1 more")
 
 
 async def test_large_plans_and_life_safety_marks_need_an_admin(tmp_path: Path) -> None:

@@ -425,8 +425,9 @@ life-safety and deny rules, priorities, the rate limit), `runtime/live.py`
 (every agent write and IO force goes through the policy and holds a lease;
 BACnet-uc nodes get the lease length too, and writes without a priority
 array are undone by writing back the previous value; `runtime/services.py`
-releases every lease when the hub stops), `runtime/manifest.py`
-(permanent changes only through plan and apply; only an admin adds or
+releases every lease when the hub stops, and `api/server.py` makes SIGINT
+and SIGTERM stop it in that order instead of ending the process),
+`runtime/manifest.py` (permanent changes only through plan and apply; only an admin adds or
 removes a life-safety mark), `runtime/bridges.py` (gateway bridges follow
 the agent's write rules) and `runtime/testing.py` (live acceptance tests are
 agent actions), `agent/approvals.py` (an approval is checked again with the
@@ -566,7 +567,9 @@ agent on the other, and a change is always shown as a reviewable diff**.
   answered with one thumb while the technician stands at the valve.
 - **Approvals:** a bottom sheet with a per-device summary; the full diff is
   one tap away. Tier-C changes need **hold-to-confirm** (1.5 s), not a
-  single tap.
+  single tap. Tier-L calls (live, reversible, under a lease) are approved
+  right on their card in the Agent tab, once or for the rest of the run, so
+  an IO checkout does not leave the stream.
 - **Field mode:** scan a QR code on the board to open the device; the camera
   button sends a nameplate photo to the vision model; Identify makes the
   board blink.

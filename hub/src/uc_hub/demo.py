@@ -18,7 +18,9 @@ directory (a fresh database every time), adapts the addresses and starts:
   ``ZAI_API_KEY``) and the web app when ``web/dist`` is built.
 
 By default the devices listen on the ports ``site.yaml`` names (SMP
-13201-13205, the AHU on 47830); ``ephemeral_ports`` picks free ones.
+13201-13205, the AHU on 47830); ``ephemeral_ports`` (``--free-ports``)
+picks free ones, so several demos (the web app's end-to-end tests) can run
+side by side.
 """
 
 from __future__ import annotations
@@ -40,7 +42,7 @@ from typing import Any
 import uvicorn
 import yaml
 
-from .api import create_app
+from .api import HubServer, create_app
 from .core.types import ProtocolName
 from .drivers.bacnet_uc import SmpNodeClient
 from .manifest import MemoryBackupStore, SiteManifest, apply_plan, compute_plan, directory_resolver
@@ -330,21 +332,29 @@ def _free_port() -> int:
 
 
 async def run_demo(*, host: str = LOCALHOST, port: int = 8080, llm: str = "scripted",
-                   demo_dir: Path = DEMO_DIR) -> None:
-    """``uc-hub demo``: run until Ctrl-C."""
+                   demo_dir: Path = DEMO_DIR, free_ports: bool = False, token_env: str | None = None) -> None:
+    """``uc-hub demo``: run until Ctrl-C (or SIGTERM). ``token_env`` names
+    the environment variable of a bearer token for user ``demo`` (admin)
+    instead of dev mode."""
+    overrides: dict[str, Any] = {"listen": {"host": host, "port": port}}
+    if token_env:
+        if not os.environ.get(token_env, "").strip():
+            raise ValueError(f"--token-env: the environment variable {token_env} is empty or not set")
+        overrides["auth"] = {"tokens": [{"user": "demo", "roles": ["admin"], "token_env": token_env}]}
     with tempfile.TemporaryDirectory(prefix="uc-hub-demo-") as tmp:
-        demo = await start_demo(Path(tmp), demo_dir=demo_dir, llm=llm,
-                                overrides={"listen": {"host": host, "port": port}})
+        demo = await start_demo(Path(tmp), demo_dir=demo_dir, llm=llm, ephemeral_ports=free_ports,
+                                overrides=overrides)
         try:
             app = create_app(demo.services)
-            server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_config=None, lifespan="off",
-                                                   timeout_graceful_shutdown=2))
+            server = HubServer(uvicorn.Config(app, host=host, port=port, log_config=None, lifespan="off",
+                                              timeout_graceful_shutdown=2))
             serving = asyncio.create_task(server.serve())
             while not server.started and not serving.done():
                 await asyncio.sleep(0.05)
             if server.started:
-                print(f"uc-hub demo: http://{host}:{port}/ (site {demo.services.site.name}, working directory {tmp}); "
-                      "try 'Commission room 204' in the agent panel. Ctrl-C stops.", flush=True)
+                sign_in = f"; sign in once with /?token=<${token_env}>" if token_env else ""
+                print(f"uc-hub demo: http://{host}:{port}/ (site {demo.services.site.name}, working directory {tmp})"
+                      f"{sign_in}; try 'Commission room 204' in the agent panel. Ctrl-C stops.", flush=True)
             await serving
         finally:
             await demo.stop()

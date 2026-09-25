@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { diffStats, parseUnifiedDiff } from "./diff";
 import { formatDuration, formatExpiry, formatReading, formatValue, initials, unitSymbol } from "./format";
 import { Markdown } from "./markdown";
-import { resolveDevice, spacePath } from "./site";
+import { buildingSpace, crumbPath, resolveDevice, spacePath, topSpaces } from "./site";
 import type { Device, Site } from "../api/types";
 
 describe("parseUnifiedDiff", () => {
@@ -114,5 +114,26 @@ describe("site helpers", () => {
     expect(spacePath(site, "r204").map((s) => s.id)).toEqual(["f2", "r204"]);
     expect(spacePath(site, "a").map((s) => s.id)).toEqual(["b", "a"]);
     expect(spacePath(site, null)).toEqual([]);
+  });
+
+  it("shows a site that is one building space as the site itself", () => {
+    const building = {
+      spaces: [
+        { id: "hq", name: "HQ", parent: null },
+        { id: "f2", name: "Floor 2", parent: "hq" },
+        { id: "r204", name: "Room 204", parent: "f2" },
+        { id: "plant", name: "Plant room", parent: "hq" },
+      ],
+    } as Site;
+    expect(buildingSpace(building)?.id).toBe("hq");
+    expect(topSpaces(building).map((s) => s.id)).toEqual(["f2", "plant"]);
+    expect(crumbPath(building, "r204").map((s) => s.name)).toEqual(["Floor 2", "Room 204"]);
+
+    const campus = { spaces: [...building.spaces, { id: "b2", name: "Annex", parent: null }] } as Site;
+    expect(buildingSpace(campus)).toBeNull();
+    expect(topSpaces(campus).map((s) => s.id)).toEqual(["hq", "b2"]);
+    expect(crumbPath(campus, "r204").map((s) => s.name)).toEqual(["HQ", "Floor 2", "Room 204"]);
+    // A single space without children is a room, not a building.
+    expect(buildingSpace({ spaces: [{ id: "lab", name: "Lab", parent: null }] } as Site)).toBeNull();
   });
 });

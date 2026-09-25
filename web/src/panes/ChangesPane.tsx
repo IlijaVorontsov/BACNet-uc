@@ -17,6 +17,33 @@ function groupByTarget(plan: Plan): [string, Change[]][] {
   return [...out.entries()].filter(([, list]) => list.length > 0);
 }
 
+/** Targets that keep the plan from being applied, and the plan's warnings. */
+export function PlanNotes({ plan }: { plan: Plan }) {
+  const blocked = Object.entries(plan.blocked);
+  return (
+    <>
+      {blocked.length > 0 && (
+        <ul className="warnings" aria-label="Blocked targets">
+          {blocked.map(([target, reason]) => (
+            <li key={target}>
+              <span className="warn-t">Cannot be applied:</span> {target} could not be planned ({reason})
+            </li>
+          ))}
+        </ul>
+      )}
+      {plan.warnings.length > 0 && (
+        <ul className="warnings" aria-label="Warnings">
+          {plan.warnings.map((w, i) => (
+            <li key={i}>
+              <span className="warn-t">Warning:</span> {w}
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}
+
 /** The draft's plan: per-target changes with their diffs, warnings and the pending approval. */
 export function ChangesPane() {
   const hub = useHub();
@@ -43,7 +70,8 @@ export function ChangesPane() {
     );
   }
 
-  const needsApproval = plan.changes.some((c) => c.tier === "C");
+  const blocked = Object.keys(plan.blocked).length > 0;
+  const needsApproval = !blocked && plan.changes.some((c) => c.tier === "C");
   return (
     <div className="plan">
       <div className="plan-head">
@@ -51,6 +79,7 @@ export function ChangesPane() {
           Plan {plan.id} · draft revision {plan.revision}
         </h3>
         <Chip>{plural(plan.changes.length, "change")} on {plural(plan.targets.length, "target")}</Chip>
+        {blocked && <Chip tone="crit">Cannot be applied</Chip>}
         {needsApproval && (
           <Chip tone="crit">
             <TierBadge tier="C" />
@@ -68,24 +97,7 @@ export function ChangesPane() {
           </button>
         </div>
       )}
-      {Object.keys(plan.blocked).length > 0 && (
-        <ul className="warnings" aria-label="Blocked targets">
-          {Object.entries(plan.blocked).map(([target, reason]) => (
-            <li key={target}>
-              <span className="warn-t">Cannot be applied:</span> {target} could not be planned ({reason})
-            </li>
-          ))}
-        </ul>
-      )}
-      {plan.warnings.length > 0 && (
-        <ul className="warnings" aria-label="Warnings">
-          {plan.warnings.map((w, i) => (
-            <li key={i}>
-              <span className="warn-t">Warning:</span> {w}
-            </li>
-          ))}
-        </ul>
-      )}
+      <PlanNotes plan={plan} />
       {groupByTarget(plan).map(([target, changes]) => {
         const d = devices.find((x) => x.name === target);
         return (

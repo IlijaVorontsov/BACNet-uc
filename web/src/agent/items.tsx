@@ -68,7 +68,7 @@ export function ToolCard({ item }: { item: ToolItem }) {
       {item.result ? (
         <div className={`res${item.result.ok ? "" : " crit-t"}`}>{item.result.summary}</div>
       ) : running ? (
-        <div className="res mute-t">{hasArgs || !item.argsText ? "Running…" : "Writing arguments…"}</div>
+        <div className="res mute-t">{item.argsComplete || hasArgs || !item.argsText ? "Running…" : "Writing arguments…"}</div>
       ) : null}
       {open && (
         <div className="tooldetail">

@@ -22,7 +22,9 @@ sensor) are sent as `null`.
   (`auth.tokens`). When no tokens are configured, the hub runs in **dev
   mode**: every request is user `dev` with all roles. The hub then refuses
   to start on a `listen.host` that is not a loopback address unless
-  `--insecure-listen` is given.
+  `--insecure-listen` is given, and refuses requests from pages of other
+  sites (an `Origin` header that does not match `Host`: 403 `denied`),
+  which a browser would otherwise send to a loopback address as well.
 - Roles: `viewer`, `operator`, `commissioner`, `admin`; each includes the
   ones before it.
 - Errors: `{"error": {"code": str, "message": str, "details"?: any}}`:
@@ -46,10 +48,10 @@ sensor) are sent as `null`.
 | `GET /api/health` | `{"ok": true, "version": "0.1.0", "site": "hq", "llm": {"provider": "zai", "model": "glm-5.3", "configured": bool}, "dev_mode": bool}` (no token needed) |
 | `GET /api/me` | `{"user": "dev", "roles": ["viewer", ..., "admin"]}` (in increasing order of authority) |
 | `GET /api/site` | `Site` |
-| `GET /api/devices/{name}` | `DeviceDescription` (the last description; a device never described is asked now, and when it does not answer `points` is empty and `extra.error` says why) |
+| `GET /api/devices/{name}?refresh=0` | `DeviceDescription`: the last description; a device never described is asked now, and when it does not answer `points` is empty and `extra.error` says why. `refresh=1` asks an online device again, for what changes while it runs (its apps' `state`, `ticks`, `errors`, `last_error`); when it does not answer, the last description comes back with `extra.error` |
 | `GET /api/points?q=&device=&space=&tag=&limit=200&offset=0` | `{"total": int, "points": [Point & {"reading"?: Reading}]}`: every word of `q` in the id, name, description, tags, source, device or space; `space` includes its child spaces; `limit` 1..1000; `reading` is the latest cached value |
 | `POST /api/points/read` `{"ids": [str]}` | `{"readings": [Reading]}` (1..500 full or device-relative ids; an unknown point reads `fault`) |
-| `GET /api/live?ids=a,b` or `?device=r204-ctl` (SSE) | Events `reading` with a `Reading` payload. The first events are the current cached values. Keep-alive comments every 15 s. While the stream is open its points are watched (polled or subscribed); the watch is released when the client goes away. |
+| `GET /api/live?ids=a,b` or `?device=r204-ctl` (SSE) | Events `reading` with a `Reading` payload. The first events are the current cached values. Keep-alive comments every 15 s. While the stream is open its points are watched (polled or subscribed); the watch is released when the client goes away. With `device`, those are the points the device has when the stream opens: a client that shows a device whose points change (an apply configured it) opens a new stream, or asks by `ids` (the web app does). |
 | `POST /api/discover` `{"protocol"?: "bacnet-uc"\|"bacnet-ip"\|"mqtt", "timeout_s"?: float}` | `{"devices": [DiscoveredDevice & {"known": bool, "device": str \| null}], "errors": {protocol: str}}` (`device` is the manifest name of a known device; `errors` lists the sweeps that failed) |
 | `POST /api/devices/{name}/identify` `{"seconds"?: int}` | `{}`: operator or above; runs as a tier L `device_identify` call that the caller approves themselves (policy checked, audited); `seconds` 1..3600, default 30 |
 
@@ -124,7 +126,7 @@ continues when the browser disconnects.
 | Method and path | Response |
 |---|---|
 | `GET /api/runs?limit=20` | `{"runs": [RunSummary]}` (newest first, `limit` 1..200) |
-| `POST /api/runs` `{"message": str, "playbook"?: str}` | `RunSummary` (status 201). The run starts at once. `playbook` is one of `commission`, `onboard`, `io-checkout`, `troubleshoot`, `handover` (400 `invalid` otherwise); its instructions join the run's system prompt. The title is the playbook's name, else the first sentence of the message. Any role may start a run; a viewer's run only gets the read tools. |
+| `POST /api/runs` `{"message": str, "playbook"?: str}` | `RunSummary` (status 201). The run starts at once. `message` has 1 to 20000 characters. `playbook` is one of `commission`, `onboard`, `io-checkout`, `troubleshoot`, `handover` (400 `invalid` otherwise); its instructions join the run's system prompt. The title is the playbook's name, else the first sentence of the message. Any role may start a run; a viewer's run only gets the read tools. |
 | `GET /api/runs/{id}` | `RunSummary` |
 | `POST /api/runs/{id}/messages` `{"message": str}` | `{}` (202): a new turn, run as the sender (their roles decide what the tools may do). 409 while the run is `running`, `waiting_approval` or `waiting_answer`, and for MCP sessions. |
 | `POST /api/runs/{id}/cancel` | `{}`: stops the turn; the run's pending approvals and open questions expire, calls that did not run get a failed result, and the agent's leases the run holds are released. The run's creator or an operator (or above). Cancelling a run between turns does nothing; a cancelled MCP session takes no more calls. |
@@ -149,9 +151,11 @@ the turn's budget is used up (`budget`: `agent.max_tool_calls` tool calls,
 or `agent.max_wall_s` of work, not counting the time spent waiting for
 people), or the same tool call fails twice in a row with the same arguments
 (`repeated_failure`). Tool calls the model asked for but that did not run
-get a failed `tool.result`. At a hub restart, runs that wait for an
-approval or an answer keep waiting; runs that were `running` become `idle`
-with an `error` event `interrupted by a hub restart` (`restart`).
+get a failed `tool.result`, also a call whose `tool.call` was sent while the
+model's answer broke off (a provider error, a cancel, a restart). At a hub
+restart, runs that wait for an approval or an answer keep waiting; runs
+that were `running` become `idle` with an `error` event `interrupted by a
+hub restart` (`restart`).
 
 Clients of `uc-hub mcp` get a run of their own ("MCP session", `model`
 `mcp`), where their calls appear as `tool.call`, `tool.result` and
@@ -172,7 +176,7 @@ fields listed here:
 | `message.done` | `text` (the complete assistant message) |
 | `tool.call` | `call_id`, `tool`, `tier`, `args`: sent with `args` `{}` as soon as the model starts the call, and again with the complete arguments once they are known (`{}` when they are not a JSON object) |
 | `tool.args.delta` | `call_id`, `delta` (raw JSON fragment while the model streams arguments) |
-| `tool.result` | `call_id`, `ok`, `summary`, `duration_ms`, `data?` (only results up to `agent.result_inline_limit` bytes), `handle?` (`result://rN` of a larger result, which the model pages with `result_get`) |
+| `tool.result` | `call_id`, `ok`, `summary`, `duration_ms` (how long the call ran, without the wait for an approval; 0 for a call that did not run), `data?` (only results up to `agent.result_inline_limit` bytes), `handle?` (`result://rN` of a larger result, which the model pages with `result_get`) |
 | `approval.request` | `approval` (Approval) |
 | `approval.decided` | `approval` (Approval) |
 | `question` | `question_id`, `call_id`, `text`, `options` (list of str; free text allowed when empty) |
@@ -183,7 +187,12 @@ fields listed here:
 
 Clients rebuild a run's view by folding events in `seq` order. The same
 reducer handles the replay and the live stream. Streamed text arrives in
-pieces of about 0.1 s. Tool call ids are unique within a run, not across
+pieces of about 0.1 s. One model step sends, in this order: its
+`thinking.delta` and `message.delta` pieces, a `tool.call` with `{}` and the
+`tool.args.delta` pieces of each call it starts, then `message.done` (only
+when it wrote text) and a `tool.call` with the complete arguments per call;
+the calls' results follow. So `message.done` completes the text the step
+streamed, even when `tool.call` events came in between. Tool call ids are unique within a run, not across
 runs. The `data` of a tool result may contain text that devices reported
 (under `device_data`); show it as text.
 
@@ -231,7 +240,8 @@ Approval rules (enforced by the hub):
   the hub checks every few seconds. The run then gets `approval.decided`
   and a tool result saying so. Approvals of a cancelled run expire at once.
   An MCP client waits at most `mcp.approval_wait_s` for a decision; the
-  approval expires when it stops waiting.
+  approval expires when it stops waiting (also when it cancels the call or
+  disconnects), and the call gets a failed `tool.result`.
 - Clients must require a deliberate gesture for tier `C`: a hold on phones,
   or a button inside the expanded card on desktop.
 

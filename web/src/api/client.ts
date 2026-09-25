@@ -205,8 +205,9 @@ export class ApiClient {
     return this.get("/api/site", undefined, signal);
   }
 
-  device(name: string, signal?: AbortSignal): Promise<DeviceDescription> {
-    return this.get(`/api/devices/${encodeURIComponent(name)}`, undefined, signal);
+  /** `refresh` asks an online device again instead of returning its last description (for its apps' status). */
+  device(name: string, signal?: AbortSignal, refresh = false): Promise<DeviceDescription> {
+    return this.get(`/api/devices/${encodeURIComponent(name)}`, refresh ? { refresh: 1 } : undefined, signal);
   }
 
   points(query: PointsQuery = {}, signal?: AbortSignal): Promise<PointsPage> {

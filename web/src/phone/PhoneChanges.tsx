@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Approval } from "../api/types";
 import { plural } from "../lib/format";
+import { PlanNotes } from "../panes/ChangesPane";
 import { useHub } from "../state/hub";
 import { useUi } from "../state/ui";
 import { Chip, ErrorNote } from "../ui/common";
@@ -40,6 +41,7 @@ export function PhoneChanges() {
               </b>
               <span>{plural(plan.changes.length, "change")}</span>
             </div>
+            <PlanNotes plan={plan} />
             <ul className="clist">
               {plan.changes.map((c) => (
                 <li key={c.id}>
@@ -51,7 +53,13 @@ export function PhoneChanges() {
                 </li>
               ))}
             </ul>
-            {pending.length === 0 && <p className="mute-t small">No approval is requested yet. Ask the agent to apply the plan.</p>}
+            {pending.length === 0 && (
+              <p className="mute-t small">
+                {Object.keys(plan.blocked).length > 0
+                  ? "This plan cannot be applied. Plan again once every target answers."
+                  : "No approval is requested yet. Ask the agent to apply the plan."}
+              </p>
+            )}
             <button type="button" className="btn" aria-expanded={showPlan} onClick={() => setShowPlan((s) => !s)}>
               {showPlan ? "Hide diffs" : "Show all diffs"}
             </button>

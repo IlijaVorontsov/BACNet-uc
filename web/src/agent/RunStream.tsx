@@ -17,13 +17,18 @@ function useAnnouncement(view: RunView): string {
     } else if (view.state === "waiting_answer") {
       const q = [...view.items].reverse().find((i) => i.kind === "question" && i.answer === null);
       msg = q && q.kind === "question" ? `The agent asks: ${q.text}` : "The agent waits for an answer.";
-    } else if (view.state === "idle") msg = "The agent finished.";
-    else if (view.state === "failed") msg = "The run failed.";
+    } else if (view.state === "idle") {
+      msg = view.turnError ? `The agent stopped: ${view.turnError}` : "The agent finished.";
+    } else if (view.state === "failed") {
+      msg = "The run failed.";
+    } else if (view.state === "cancelled") {
+      msg = "The run was cancelled.";
+    }
     if (msg && msg !== last.current) {
       last.current = msg;
       setText(msg);
     }
-  }, [view.state, view.items]);
+  }, [view.state, view.items, view.turnError]);
   return text;
 }
 

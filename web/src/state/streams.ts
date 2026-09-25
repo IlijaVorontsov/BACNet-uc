@@ -42,26 +42,21 @@ export interface LiveValue {
   changedAt: number;
 }
 
-export type LiveTarget = { ids: readonly string[] } | { device: string } | null;
-
-function targetKey(t: LiveTarget): string {
-  if (!t) return "";
-  if ("device" in t) return `device:${t.device}`;
-  return t.ids.length ? `ids:${[...t.ids].sort().join(",")}` : "";
-}
-
-/** Live readings of points (API `GET /api/live`), batched per frame. */
-export function useLive(target: LiveTarget): { values: ReadonlyMap<string, LiveValue>; status: SseStatus | null } {
+/**
+ * Live readings of these points (API `GET /api/live?ids=`), batched per
+ * frame. A new set of ids opens a new stream, which the hub then watches.
+ */
+export function useLive(target: { ids: readonly string[] }): {
+  values: ReadonlyMap<string, LiveValue>;
+  status: SseStatus | null;
+} {
   const { client } = useHub();
   const [values, setValues] = useState<ReadonlyMap<string, LiveValue>>(() => new Map());
   const [status, setStatus] = useState<SseStatus | null>(null);
-  const key = targetKey(target);
-  const targetRef = useRef(target);
-  targetRef.current = target;
+  const key = [...target.ids].sort().join(",");
 
   useEffect(() => {
-    const t = targetRef.current;
-    if (!key || !t) {
+    if (!key) {
       setStatus(null);
       return;
     }
@@ -83,7 +78,7 @@ export function useLive(target: LiveTarget): { values: ReadonlyMap<string, LiveV
     });
     const ctrl = new AbortController();
     client.live(
-      "device" in t ? { device: t.device } : { ids: [...t.ids] },
+      { ids: key.split(",") },
       (r) => {
         pending.set(r.id, r);
         sched.schedule();

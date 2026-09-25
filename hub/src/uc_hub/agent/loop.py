@@ -22,7 +22,8 @@ A turn ends early, with an ``error`` event, when the model provider fails
 (``agent.max_tool_calls``, ``agent.max_wall_s``; time spent waiting for
 people does not count) is used up (``budget``), or the same call fails
 twice in a row (``repeated_failure``). Calls the model asked for but that
-did not run get a failed result, so the history stays valid.
+did not run get a failed result, so the history stays valid; so do calls
+clients saw start in an answer that broke off, so no call stays open.
 
 The history (OpenAI chat messages) is stored after every step. At startup
 runs that were waiting for an approval or an answer continue waiting (the
@@ -89,9 +90,13 @@ class _Run:
     user: str
     roles: frozenset[str]
     playbook: Playbook | None
-    messages: list[dict[str, Any]]
     state: str
     grant: Grant | None = None
+    #: The history while a turn runs; it is in the store between turns.
+    messages: list[dict[str, Any]] = field(default_factory=list)
+    loaded: bool = False
+    #: Calls of the answer the model is streaming: announced (``tool.call``), not in the history yet.
+    streamed: list[str] = field(default_factory=list)
     task: asyncio.Task[None] | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     #: Tool calls of the current turn, when it started (monotonic) and time waited for people.
@@ -134,6 +139,7 @@ class RunManager:
                 logger.info("run %s continues %s", run.id, run.state.replace("_", " for an "))
                 run.task = asyncio.create_task(self._drive(run), name=f"run-{run.id}")
             else:
+                run.streamed = await self._unanswered(run)
                 await self._stop(run, "idle", "interrupted by a hub restart", code="restart",
                                  closing="the hub restarted while this call ran; what it did is unknown, check "
                                          "before trying again")
@@ -223,7 +229,9 @@ class RunManager:
     async def session_call(self, run_id: str, name: str, args: dict[str, Any], *,
                            approval_wait_s: float) -> ToolResult:
         """Run one MCP tool call in its session run, with the run's events.
-        An approval that nobody decides within ``approval_wait_s`` expires."""
+        An approval that nobody decides within ``approval_wait_s`` expires, as
+        does one whose client stops waiting (the call is cancelled): nobody
+        would run the call after an approve."""
         run = await self._get(run_id)
         if run.state == "cancelled":
             raise Conflict(f"a user cancelled this MCP session ({run_id}) in the web app; reconnect to start a new one")
@@ -234,10 +242,13 @@ class RunManager:
         await self._emit(run, "tool.call", call_id=call_id, tool=name, tier=self._tier(name), args=args)
         run.inflight += 1
         await self._set_state(run, "running")
-        started = time.monotonic()
         try:
             result = await self._call(run, call_id, name, args, approval_wait_s=approval_wait_s)
-            await self._result_event(run, call_id, result, started)
+            await self._result_event(run, call_id, result)
+        except asyncio.CancelledError:
+            await self._result_event(run, call_id, ToolResult(False, "the MCP client stopped waiting for this call",
+                                                              error_code="cancelled"))
+            raise
         finally:
             run.inflight -= 1
             if run.inflight == 0 and run.state in ACTIVE_STATES:
@@ -248,7 +259,7 @@ class RunManager:
     async def _create(self, kind: str, user: str, roles: set[str] | frozenset[str], title: str, model: str,
                       book: Playbook | None) -> str:
         run = _Run(id="", kind=kind, created_by=user, user=user, roles=frozenset(roles), playbook=book,
-                   messages=[], state="idle")
+                   state="idle", loaded=True)
         row = await self.services.store.create_run(title=title, created_by=user, model=model, state="idle",
                                                    meta=run.meta())
         run.id = row["id"]
@@ -256,6 +267,7 @@ class RunManager:
         return run.id
 
     async def _begin_turn(self, run: _Run, text: str, user: str, roles: set[str] | frozenset[str]) -> None:
+        await self._load(run)
         run.user, run.roles = user, frozenset(roles)
         run.calls, run.waited_s, run.last_failure = 0, 0.0, None
         run.started = time.monotonic()
@@ -271,6 +283,8 @@ class RunManager:
         """The loop of one turn: open tool calls first (also those a restart
         interrupted), then the model, until it answers without tool calls."""
         try:
+            if await self._load(run):
+                run.calls = _calls_this_turn(run.messages)
             while True:
                 pending = _open_calls(run.messages)
                 if pending:
@@ -289,6 +303,7 @@ class RunManager:
                     return
                 if not await self._model_step(run):
                     return
+            self._unload(run)
             await self._set_state(run, "idle")
         except asyncio.CancelledError:
             raise
@@ -323,6 +338,7 @@ class RunManager:
                 elif isinstance(event, ToolCallStart):
                     await deltas.flush()
                     ids[event.index] = call_id = _unique_id(run.messages, event.id, ids.values())
+                    run.streamed.append(call_id)
                     await self._emit(run, "tool.call", call_id=call_id, tool=event.name, tier=self._tier(event.name),
                                      args={})
                 elif isinstance(event, ToolCallDelta):
@@ -341,7 +357,7 @@ class RunManager:
         if completed.text:
             await self._emit(run, "message.done", text=completed.text)
         if completed.finish_reason not in ("stop", "tool_calls"):
-            await self._stopped_answer(run, completed, list(ids.values()))
+            await self._stopped_answer(run, completed)
             return False
         message: dict[str, Any] = {"role": "assistant", "content": completed.text}
         if completed.reasoning:
@@ -352,16 +368,20 @@ class RunManager:
                 call_id = ids.get(index) or _unique_id(run.messages, call.id, [c["id"] for c in calls])
                 calls.append({"id": call_id, "type": "function",
                               "function": {"name": call.name, "arguments": call.arguments}})
+                if call_id not in run.streamed:
+                    run.streamed.append(call_id)
                 await self._emit(run, "tool.call", call_id=call_id, tool=call.name, tier=self._tier(call.name),
                                  args=_args_object(call.arguments))
             message["tool_calls"] = calls
         run.messages.append(message)
+        run.streamed.clear()
         await self.services.store.save_messages(run.id, run.messages)
         return True
 
-    async def _stopped_answer(self, run: _Run, completed: Completed, started: list[str]) -> None:
+    async def _stopped_answer(self, run: _Run, completed: Completed) -> None:
         """The provider stopped the answer: its tool calls never run (they
-        may be cut off), the calls already shown get a result, and the turn ends."""
+        may be cut off; the calls already shown get a result when the turn
+        ends), and the turn ends."""
         reason = completed.finish_reason
         if reason == "length":
             if completed.text:
@@ -375,9 +395,6 @@ class RunManager:
                     "the request")
         else:
             text = f"the model stopped before its answer was complete (finish reason {reason})"
-        for call_id in started:
-            await self._emit(run, "tool.result", call_id=call_id, ok=False, summary="not run: the answer was stopped",
-                             duration_ms=0)
         await self._end_turn(run, text, reason)
 
     async def _open_call(self, run: _Run, call: dict[str, Any]) -> tuple[str, str] | None:
@@ -390,9 +407,8 @@ class RunManager:
         run.calls += 1
         function = call.get("function") or {}
         name, raw = str(function.get("name") or ""), str(function.get("arguments") or "")
-        started = time.monotonic()
         result = await self._call(run, call["id"], name, raw)
-        await self._result_event(run, call["id"], result, started)
+        await self._result_event(run, call["id"], result)
         run.messages.append({"role": "tool", "tool_call_id": call["id"], "content": result.to_model_text()})
         await self.services.store.save_messages(run.id, run.messages)
         if result.ok:
@@ -447,6 +463,12 @@ class RunManager:
                 await approvals.expire([approval_id], f"nobody decided within {wait_s:g} s while the MCP client "
                                                       "waited")
                 return await approvals.wait(approval_id)
+            except asyncio.CancelledError:
+                # An agent run keeps its approval (a cancel expires it, a restart waits again);
+                # an MCP client that stopped waiting never runs the call.
+                if run.kind == MCP:
+                    await approvals.expire([approval_id], "the MCP client stopped waiting")
+                raise
 
     async def _decided(self, run: _Run, decision: Decision) -> ToolResult:
         row = decision.approval
@@ -485,7 +507,9 @@ class RunManager:
     async def _end_turn(self, run: _Run, message: str, code: str, open_ids: list[str] | None = None) -> None:
         if open_ids:
             await self._close(run, open_ids, f"not run: {message}")
+        await self._close_streamed(run, f"not run: {message}")
         await self._emit(run, "error", message=message, code=code)
+        self._unload(run)
         await self._set_state(run, "idle")
 
     async def _stop(self, run: _Run, state: str, reason: str, *, code: str | None = None,
@@ -494,10 +518,28 @@ class RunManager:
         open calls, report (``code``: as an error event) and set ``state``."""
         await self.services.approvals.expire_run(run.id, reason)
         await self.services.questions.expire_run(run.id)
+        await self._load(run)
         await self._close(run, [c["id"] for c in _open_calls(run.messages)], closing)
+        # An MCP session keeps no history: a call of it without a result may have run.
+        await self._close_streamed(run, closing if run.kind == MCP else f"not run: {reason}")
         if code is not None:
             await self._emit(run, "error", message=reason, code=code)
+        self._unload(run)
         await self._set_state(run, state, reason)
+
+    async def _load(self, run: _Run) -> bool:
+        """Bring the stored history into memory for a turn; True when it was not there."""
+        if run.loaded:
+            return False
+        run.messages = await self.services.store.load_messages(run.id)
+        run.loaded = True
+        return True
+
+    def _unload(self, run: _Run) -> None:
+        """Between turns the history lives in the store only (it is saved
+        after every step). Done before the state leaves ``running``, so a
+        new turn always loads it again."""
+        run.messages, run.loaded = [], False
 
     async def _close(self, run: _Run, call_ids: list[str], text: str) -> None:
         if not call_ids:
@@ -508,13 +550,37 @@ class RunManager:
             await self._emit(run, "tool.result", call_id=call_id, ok=False, summary=text, duration_ms=0)
         await self.services.store.save_messages(run.id, run.messages)
 
+    async def _close_streamed(self, run: _Run, text: str) -> None:
+        """A failed result for calls clients saw start but that never reached
+        the history (the answer broke off), so no call stays open for them."""
+        call_ids, run.streamed = run.streamed, []
+        for call_id in call_ids:
+            await self._emit(run, "tool.result", call_id=call_id, ok=False, summary=text, duration_ms=0)
+
+    async def _unanswered(self, run: _Run) -> list[str]:
+        """Calls announced to clients that have no result and are not in the
+        history: the answer a restart cut off while the model streamed it."""
+        await self._load(run)
+        known = {c.get("id") for m in run.messages if m.get("role") == "assistant" for c in m.get("tool_calls") or ()}
+        announced: dict[str, None] = {}
+        after = 0
+        while page := await self.services.store.list_events(run.id, after_seq=after, limit=1000):
+            for event in page:
+                if event["type"] == "tool.call":
+                    announced[event["call_id"]] = None
+                elif event["type"] == "tool.result":
+                    announced.pop(event["call_id"], None)
+            after = page[-1]["seq"]
+        return [call_id for call_id in announced if call_id not in known]
+
     # -- events and state -------------------------------------------------------------------------
     async def _emit(self, run: _Run, event: str, **fields: Any) -> None:
         await self.services.events.append(run.id, event, **fields)
 
-    async def _result_event(self, run: _Run, call_id: str, result: ToolResult, started: float) -> None:
+    async def _result_event(self, run: _Run, call_id: str, result: ToolResult) -> None:
+        """``duration_ms`` is how long the call ran, not how long it waited for people."""
         fields: dict[str, Any] = {"call_id": call_id, "ok": result.ok, "summary": result.summary,
-                                  "duration_ms": round((time.monotonic() - started) * 1000)}
+                                  "duration_ms": result.duration_ms}
         if result.data is not None:
             fields["data"] = result.data
         if result.handle:
@@ -537,7 +603,6 @@ class RunManager:
             raise NotFound(f"no run {run_id}")
         meta = await self.services.store.run_meta(run_id)
         grant = meta.get("grant")
-        messages = await self.services.store.load_messages(run_id)
         try:
             book = get_playbook(meta.get("playbook"))
         except InvalidRequest:
@@ -545,9 +610,8 @@ class RunManager:
         run = _Run(
             id=run_id, kind=meta.get("kind", AGENT), created_by=row["created_by"],
             user=meta.get("user") or row["created_by"], roles=frozenset(meta.get("roles") or ()), playbook=book,
-            messages=messages, state=row["state"],
+            state=row["state"],
             grant=Grant(grant["approval_id"], grant["user"], frozenset(grant["roles"])) if grant else None,
-            calls=_calls_this_turn(messages),
         )
         return self._runs.setdefault(run_id, run)
 

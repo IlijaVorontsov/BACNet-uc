@@ -9,7 +9,8 @@ import { Chip, Dot, ErrorNote } from "../ui/common";
 
 function DeviceDetail({ name }: { name: string }) {
   const hub = useHub();
-  const desc = useResource<DeviceDescription>((s) => hub.client.device(name, s), [hub.client, name, hub.site.data]);
+  // Described again on every site refresh, so the apps' state and counters are current.
+  const desc = useResource<DeviceDescription>((s) => hub.client.device(name, s, true), [hub.client, name, hub.site.data]);
   const { identify, busy, error } = useIdentify();
   const [blinking, setBlinking] = useState(false);
   useEffect(() => {

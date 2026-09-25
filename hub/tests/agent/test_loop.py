@@ -3,6 +3,7 @@ and errors of the model, cancel, and runs that outlive a hub restart."""
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
 from typing import Any
@@ -12,7 +13,16 @@ import pytest
 from uc_hub.agent.loop import ACTIVE_STATES
 from uc_hub.agent.prompts import SYSTEM_PROMPT
 from uc_hub.core.errors import Conflict, InvalidRequest, NotFound, PolicyDenied
-from uc_hub.llm.base import Completed, LlmProvider, TextDelta, ToolCall, ToolCallDelta, ToolCallStart, ToolDef
+from uc_hub.llm.base import (
+    Completed,
+    LlmError,
+    LlmProvider,
+    TextDelta,
+    ToolCall,
+    ToolCallDelta,
+    ToolCallStart,
+    ToolDef,
+)
 
 from .conftest import AgentHub, call, events, install_fakes, pending, rules, scripted, state, until
 
@@ -105,13 +115,14 @@ async def test_approvals_approve_reject_and_expire(agent_hub: AgentHub) -> None:
     request = await pending(hub, approved)
     assert (request["tool"], request["tier"], request["title"], request["requested_by"]) == (
         "switch", "L", "Use on", "tech")
+    await asyncio.sleep(0.3)  # the approver takes a while; the call's duration must not count it
     decided = await approvals.decide(request["id"], "approve", user="boss", roles={"operator"}, comment="go")
     assert (decided["state"], decided["decided_by"], decided["scope"]) == ("approved", "boss", "call")
     await state(hub, approved, "idle")
     assert [e["approval"]["id"] for e in await events(hub, approved, "approval.request", "approval.decided")] == [
         request["id"], request["id"]]
     (result,) = await events(hub, approved, "tool.result")
-    assert result["ok"] and result["summary"] == "switched on"
+    assert result["ok"] and result["summary"] == "switched on" and result["duration_ms"] < 250
     assert hub.services.fake.calls == ["switch:on"]  # type: ignore[attr-defined]
     states = [e["state"] for e in await events(hub, approved, "run.state")]
     assert states == ["running", "waiting_approval", "running", "idle"]
@@ -168,6 +179,44 @@ async def test_who_may_approve(agent_hub: AgentHub) -> None:
     await state(hub, run_id, "idle")
     with pytest.raises(NotFound):
         await approvals.decide("a_missing", "approve", user="boss", roles=ADMIN)
+
+
+async def test_an_approval_decided_as_its_call_starts_waiting_runs_the_call(agent_hub: AgentHub) -> None:
+    """The decision is stored while the call looks the approval up: the call
+    still gets the approved (re-checked) call from the decision."""
+    hub = await agent_hub(rules(
+        ({"turn": 0}, {"tool_calls": [call("switch", text="on")]}),
+        ({"tool": "switch"}, {"text": "${summary}"}),
+    ))
+    store, approvals = hub.services.store, hub.services.approvals
+    read, audit = store.get_approval, approvals._audit
+    stored, go_on = asyncio.Event(), asyncio.Event()
+    deciding: list[asyncio.Task[Any]] = []
+
+    async def slow_audit(row: dict[str, Any], args: Any, user: str, detail: str) -> None:
+        if row["state"] == "approved":
+            stored.set()
+            await go_on.wait()
+        await audit(row, args, user, detail)
+
+    async def racing_read(approval_id: str, *, with_args: bool = False) -> dict[str, Any] | None:
+        if with_args or deciding:
+            return await read(approval_id, with_args=with_args)
+        deciding.append(asyncio.create_task(approvals.decide(approval_id, "approve", user="boss",
+                                                             roles={"operator"})))
+        await stored.wait()
+        row = await read(approval_id)
+        go_on.set()
+        return row
+
+    approvals._audit = slow_audit  # type: ignore[method-assign]
+    store.get_approval = racing_read  # type: ignore[method-assign]
+    run_id = await start(hub, "Switch it", user="tech", roles={"operator"})
+    await state(hub, run_id, "idle")
+    assert (await deciding[0])["state"] == "approved"
+    (result,) = await events(hub, run_id, "tool.result")
+    assert result["ok"] and result["summary"] == "switched on"
+    assert hub.services.fake.calls == ["switch:on"]  # type: ignore[attr-defined]
 
 
 async def test_a_run_wide_approval_covers_later_tier_l_calls(agent_hub: AgentHub) -> None:
@@ -356,6 +405,47 @@ async def test_a_disabled_model_is_an_error_event(agent_hub: AgentHub) -> None:
     await state(hub, run_id, "idle")
     (error,) = await events(hub, run_id, "error")
     assert error["code"] == "llm" and "llm.provider: none" in error["message"]
+
+
+class BreaksOff(LlmProvider):
+    """Starts a tool call, then fails (``error``) or hangs until the run is
+    cancelled or the hub restarts (``hang``)."""
+
+    name = "breaks-off"
+    model = "breaks-off"
+
+    def __init__(self, how: str) -> None:
+        self.how = how
+        self.hanging = asyncio.Event()
+
+    async def stream(self, messages: list[dict[str, Any]], tools: list[ToolDef], *,
+                     reasoning_effort: str | None = None, max_tokens: int | None = None) -> Any:
+        yield ToolCallStart(0, "call_a", "echo")
+        yield ToolCallDelta(0, '{"text": ')
+        if self.how == "error":
+            raise LlmError("the connection was reset")
+        self.hanging.set()
+        await asyncio.Event().wait()
+
+
+@pytest.mark.parametrize("how", ["error", "cancel", "restart"])
+async def test_a_call_whose_answer_broke_off_gets_a_result(agent_hub: AgentHub, how: str) -> None:
+    llm = BreaksOff("error" if how == "error" else "hang")
+    hub = await agent_hub(llm)
+    run_id = await start(hub, "go")
+    if how == "cancel":
+        await asyncio.wait_for(llm.hanging.wait(), 5)
+        await hub.services.runs.cancel(run_id, user="dev", roles=ADMIN)
+    elif how == "restart":
+        await asyncio.wait_for(llm.hanging.wait(), 5)
+        await hub.restart()
+    await state(hub, run_id, "idle", "cancelled")
+    assert [e["call_id"] for e in await events(hub, run_id, "tool.call")] == ["call_a"]
+    (result,) = await events(hub, run_id, "tool.result")
+    reason = {"error": "the model could not answer", "cancel": "cancelled by dev",
+              "restart": "interrupted by a hub restart"}[how]
+    assert result["call_id"] == "call_a" and not result["ok"] and result["summary"].startswith(f"not run: {reason}")
+    assert [m["role"] for m in await hub.services.store.load_messages(run_id)] == ["system", "user"]
 
 
 class DuplicateIds(LlmProvider):

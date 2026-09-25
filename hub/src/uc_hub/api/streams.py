@@ -19,7 +19,7 @@ import anyio
 from fastapi import APIRouter, Depends, Request
 from sse_starlette import EventSourceResponse, ServerSentEvent
 
-from ..core.errors import InvalidRequest, NotFound
+from ..core.errors import HubError, InvalidRequest, NotFound
 from ..core.ids import PointRef
 from ..runtime.config import Identity
 from ..runtime.services import Services
@@ -75,7 +75,13 @@ def stream_routes(services: Services, auth: Auth, *, keepalive_s: float) -> APIR
             subscription = services.live.subscribe(points=None if devices else refs, devices=devices)
             watched: list[PointRef] = []
             try:
-                await site.ensure_watched(refs)
+                try:
+                    await site.ensure_watched(refs)
+                except HubError:
+                    raise  # a point it refuses: nothing was counted
+                except BaseException:
+                    watched = refs  # counted, then cancelled (the client left) while the driver started watching
+                    raise
                 watched = refs
                 async for reading in subscription:
                     yield ServerSentEvent(data=dumps(reading.to_json()), event="reading")

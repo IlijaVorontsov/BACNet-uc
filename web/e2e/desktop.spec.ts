@@ -20,6 +20,9 @@ test("shows points with live values and applies the commissioning plan", async (
   await expect(card.locator(".code.diff")).toContainText("io.json");
   await card.getByRole("button", { name: "Approve and apply" }).click();
   await expect(card).toContainText("Approved by dev");
+  // The live acceptance tests are a tier L call of their own.
+  const tests = page.getByRole("region", { name: "Approval: Run 3 tests on the live site" });
+  await tests.getByRole("button", { name: "Approve", exact: true }).click();
 
   const agent = page.getByRole("complementary", { name: "Agent" });
   await expect(agent.getByTestId("run-stream")).toContainText("Room 204 is commissioned", { timeout: 30_000 });

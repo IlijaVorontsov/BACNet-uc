@@ -38,6 +38,9 @@ test("answers the IO checkout and applies the plan only with a hold", async ({ p
   await page.mouse.up();
   await expect(sheet).toContainText("Approved by dev");
   await expect(page.getByText("No pending changes")).toBeVisible({ timeout: 30_000 });
+  // Then the live acceptance tests ask (tier L): a tap is enough.
+  const tests = page.getByRole("region", { name: "Approval: Run 3 tests on the live site" });
+  await tests.getByRole("button", { name: "Approve", exact: true }).click();
   await expect(page.getByRole("tab", { name: "Changes, 0 waiting" })).toBeVisible();
 
   await page.getByRole("tab", { name: "Agent" }).click();

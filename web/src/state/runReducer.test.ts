@@ -83,6 +83,73 @@ describe("runReducer", () => {
     expect(v.items.every((i) => !(i as AssistantItem).streaming)).toBe(true);
   });
 
+  it("completes the step's message with its message.done, which comes after the step's tool calls", () => {
+    // The order the hub sends for one model step (API.md "Run events").
+    const v = fold(
+      events(
+        { type: "message.user", text: "Commission room 204", user: "dev" },
+        { type: "run.state", state: "running" },
+        { type: "thinking.delta", text: "Find the devices first." },
+        { type: "message.delta", text: "I'll start by finding " },
+        { type: "message.delta", text: "the devices in room 204." },
+        { type: "tool.call", call_id: "call_1", tool: "site_search", tier: "R", args: {} },
+        { type: "tool.args.delta", call_id: "call_1", delta: '{"query": ""}' },
+        { type: "message.done", text: "I'll start by finding the devices in room 204." },
+        { type: "tool.call", call_id: "call_1", tool: "site_search", tier: "R", args: { query: "" } },
+        { type: "tool.result", call_id: "call_1", ok: true, summary: "1 device", duration_ms: 2 },
+        { type: "message.delta", text: "Found it." },
+        { type: "message.done", text: "Found it." },
+      ),
+    );
+    expect(v.items.map((i) => i.kind)).toEqual(["user", "thinking", "assistant", "tool", "assistant"]);
+    const first = v.items[2] as AssistantItem;
+    expect(first.text).toBe("I'll start by finding the devices in room 204.");
+    expect(first.streaming).toBe(false);
+    expect((v.items[4] as AssistantItem).text).toBe("Found it.");
+    expect(v.stepAssistant).toBe(-1);
+  });
+
+  it("keeps text that went on after a tool call where it streamed", () => {
+    const v = fold(
+      events(
+        { type: "message.delta", text: "Before." },
+        { type: "tool.call", call_id: "c1", tool: "plan", tier: "S", args: {} },
+        { type: "message.delta", text: "After." },
+        { type: "message.done", text: "Before.After." },
+      ),
+    );
+    expect(v.items.map((i) => i.kind)).toEqual(["assistant", "tool", "assistant"]);
+    expect(v.items.flatMap((i) => (i.kind === "assistant" ? [[i.text, i.streaming]] : []))).toEqual([
+      ["Before.", false],
+      ["After.", false],
+    ]);
+  });
+
+  it("knows a call's arguments are complete when its tool.call repeats, even when they are empty", () => {
+    const call = { type: "tool.call", call_id: "c1", tool: "plan", tier: "S", args: {} } as const;
+    const all = events(call, { type: "tool.args.delta", call_id: "c1", delta: "{}" }, call);
+    expect((fold(all.slice(0, 2)).items[0] as ToolItem).argsComplete).toBe(false);
+    expect((fold(all).items[0] as ToolItem).argsComplete).toBe(true);
+    // An MCP session announces its calls once, with the complete arguments.
+    const mcp = fold(events({ ...call, tool: "point_read", tier: "R", args: { points: [] } }));
+    expect((mcp.items[0] as ToolItem).argsComplete).toBe(true);
+  });
+
+  it("remembers the error that ended a turn until the next message", () => {
+    const v = fold(
+      events(
+        { type: "message.user", text: "hello", user: "dev" },
+        { type: "run.state", state: "running" },
+        { type: "error", message: "the model could not answer: Z.ai API key missing", code: "llm" },
+        { type: "run.state", state: "idle" },
+      ),
+    );
+    expect(v.state).toBe("idle");
+    expect(v.turnError).toBe("the model could not answer: Z.ai API key missing");
+    const again = applyEvent(v, { type: "message.user", text: "retry", user: "dev", seq: 5, run_id: "r_1", ts: 1005 });
+    expect(again.turnError).toBeNull();
+  });
+
   it("collapses thinking into one block that ends when the answer starts", () => {
     const v = fold(
       events(

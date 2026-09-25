@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { Approval } from "../api/types";
 import { formatClock, formatExpiry } from "../lib/format";
-import { canApprove, useHub } from "../state/hub";
+import { canApprove, useHub, usePlanWarnings } from "../state/hub";
 import { DecisionLine } from "../agent/ApprovalCard";
 import { useDecide } from "../state/actions";
 import { Dot, ErrorNote, TierBadge } from "../ui/common";
@@ -22,6 +22,7 @@ export function ApprovalSheet({ approval, onDecided }: { approval: Approval; onD
   const { me } = useHub();
   const [showDiff, setShowDiff] = useState(false);
   const { decide, busy, error, local } = useDecide(approval);
+  const warnings = usePlanWarnings(local);
   const allowed = canApprove(me.data, local.tier);
   const pending = local.state === "pending";
   const verb = local.tool === "apply" ? "apply" : "approve";
@@ -41,6 +42,14 @@ export function ApprovalSheet({ approval, onDecided }: { approval: Approval; onD
       </h4>
       <ul className="tl">
         {local.summary.map((line, i) => {
+          if (warnings.has(line)) {
+            return (
+              <li key={i}>
+                <Dot tone="warn" />
+                <span className="warn-t">{line}</span>
+              </li>
+            );
+          }
           const [head, rest] = splitLine(line);
           return (
             <li key={i}>

@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import type { Device, PointWithReading, Site, Space } from "../api/types";
 import { formatClock, formatReading, formatValue } from "../lib/format";
-import { childSpaces, devicesIn, PROTOCOL_LABELS, spaceTone } from "../lib/site";
+import { buildingSpace, childSpaces, devicesIn, PROTOCOL_LABELS, spaceTone, topSpaces } from "../lib/site";
 import { useHub, useResource } from "../state/hub";
 import { useLive, type LiveValue } from "../state/streams";
 import { useUi } from "../state/ui";
@@ -117,10 +117,16 @@ export function PhoneSite() {
     return points.filter((p) => names.has(p.device));
   };
   const unplaced = site.devices.filter((d) => d.space === null);
+  const building = buildingSpace(site);
+  const inBuilding = building ? site.devices.filter((d) => d.space === building.id) : [];
+  const toField = (d: Device): void => {
+    ui.setFieldDevice(d.name);
+    ui.setPhoneTab("field");
+  };
 
   return (
     <div className="pstack">
-      {childSpaces(site, null).map((top) => {
+      {topSpaces(site).map((top) => {
         const rooms = childSpaces(site, top.id);
         const cards = rooms.length ? rooms : [top];
         return (
@@ -137,14 +143,19 @@ export function PhoneSite() {
           </section>
         );
       })}
+      {building && inBuilding.length > 0 && (
+        <section aria-label={building.name} className="pstack">
+          <p className="label">{building.name}</p>
+          {inBuilding.map((d) => (
+            <DeviceBlock key={d.name} device={d} points={points.filter((p) => p.device === d.name)} live={values} onField={() => toField(d)} />
+          ))}
+        </section>
+      )}
       {unplaced.length > 0 && (
         <section aria-label="Devices not placed" className="pstack">
           <p className="label">Not placed · {unplaced.length}</p>
           {unplaced.map((d) => (
-            <DeviceBlock key={d.name} device={d} points={[]} live={values} onField={() => {
-              ui.setFieldDevice(d.name);
-              ui.setPhoneTab("field");
-            }} />
+            <DeviceBlock key={d.name} device={d} points={[]} live={values} onField={() => toField(d)} />
           ))}
         </section>
       )}

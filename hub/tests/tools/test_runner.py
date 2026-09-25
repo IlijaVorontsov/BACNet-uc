@@ -168,8 +168,10 @@ async def test_large_results_become_handles_and_page(tmp_path: Path) -> None:
         ids = [str(p.ref) for p in hub.site.points()]
         result = await hub.call("point_read", {"points": ids}, run_id=run["id"])
         assert result.ok and result.data is None and result.handle is not None
-        assert result.handle.startswith("result://r") and "result_get" in result.summary
-        assert f'"handle": "{result.handle}"' in result.to_model_text()
+        # The summary is for people too; the paging hint is for the model only.
+        assert result.handle.startswith("result://r") and "result_get" not in result.summary
+        model_text = result.to_model_text()
+        assert f'"handle": "{result.handle}"' in model_text and "result_get" in model_text
         seen: list[str] = []
         offset: int | None = 0
         while offset is not None:

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { Device, Protocol, Site, Space } from "../api/types";
-import { childSpaces, devicesIn, PROTOCOL_LABELS, spaceTone } from "../lib/site";
+import { buildingSpace, childSpaces, devicesIn, PROTOCOL_LABELS, spaceTone, topSpaces } from "../lib/site";
 import { useHub } from "../state/hub";
 import { useUi, type Scope } from "../state/ui";
 import { Dot, ErrorNote } from "../ui/common";
@@ -96,6 +96,7 @@ export function SiteTree() {
   const [hidden, setHidden] = useState<ReadonlySet<Protocol>>(new Set());
   const site = hub.site.data;
   const visible = (d: Device): boolean => !hidden.has(d.protocol);
+  const building = site ? buildingSpace(site) : null;
   const toggle = (p: Protocol): void =>
     setHidden((prev) => {
       const next = new Set(prev);
@@ -113,7 +114,8 @@ export function SiteTree() {
           </button>
         ))}
       </div>
-      <ErrorNote error={site ? null : hub.site.error} />
+      {/* The workspace explains a missing sign-in; once is enough. */}
+      <ErrorNote error={site || hub.site.error?.status === 401 ? null : hub.site.error} />
       {site && (
         <ul className="tgroup">
           <li>
@@ -127,9 +129,13 @@ export function SiteTree() {
               <Count n={site.devices.filter(visible).length} />
             </button>
             <ul>
-              {childSpaces(site, null).map((s) => (
+              {topSpaces(site).map((s) => (
                 <SpaceNode key={s.id} site={site} space={s} depth={1} visible={visible} />
               ))}
+              {building &&
+                site.devices
+                  .filter((d) => d.space === building.id && visible(d))
+                  .map((d) => <DeviceNode key={d.name} d={d} depth={1} />)}
             </ul>
           </li>
         </ul>

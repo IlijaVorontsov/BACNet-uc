@@ -169,7 +169,13 @@ export class MockServer {
   private startRun(
     message: string,
     playbook: string | undefined,
-    extra: { user?: string; title?: string; virtualStart?: number; seedAnswers?: [string, string][]; script?: Script } = {},
+    extra: {
+      user?: string;
+      title?: string;
+      virtualStart?: number;
+      seed?: Pick<ContextOptions, "seedAnswers" | "seedApprovals">;
+      script?: Script;
+    } = {},
   ): { run: MockRun; live: Promise<void>; finished: Promise<void> } {
     const user = extra.user ?? USER;
     const createdAt = extra.virtualStart ?? Date.now() / 1000;
@@ -177,7 +183,7 @@ export class MockServer {
     const run = new MockRun(id, extra.title ?? runTitle(message, playbook), user, createdAt, MODEL);
     this.runs.set(id, run);
     const script = extra.script ?? pickScript(message, playbook, this.env);
-    const { ctx, live } = this.context(run, user, extra.virtualStart ?? null, extra.seedAnswers);
+    const { ctx, live } = this.context(run, user, extra.virtualStart ?? null, extra.seed);
     const finished = runScript(ctx, async (c) => {
       c.userMessage(message, user);
       c.state("running");
@@ -190,7 +196,7 @@ export class MockServer {
     run: MockRun,
     user: string,
     virtualStart: number | null,
-    seedAnswers?: [string, string][],
+    seed: Pick<ContextOptions, "seedAnswers" | "seedApprovals"> = {},
   ): { ctx: ScriptContext; live: Promise<void> } {
     let onLive = (): void => undefined;
     const live = new Promise<void>((resolve) => {
@@ -204,7 +210,7 @@ export class MockServer {
       speed: this.opts.speed,
       virtualStart,
       onLive,
-      ...(seedAnswers ? { seedAnswers } : {}),
+      ...seed,
     };
     return { ctx: new ScriptContext(run, opts), live };
   }
@@ -220,7 +226,8 @@ export class MockServer {
     const second = this.startRun("Run IO checkout for r204-ctl.", "io-checkout", {
       user: "tech1",
       virtualStart: now - 240,
-      seedAnswers: [["Yes", "tech1"]],
+      // The technician approved the first force for the whole run, then answered its question.
+      seed: { seedApprovals: [{ user: "tech1", scope: "run" }], seedAnswers: [["Yes", "tech1"]] },
     });
     await second.live;
   }

@@ -38,6 +38,8 @@ class ToolResult:
     error_code: str | None = None
     #: ``result://r42`` when ``data`` was stored (read it with ``result_get``).
     handle: str | None = None
+    #: How long the handler ran, set by the runner (never the wait for an approval).
+    duration_ms: int = 0
 
     def to_model_text(self, limit: int = 12000) -> str:
         body: dict[str, Any] = {"ok": self.ok, "summary": self.summary}
@@ -45,6 +47,7 @@ class ToolResult:
             body["data"] = self.data
         if self.handle:
             body["handle"] = self.handle
+            body["note"] = "the data was too large to include; page through it with result_get and this handle"
         if self.error_code:
             body["error"] = self.error_code
         text = json.dumps(body, default=str, ensure_ascii=False)

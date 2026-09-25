@@ -181,6 +181,15 @@ export function useHub(): Hub {
   return hub;
 }
 
+/** The plan's warnings among an apply approval's summary lines (the hub lists them after the targets). */
+export function usePlanWarnings(approval: Approval): ReadonlySet<string> {
+  const current = useHub().plan.data?.plan ?? null;
+  return useMemo(
+    () => new Set(current && current.id === approval.plan_id ? current.warnings : []),
+    [current, approval.plan_id],
+  );
+}
+
 /** Roles that may approve a tier (API.md "Approvals"). */
 export function canApprove(me: Me | null, tier: Approval["tier"]): boolean {
   if (!me) return false;

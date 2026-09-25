@@ -6,6 +6,7 @@ import type { Approval, DeviceDescription, Plan } from "../api/types";
 import { ChangesPane } from "../panes/ChangesPane";
 import { DevicesPane } from "../panes/DevicesPane";
 import { ApprovalSheet } from "../phone/ApprovalSheet";
+import { PhoneChanges } from "../phone/PhoneChanges";
 import { HubProvider } from "../state/hub";
 import { UiProvider } from "../state/ui";
 
@@ -106,6 +107,24 @@ describe("ApprovalSheet", () => {
     expect(client.sent).toEqual([{ key: "POST /api/approvals/a_13", body: { decision: "approve", scope: "run" } }]);
   });
 
+  it("sets the plan's warnings apart from the targets", async () => {
+    const warning = "r204-ctl: device.json changes bacnet.udp_port; this takes effect after the node reboots";
+    const plan: Plan = {
+      id: "p17",
+      revision: 17,
+      base_revision: 16,
+      created_at: 1790290000,
+      targets: ["r204-ctl"],
+      warnings: [warning],
+      changes: [{ id: "c1", target: "r204-ctl", kind: "upload-doc", summary: "io.json: +1 point", diff: "", tier: "C" }],
+      blocked: {},
+    };
+    const approval = { ...APPROVAL, summary: [...APPROVAL.summary, warning] };
+    render(wrap(new FakeClient({ ...BASE, "GET /api/plan": { plan } }), <ApprovalSheet approval={approval} onDecided={vi.fn()} />));
+    await waitFor(() => expect(screen.getByText(warning).className).toBe("warn-t"));
+    expect(screen.getByText("r204-ctl").className).toBe("");
+  });
+
   it("offers no run-wide approval for tier C", async () => {
     render(wrap(new FakeClient(BASE), <ApprovalSheet approval={APPROVAL} onDecided={vi.fn()} />));
     await screen.findByRole("button", { name: "Hold to apply" });
@@ -155,6 +174,17 @@ describe("DevicesPane", () => {
   });
 });
 
+const BLOCKED_PLAN: Plan = {
+  id: "p18",
+  revision: 18,
+  base_revision: 17,
+  created_at: 1790290000,
+  targets: ["gateway"],
+  warnings: [],
+  changes: [{ id: "c1", target: "gateway", kind: "tags", summary: "tags: 1 point", diff: "", tier: "C" }],
+  blocked: { "r205-ctl": "DeviceTimeout: no answer" },
+};
+
 describe("ChangesPane", () => {
   it("says which targets keep a plan from being applied", async () => {
     const plan: Plan = {
@@ -170,5 +200,15 @@ describe("ChangesPane", () => {
     render(wrap(new FakeClient({ ...BASE, "GET /api/plan": { plan } }), <ChangesPane />));
     const blocked = await screen.findByRole("list", { name: "Blocked targets" });
     expect(blocked.textContent).toBe("Cannot be applied: r205-ctl could not be planned (DeviceTimeout: no answer)");
+    expect(screen.getByText("Cannot be applied", { selector: ".chip" })).toBeTruthy();
+    expect(screen.queryByText("Needs approval")).toBeNull();
+  });
+
+  it("says on the phone too that a blocked plan cannot be applied", async () => {
+    render(wrap(new FakeClient({ ...BASE, "GET /api/plan": { plan: BLOCKED_PLAN } }), <PhoneChanges />));
+    const blocked = await screen.findByRole("list", { name: "Blocked targets" });
+    expect(blocked.textContent).toContain("r205-ctl could not be planned");
+    expect(screen.getByText(/This plan cannot be applied/)).toBeTruthy();
+    expect(screen.queryByText(/Ask the agent to apply the plan/)).toBeNull();
   });
 });

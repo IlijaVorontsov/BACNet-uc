@@ -14,7 +14,11 @@ function Status({ r }: { r: TestResult | undefined }) {
   );
 }
 
-/** Latest acceptance test results, one row per test with the simulation and live results side by side. */
+/**
+ * Latest acceptance test results, one row per test with the simulation and
+ * live results side by side. The simulation column only shows once a
+ * simulation ran (the hub may run the tests on the live site only).
+ */
 export function TestsPane() {
   const { tests } = useHub();
   if (tests.error && !tests.data) return <ErrorNote error={tests.error} />;
@@ -26,11 +30,12 @@ export function TestsPane() {
     byName.set(r.name, row);
   }
   if (byName.size === 0) return <p className="mute-t">No acceptance tests yet. The manifest's tests appear here once they run.</p>;
+  const withSim = tests.data.results.some((r) => r.target === "sim");
   return (
-    <div className="tests" role="table" aria-label="Acceptance tests">
+    <div className={`tests${withSim ? "" : " live-only"}`} role="table" aria-label="Acceptance tests">
       <div className="thdr" role="row">
         <span role="columnheader">Acceptance test</span>
-        <span role="columnheader">Simulation</span>
+        {withSim && <span role="columnheader">Simulation</span>}
         <span role="columnheader">Live site</span>
       </div>
       {[...byName.entries()].map(([name, row]) => {
@@ -41,9 +46,11 @@ export function TestsPane() {
               <div>{name}</div>
               {detail && <div className="steps">{detail}</div>}
             </div>
-            <div role="cell" data-col="sim">
-              <Status r={row.sim} />
-            </div>
+            {withSim && (
+              <div role="cell" data-col="sim">
+                <Status r={row.sim} />
+              </div>
+            )}
             <div role="cell" data-col="live">
               <Status r={row.live} />
             </div>

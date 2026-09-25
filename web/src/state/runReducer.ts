@@ -53,6 +53,8 @@ export interface ToolItem extends ItemBase {
   args: Record<string, unknown>;
   /** Raw argument JSON while the model is still streaming it. */
   argsText: string;
+  /** The complete arguments arrived (the repeated `tool.call`), so `args` is final even when empty. */
+  argsComplete: boolean;
   status: ToolStatus;
   result: ToolResultInfo | null;
   approvalId: string | null;
@@ -103,6 +105,14 @@ export interface RunView {
   openThinking: number;
   /** Index into `items` of the assistant message still receiving deltas, or -1. */
   openAssistant: number;
+  /**
+   * Index into `items` of the first assistant message of the current model
+   * step, or -1. A `tool.call` closes the message, but the step's
+   * `message.done` comes after its calls and completes it (API.md).
+   */
+  stepAssistant: number;
+  /** The error that ended the last turn; null once a new turn starts. */
+  turnError: string | null;
 }
 
 export type RunAction = { type: "reset"; runId: string | null } | { type: "events"; events: RunEvent[] };
@@ -118,6 +128,8 @@ export function initialRunView(runId: string | null = null): RunView {
     tests: null,
     openThinking: -1,
     openAssistant: -1,
+    stepAssistant: -1,
+    turnError: null,
   };
 }
 
@@ -172,6 +184,11 @@ function push(s: RunView, item: RunItem): RunView {
   return { ...s, items: [...s.items, item] };
 }
 
+/** The model step is over: a later `message.done` belongs to a new step. */
+function endStep(s: RunView): RunView {
+  return s.stepAssistant < 0 ? s : { ...s, stepAssistant: -1 };
+}
+
 const TERMINAL_NOTICE: ReadonlySet<RunState> = new Set(["failed", "cancelled"]);
 
 export function applyEvent(prev: RunView, ev: RunEvent): RunView {
@@ -183,7 +200,7 @@ export function applyEvent(prev: RunView, ev: RunEvent): RunView {
   switch (ev.type) {
     case "run.state": {
       let s: RunView = { ...base, state: ev.state, reason: ev.reason ?? null };
-      if (ev.state !== "running") s = closeOpen(s, ev.ts, "both");
+      if (ev.state !== "running") s = endStep(closeOpen(s, ev.ts, "both"));
       if (TERMINAL_NOTICE.has(ev.state)) {
         s = push(s, { kind: "notice", key: `n${ev.seq}`, ...at, state: ev.state, reason: ev.reason ?? null });
       }
@@ -191,8 +208,8 @@ export function applyEvent(prev: RunView, ev: RunEvent): RunView {
     }
 
     case "message.user": {
-      const s = closeOpen(base, ev.ts, "both");
-      return push(s, { kind: "user", key: `u${ev.seq}`, ...at, text: ev.text, user: ev.user });
+      const s = endStep(closeOpen(base, ev.ts, "both"));
+      return push({ ...s, turnError: null }, { kind: "user", key: `u${ev.seq}`, ...at, text: ev.text, user: ev.user });
     }
 
     case "thinking.delta": {
@@ -219,19 +236,24 @@ export function applyEvent(prev: RunView, ev: RunEvent): RunView {
       return {
         ...push(s, { kind: "assistant", key: `a${ev.seq}`, ...at, text: ev.text, streaming: true }),
         openAssistant: s.items.length,
+        stepAssistant: s.stepAssistant >= 0 ? s.stepAssistant : s.items.length,
       };
     }
 
     case "message.done": {
-      const s = closeOpen(base, ev.ts, "thinking");
-      if (s.openAssistant >= 0) {
-        return {
-          ...s,
-          items: replaceItem<AssistantItem>(s.items, s.openAssistant, { text: ev.text, streaming: false }),
-          openAssistant: -1,
-        };
+      const s = { ...closeOpen(base, ev.ts, "thinking"), openAssistant: -1, stepAssistant: -1 };
+      const first = base.stepAssistant;
+      if (first < 0) return push(s, { kind: "assistant", key: `a${ev.seq}`, ...at, text: ev.text, streaming: false });
+      const own = s.items.flatMap((it, i) => (i >= first && it.kind === "assistant" ? [i] : []));
+      let items = s.items;
+      if (own.length === 1) {
+        // The authoritative text of the step's one message.
+        items = replaceItem<AssistantItem>(items, first, { text: ev.text, streaming: false });
+      } else {
+        // The text went on after a tool call: keep the pieces where they streamed.
+        for (const i of own) items = replaceItem<AssistantItem>(items, i, { streaming: false });
       }
-      return push(s, { kind: "assistant", key: `a${ev.seq}`, ...at, text: ev.text, streaming: false });
+      return { ...s, items };
     }
 
     case "tool.call": {
@@ -240,17 +262,18 @@ export function applyEvent(prev: RunView, ev: RunEvent): RunView {
       const i = findTool(s.items, ev.call_id);
       if (i >= 0) {
         const cur = s.items[i] as ToolItem;
-        const complete = Object.keys(args).length > 0;
         return {
           ...s,
           items: replaceItem<ToolItem>(s.items, i, {
             tool: ev.tool,
             tier: ev.tier,
-            args: complete ? args : cur.args,
+            args: Object.keys(args).length > 0 ? args : cur.args,
+            argsComplete: true,
           }),
         };
       }
-      return push(s, newTool(ev.call_id, ev.tool, ev.tier, at, args, ""));
+      const tool = newTool(ev.call_id, ev.tool, ev.tier, at, args, "");
+      return push(s, { ...tool, argsComplete: Object.keys(args).length > 0 });
     }
 
     case "tool.args.delta": {
@@ -273,9 +296,10 @@ export function applyEvent(prev: RunView, ev: RunEvent): RunView {
         ...(ev.handle !== undefined ? { handle: ev.handle } : {}),
       };
       const status: ToolStatus = ev.ok ? "ok" : "error";
-      const i = findTool(base.items, ev.call_id);
-      if (i >= 0) return { ...base, items: replaceItem<ToolItem>(base.items, i, { result, status }) };
-      const s = closeOpen(base, ev.ts, "both");
+      const done = endStep(base);
+      const i = findTool(done.items, ev.call_id);
+      if (i >= 0) return { ...done, items: replaceItem<ToolItem>(done.items, i, { result, status }) };
+      const s = closeOpen(done, ev.ts, "both");
       return push(s, { ...newTool(ev.call_id, "", "R", at, {}, ""), result, status });
     }
 
@@ -333,8 +357,9 @@ export function applyEvent(prev: RunView, ev: RunEvent): RunView {
       return { ...base, tests: { results: Array.isArray(ev.results) ? ev.results : [], seq: ev.seq } };
 
     case "error": {
-      const s = closeOpen(base, ev.ts, "both");
-      return push(s, { kind: "error", key: `e${ev.seq}`, ...at, message: ev.message, code: ev.code ?? null });
+      const s = endStep(closeOpen(base, ev.ts, "both"));
+      const item: ErrorItem = { kind: "error", key: `e${ev.seq}`, ...at, message: ev.message, code: ev.code ?? null };
+      return push({ ...s, turnError: ev.message }, item);
     }
 
     default:
@@ -360,6 +385,7 @@ function newTool(
     tier,
     args,
     argsText,
+    argsComplete: false,
     status: "running",
     result: null,
     approvalId: null,
